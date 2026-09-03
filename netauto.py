@@ -13,9 +13,10 @@ import yaml
 # netmiko is imported inside connect(), not here. Everything else in this
 # module is file/inventory handling, and the offline audit path
 # (l2_stig_audit.py --from-capture) never opens a connection - deferring the
-# import lets that path run on a machine with only Python + pyyaml installed,
-# which is exactly the situation on the work machine where captures are
-# collected via SecureCRT and no netmiko install is available or wanted.
+# import lets that path run on a machine with only Python installed - yaml.py
+# covers the import above - which is exactly the situation on the work machine
+# where captures are collected via SecureCRT and neither netmiko nor pyyaml can
+# be installed at all.
 
 # Every path below is anchored to the directory this file lives in, not the
 # caller's working directory, so the scripts behave the same wherever they're

@@ -32,8 +32,9 @@ stay identical, so the duplication cannot drift silently.
 # (audit script in the parent directory) and a Python that can run it exists.
 # When either is missing - e.g. only this one file was copied to a locked-down
 # work machine - the capture is still saved and the dialog says where to run
-# the audit instead. The audit needs Python + pyyaml only; netmiko is NOT
-# required for offline audits (netauto imports it lazily, only on connect).
+# the audit instead. The audit needs Python only - neither pyyaml nor netmiko
+# is required offline: yaml.py in the repo root stands in for pyyaml, and
+# netauto imports netmiko lazily, only on connect.
 #
 # No checklist setting: this runs against IOS XE devices, which is
 # l2_stig_audit.py's own default, so the audit is invoked without --checklist
