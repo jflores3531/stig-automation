@@ -502,14 +502,22 @@ landed. Keeping them in a single task preserves the atomicity Netmiko's
 
 ## Why this exists
 
-This project's Python/Netmiko toolchain already works well at this scale
-(7-8 devices, one person maintaining it) - this role isn't "better," it's
-a second, independently-working implementation of the same STIG logic,
-built to demonstrate Ansible experience. The real reasons organizations
-prefer Ansible are mostly about team/hiring standardization, inventory
-management at much larger scale, and vendor-maintained low-level plumbing
-- not because it's technically superior to a well-tested custom toolchain
-for a setup this size. See project chat/memory for the fuller discussion.
+This project's Python/Netmiko toolchain already works well on the lab these
+roles were built against (7-8 devices, one person maintaining it) - this
+isn't "better," it's a second, independently-working implementation of the
+same STIG logic, built to demonstrate Ansible experience. The real reasons
+organizations prefer Ansible are mostly about team/hiring standardization,
+inventory management at much larger scale, and vendor-maintained low-level
+plumbing - not because it's technically superior to a well-tested custom
+toolchain for a setup this size.
+
+Note where that argument stops. The deployment target these scripts were
+written for is several hundred switches on a host that can install nothing
+- no Ansible, no collections, not even netmiko or pyyaml - reached through
+SecureCRT and audited from captures. Everything here needs an install host,
+so none of it runs there. Scale is the usual argument for Ansible over a
+custom toolchain, and on the one fleet this project actually has to cover,
+scale is not what decides it.
 
 ## Prerequisites
 
