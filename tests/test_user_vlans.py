@@ -113,6 +113,21 @@ check('a misspelled exclude leaves every VLAN in, which is a finding not a pass'
 check('a misspelled include also only ever adds VLANs to the audited set',
       set(discover(exclude=[10], include_names=['MGM'])) <= set(discover(exclude=[10], include_names=['MGMT'])))
 
+print('a VLAN ID that is not a number stops the run instead of skewing it')
+# Skipping the bad entry would leave the exclusion set wrong and every DHCP
+# snooping and DAI verdict downstream reported with full confidence anyway.
+try:
+    discover(exclude=[1, 'ten'])
+    check('unreadable VLAN ID raises', False, 'no exception')
+except stig_common.InventoryError as err:
+    check('unreadable VLAN ID raises InventoryError', True)
+    check('the message names the offending value', "'ten'" in str(err), str(err))
+    check('the message names inventory.yaml', 'inventory.yaml' in str(err), str(err))
+    check('the message says where to look',
+          'non_user_vlans' in str(err) and 'unused_vlan' in str(err), str(err))
+check('numeric strings are still fine',
+      discover(exclude=['1', '10']) == discover(exclude=[1, 10]))
+
 print()
 if failures:
     print(f'{len(failures)} FAILED: ' + ', '.join(failures))

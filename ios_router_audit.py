@@ -427,7 +427,14 @@ def _vty_acl_blocks(cfg):
 def _vty_management_acl_check(cfg, subnet_str):
     if not subnet_str:
         return False, 'no `management_subnet` configured in inventory.yaml'
-    subnet = ipaddress.ip_network(subnet_str, strict=False)
+    try:
+        subnet = ipaddress.ip_network(subnet_str, strict=False)
+    except ValueError:
+        # A netmask instead of a prefix length is the easy typo. One bad value
+        # costs this rule its verdict; it must not cost the whole report, which
+        # is what an uncaught ValueError here used to do mid-fleet-run.
+        return False, (f'`management_subnet` in inventory.yaml is not a network: {subnet_str!r} '
+                       f'- expected CIDR form, e.g. 10.10.50.0/24')
 
     vty_blocks = _vty_acl_blocks(cfg)
     if not vty_blocks:

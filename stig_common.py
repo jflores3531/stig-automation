@@ -94,6 +94,15 @@ def exec_timeout_ok(cfg, max_minutes=5):
     return True
 
 
+class InventoryError(ValueError):
+    """A value in inventory.yaml is not the kind of value it has to be.
+
+    Raised rather than skipped: a VLAN ID that cannot be read leaves the
+    user-VLAN classification wrong, and every DHCP snooping and DAI verdict
+    downstream of it would be reported with the same confidence as a correct
+    one. Refusing is the same call capture.py makes on a malformed capture."""
+
+
 def discover_user_vlans(net_connect, exclude=(), exclude_names=(), include_names=()):
     """Return a switch's user VLAN IDs from `show vlan brief`, excluding the
     reserved fddi/token-ring VLAN range (1002-1005), any VLAN IDs in `exclude`
@@ -121,7 +130,18 @@ def discover_user_vlans(net_connect, exclude=(), exclude_names=(), include_names
 
     `show vlan brief` already carries the name column, so this costs no extra
     command and works on a capture exactly as it does on a live session."""
-    exclude_ids = {int(v) for v in exclude}
+    exclude_ids = set()
+    unreadable = []
+    for value in exclude:
+        try:
+            exclude_ids.add(int(value))
+        except (TypeError, ValueError):
+            unreadable.append(repr(value))
+    if unreadable:
+        raise InventoryError(
+            f'inventory.yaml: VLAN IDs must be numbers, but {", ".join(unreadable)} '
+            f'{"is" if len(unreadable) == 1 else "are"} not - check non_user_vlans, '
+            'non_user_vlans_by_device, unused_vlan and native_vlan')
     excluded_names = {str(name).strip().casefold() for name in exclude_names}
     included_names = {str(name).strip().casefold() for name in include_names}
     vlan_brief = str(net_connect.send_command('show vlan brief'))

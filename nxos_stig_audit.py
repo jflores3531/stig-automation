@@ -645,7 +645,14 @@ def _mgmt_acl_check(cfg, subnet_str):
     there), adapted to NX-OS's CIDR-based ACL syntax."""
     if not subnet_str:
         return False, 'no `management_subnet` configured in inventory.yaml'
-    subnet = ipaddress.ip_network(subnet_str, strict=False)
+    try:
+        subnet = ipaddress.ip_network(subnet_str, strict=False)
+    except ValueError:
+        # A netmask instead of a prefix length is the easy typo. One bad value
+        # costs this rule its verdict; it must not cost the whole report, which
+        # is what an uncaught ValueError here used to do mid-fleet-run.
+        return False, (f'`management_subnet` in inventory.yaml is not a network: {subnet_str!r} '
+                       f'- expected CIDR form, e.g. 10.10.50.0/24')
 
     acl_name = None
     m = re.search(r'^line vty\b.*\n(?:.*\n)*?\s*access-class (\S+) in', cfg, re.M)
@@ -927,9 +934,13 @@ if unused_vlan:
     non_user_vlan_exclude.append(unused_vlan)
 if native_vlan_id:
     non_user_vlan_exclude.append(native_vlan_id)
-user_vlans = stig_common.discover_user_vlans(vlan_discovery_connect, exclude=non_user_vlan_exclude,
-                                             exclude_names=netauto.load_non_user_vlan_names(),
-                                             include_names=netauto.load_user_vlan_names())
+try:
+    user_vlans = stig_common.discover_user_vlans(vlan_discovery_connect, exclude=non_user_vlan_exclude,
+                                                 exclude_names=netauto.load_non_user_vlan_names(),
+                                                 include_names=netauto.load_user_vlan_names())
+except stig_common.InventoryError as inventory_error:
+    print(inventory_error)
+    raise SystemExit(1)
 
 # V-220676: 'show vtp password' instead of running-config - see the comment
 # by CHECKS['V-220681'] above for why running-config text can't be used here.
