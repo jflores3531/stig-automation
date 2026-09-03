@@ -18,8 +18,9 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 
 ### Shared
 - **`netauto.py`** — Inventory loading, device-name validation, credential prompting, Netmiko SSH connection handling, automatic privilege escalation.
-- **`inventory.yaml`** — Device inventory and STIG-hardening config (NTP/syslog/RADIUS server IPs, VLAN IDs, management subnet, automation host). No credentials.
+- **`inventory.yaml`** — Device inventory and STIG-hardening config (NTP/syslog/RADIUS server IPs, VLAN IDs, management subnet, automation host). No credentials. Written as JSON — see `yaml.py` — which parses under real PyYAML too, since JSON is a subset of YAML 1.2.
 - **`secrets.yaml`** (gitignored) — Plaintext secrets for the `*_stig_harden*.py` scripts. Copy `secrets.yaml.example` to start.
+- **`yaml.py`** — Stand-in for PyYAML on hosts where nothing can be installed: `safe_load` reads the inventory with the stdlib `json` parser. It shadows any real PyYAML present, which is harmless while `inventory.yaml` stays JSON — that parses under either.
 
 ### Backup & save
 - **`backup_config.py`** — Back up running-config + VLANs; keeps a "latest" copy per device plus a timestamped archive pruned to 5.
@@ -28,7 +29,8 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 
 ### Audit & hardening
 - **`stig_common.py`** — Shared audit engine: loads a DISA `.cklb` checklist, checks the device against it, reports PASS/FAIL/NOT AUTOMATED by severity.
-- **`securecrt/capture_l2s.py`** — Runs *inside* SecureCRT (Script → Run) against an already-open session, sending the five read-only show commands and writing a capture file — then, when it finds the repo next to itself, runs the audit and opens the report, making the whole flow one action: connect, run script, read report. Collection is standalone by design (no netmiko, no repo imports), and the offline audit itself needs only Python + pyyaml — netmiko is imported lazily, only when a live connection is actually opened.
+- **`securecrt/capture_l2s.py`** — Runs *inside* SecureCRT (Script → Run) against an already-open session, sending the five read-only show commands and writing a capture file — then, when it finds the repo next to itself, runs the audit and opens the report, making the whole flow one action: connect, run script, read report. Collection is standalone by design (no netmiko, no repo imports), and the offline audit itself needs only Python — `yaml.py` stands in for PyYAML and netmiko is imported lazily, only when a live connection is actually opened.
+- **`securecrt/capture_l2s_bulk.py`** — The same collection unattended, across every saved SecureCRT session: connect, send the five commands, write a capture, disconnect. It never aborts — a switch that is offline, in a login quiet period or refusing credentials is logged and skipped, because on a fleet of hundreds not all of them answer on a given night. Deliberately separate from `capture_l2s.py`, which cannot connect to anything and so cannot be pointed at the wrong device; this one logs into every switch on its own authority, which is a materially different thing to put in front of whoever approved the tooling. Copy both files together — it imports the guards, command list and capture format from `capture_l2s.py` rather than duplicating them.
 - **`capture.py`** — Offline auditing. Every check is a pure function of command output, so an audit can read a capture file instead of a switch — for networks where the tooling can't be pointed at the devices directly. A malformed, truncated or partial capture is refused rather than audited, since a check handed empty text returns a verdict just as confidently as one handed real config.
 - **`l2_stig_audit.py`** — Audit against the IOS XE Switch L2S/NDM STIG (the default) or the IOS Switch one (`--checklist ios` — what the lab's vios_l2 switches are). Full interface-scoped coverage, live discovery for root ports/VTP/user VLANs. `--from-capture` audits collected output; `--capture-to` records a live run so the two can be compared.
 - **`ios_xe_rule_map.py`** — The IOS and IOS XE switch STIGs share no rule IDs, but 58 of the IOS XE STIG's 64 rules are the same requirement as an IOS rule already checked here. This maps them, accepting a pair only when the literal "this is a finding" condition matches in both. Four rules are deliberately excluded and report NOT AUTOMATED — reusing their IOS check would answer a different question.
@@ -58,6 +60,8 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 ```
 pip install -r requirements.txt
 ```
+
+That covers live runs over SSH. The offline path — the SecureCRT collectors plus `--from-capture` — needs neither package and installs nothing: `yaml.py` stands in for PyYAML, and netmiko is imported only when a connection is actually opened. On a locked-down host, copy the files in and run them.
 
 Copy `secrets.yaml.example` to `secrets.yaml` and fill in real values before running any `*_stig_harden*.py` script that needs them.
 
@@ -90,6 +94,13 @@ python3 l2_stig_audit.py S1 --checklist ios --from-capture captures/S1.capture
 
 # An IOS XE switch needs no flag - that checklist is the default.
 python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture
+
+# Fleet-sized: collect from every saved SecureCRT session by running
+# securecrt/capture_l2s_bulk.py inside SecureCRT, then audit the lot in one
+# pass. Collection and audit stay separate so a failed audit can't be
+# mistaken for a failed capture. The loop below is Windows cmd, not bash.
+for %f in (C:\captures\*.capture) do ^
+    python l2_stig_audit.py %~nf --from-capture "%f" > "%~dpnf_report.txt"
 
 # STIG hardening for an L2 switch - run in this order:
 python3 l2_stig_harden_global.py S1 # bulk fixes, run first
