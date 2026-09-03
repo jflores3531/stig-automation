@@ -1,6 +1,6 @@
 # STIG Automation — DISA STIG Compliance for Cisco Infrastructure
 
-Python and Ansible tooling that **audits and remediates Cisco network devices against DISA STIG benchmarks** — the hardening standard required on U.S. Department of Defense networks. Built on [Netmiko](https://github.com/ktbyers/netmiko) over SSH.
+Python and Ansible tooling that **audits and remediates Cisco network devices against DISA STIG benchmarks** — the hardening standard required on U.S. Department of Defense networks. Built on [Netmiko](https://github.com/ktbyers/netmiko) over SSH for live runs — and on the standard library alone for the offline audit path, which is the one that runs where nothing can be installed.
 
 Manually STIG-checking a single switch means checking ~65 rules by hand against the running-config, then doing it again after every change. The scripts I created automate the compliance check across three platforms, and pushes the fixes.
 
@@ -57,11 +57,17 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 
 ## Requirements
 
+Which of the two paths applies is decided by whether the host lets you install anything.
+
+**Offline audit — nothing installed, and nothing installable.** On the work machine neither netmiko nor PyYAML can be installed at all, so the offline path is written not to need them: `yaml.py` stands in for PyYAML, and netmiko is imported inside `netauto.connect()`, which an offline audit never calls. The SecureCRT collectors and `l2_stig_audit.py --from-capture` therefore run on a stock Python and nothing else — copy the files in and run them. This is the deployment target, not a fallback.
+
+**Live runs — Netmiko over SSH.** Only for scripts that actually open a connection: the `*_stig_harden*.py` pushes, live audits, and the backup/diff/save utilities. On a host where installs are possible:
+
 ```
 pip install -r requirements.txt
 ```
 
-That covers live runs over SSH. The offline path — the SecureCRT collectors plus `--from-capture` — needs neither package and installs nothing: `yaml.py` stands in for PyYAML, and netmiko is imported only when a connection is actually opened. On a locked-down host, copy the files in and run them.
+The Ansible roles under [`ansible/`](ansible/) are in the same category — fleet runs from a machine that can install Ansible and its collections.
 
 Copy `secrets.yaml.example` to `secrets.yaml` and fill in real values before running any `*_stig_harden*.py` script that needs them.
 
