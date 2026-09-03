@@ -19,6 +19,10 @@ commands*.txt
 # key, etc.) - never commit this. See secrets.yaml.example for the format.
 secrets.yaml
 
+# Real inventory holds site-specific device addressing and VLAN IDs.
+# Tracked only as a template - see inventory.yaml.example for the format.
+inventory.yaml
+
 
 .idea/
 .claude/
