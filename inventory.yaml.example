@@ -1,20 +1,60 @@
 {
-  "devices": {
-    "SWITCH01": { "host": "192.0.2.11", "device_type": "cisco_ios" },
-    "ROUTER01": { "host": "192.0.2.1", "device_type": "cisco_ios" }
+  "_comments": {
+    "ABOUT_THIS_FILE": "Copy to inventory.yaml and fill in real values. inventory.yaml is gitignored - it holds site-specific addressing and VLAN IDs and must never be committed. The content is JSON, not YAML, because hosts that cannot install PyYAML fall back to the stdlib parser via yaml.py. JSON is a subset of YAML 1.2, so this same file also parses correctly anywhere real PyYAML is installed.",
+
+    "WHY_MISSING_KEYS_ARE_DANGEROUS": "Only 'devices' is required. Every other key is read with .get() and a default, so an absent or wrong value does NOT raise - it silently returns None or an empty collection and the audit reports a wrong result. A partially filled inventory produces confident, incorrect findings. Fill in every key that applies to your environment.",
+
+    "devices": "REQUIRED. Device name -> {host, device_type}. The name is what you pass to scripts on the command line. device_type is a Netmiko platform string: 'cisco_ios' for IOS / IOSvL2 / IOS-XE, 'cisco_nxos' for NX-OS. No credentials belong here - usernames and passwords are prompted at runtime by netauto.get_credentials(). This section defines only WHICH devices exist and HOW to reach them. Read by netauto.load_inventory() and connect(), so every script that opens an SSH session depends on it.",
+
+    "services": "Authorized server lists - ntp_servers, syslog_servers, radius_servers - each a list of IP addresses. Audits compare what the device actually has configured against these lists. Leave a list empty only if the device genuinely has no such servers; an empty list means the audit has nothing to compare against and cannot flag an unauthorized server.",
+
+    "non_user_vlans": "VLAN IDs to EXCLUDE when discovering 'user VLANs' for DHCP snooping and Dynamic ARP Inspection. Typically the default VLAN, the management/automation segment, and server VLANs - anything with no end-user access ports. Getting this wrong is the most common source of false FAILs: list too few and the audit demands snooping on infrastructure VLANs, list too many and real user VLANs go unchecked. Consumed by l2_stig_audit.py, l2_stig_harden_dai.py, l2_stig_harden_global.py.",
+
+    "non_user_vlans_by_device": "Per-device override for non_user_vlans, keyed by device name. The same VLAN ID does not always mean the same thing on every switch - VLAN 10 may be a management segment on one device and a user VLAN on another. A device listed here uses its own list INSTEAD of the shared non_user_vlans, not in addition to it. Leave as {} if the shared list is correct everywhere.",
+
+    "management_subnet": "The management network in CIDR form, e.g. '10.10.50.0/24'. Used to verify that vty access-class ACLs are actually scoped to the management network rather than permitting any source (V-220575). If this is absent the check cannot verify scoping. Read by ios_router_audit.py and l2_stig_audit.py.",
+
+    "automation_host": "IP address of the host that runs these scripts. It is the sole permitted source in the vty ACL that ios_router_stig_harden_acl.py and l2_stig_harden_acl.py build for V-220575. Set this before running either harden script - getting it wrong locks you out of the device.",
+
+    "unused_vlan": "VLAN ID designated for disabled and unused ports (V-220641). Must be a VLAN with no routing and no reachability - not VLAN 1, and not any VLAN carrying real traffic. Read by l2_stig_audit.py, l2_stig_harden_global.py, l2_device_tracking.py.",
+
+    "native_vlan": "VLAN ID to assign as the native VLAN on 802.1q trunk links (V-220646). Must differ from the default VLAN 1 and must not be a VLAN carrying user data. Read by l2_stig_audit.py and l2_stig_harden_global.py.",
+
+    "default_access_vlan": "VLAN ID assigned to host-facing access ports that are not already configured as trunks. Read by l2_stig_harden_global.py and l2_stig_harden_interfaces.py when placing ports into access mode.",
+
+    "vtp_domain": "VTP domain name. Required on NX-OS before a VTP password can be set (V-220676) - the 'vtp password' command is rejected with 'Domain not set' unless a domain exists first. The VTP password itself is a secret and lives in secrets.yaml, never here. Read by nxos_stig_harden_global.py.",
+
+    "external_interfaces_by_device": "Router device name -> list of interface names that face the security boundary, e.g. ['GigabitEthernet0/2']. This is a topology fact that cannot be derived from a device's own running-config, so it must be declared. STIG rules scoped to 'external' versus 'internal' interfaces depend on it. A device with an empty list or no entry has ALL of its active interfaces treated as internal - which silently skips every external-interface rule for that device. Read by ios_router_audit.py and ios_router_stig_harden_urpf.py."
   },
+
+  "devices": {
+    "ROUTER01": { "host": "192.0.2.1", "device_type": "cisco_ios" },
+    "SWITCH01": { "host": "192.0.2.11", "device_type": "cisco_ios" },
+    "NXCORE01": { "host": "192.0.2.21", "device_type": "cisco_nxos" }
+  },
+
   "services": {
-    "ntp_servers": ["192.0.2.100"],
+    "ntp_servers": ["192.0.2.100", "192.0.2.101"],
     "syslog_servers": ["192.0.2.100"],
     "radius_servers": ["192.0.2.100"]
   },
+
   "non_user_vlans": [1, 10, 100],
-  "non_user_vlans_by_device": {},
+
+  "non_user_vlans_by_device": {
+    "NXCORE01": [1, 10]
+  },
+
   "management_subnet": "192.0.2.0/24",
   "automation_host": "192.0.2.10",
+
   "unused_vlan": 1000,
   "native_vlan": 999,
   "default_access_vlan": 50,
+
   "vtp_domain": "EXAMPLE",
-  "external_interfaces_by_device": {}
+
+  "external_interfaces_by_device": {
+    "ROUTER01": ["GigabitEthernet0/2", "GigabitEthernet0/3"]
+  }
 }
