@@ -133,19 +133,3 @@ python3 tests/test_securecrt_bulk.py
 - Scripts that push config append a JSON-line audit record (timestamp, script, device, username, commands) to `audit_logs/audit.log`. Not tracked in git.
 - Several STIG-required commands don't exist or function on this lab's `vios_l2` image — see [`docs/DESIGN.md`](docs/DESIGN.md) for the list and why the scripts still push them.
 
-## Roadmap
-
-- [x] Audit logging to file
-- [x] Interface-scoped L2S STIG hardening (IPSG, DAI, storm control, UUFB, VLAN classification, 802.1x/MAB)
-- [x] NTP audit and hardening, redundant authenticated time sources
-- [x] AAA/RADIUS (V-220587/617) and password complexity policy (V-220589-594)
-- [x] vty management ACL (V-220575)
-- [x] SNMPv3 auth/priv (V-220604/605) — config-only, no NMS in this lab to poll it
-- [ ] Config push dry-run / diff-before-push mode
-- [ ] Config removal/undo mode
-- [ ] Static-host binding gap for IPSG/DAI — needs a dynamic fix diffing `show ip device tracking all` against `show ip dhcp snooping binding`
-- [ ] Interface-scoped RTR STIG hardening (directed broadcast, ICMP redirects/unreachables/mask-reply, proxy ARP, LLDP transmit)
-- [ ] Port interface-scoped hardening to `nxos_stig_audit.py`/`nxos_stig_harden_global.py`
-- [ ] Validate the AAA/ACL/password-policy scripts against real IOS-XE hardware
-- [ ] Nornir-based parallel execution for larger inventories
-- [ ] Ansible playbook equivalents for core workflows
