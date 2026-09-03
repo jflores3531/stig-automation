@@ -14,6 +14,16 @@ Why this repo is structured the way it is. The [README](../README.md) covers wha
 
 **Coded against the literal STIG text.** Every rule check maps to the benchmark's Check Text, every fix to its Fix Text. Rules needing external infrastructure or topology judgment report NOT AUTOMATED rather than guessing — a false pass on a compliance tool is worse than no answer.
 
+## Nothing gets installed
+
+The switches this is aimed at are reachable only from a host where pip is not an option — no path to PyPI and no rights to install with. That constrains the offline path to the standard library, and three things follow from it.
+
+`inventory.yaml` holds JSON rather than YAML. JSON is a subset of YAML 1.2, so one file parses under real PyYAML where it exists and under `yaml.py` — a stand-in whose `safe_load` is the stdlib `json.load` — where it does not. Vendoring PyYAML into the repo would also have worked, and was rejected: several thousand lines of someone else's code to review and keep current, for one function call, in a repo whose whole claim is that it can be read before it is trusted.
+
+The cost is that `yaml.py` shadows an installed PyYAML for anything run from the repo root. That is harmless while the inventory stays JSON, since that parses either way, but a YAML-formatted inventory on a machine that has PyYAML fails with a `JSONDecodeError` naming the parser rather than the format — which reads like broken tooling instead of a file in the wrong dialect.
+
+Netmiko is imported inside `netauto.connect()` rather than at module scope, so nothing on the audit path loads it. `--from-capture` and the SecureCRT collectors run on Python alone, and the collectors import nothing from this repository at all — they are copied onto the host as single files.
+
 ## Saving is a separate, deliberate step
 
 No harden script writes to startup-config. `save_config.py` does that, and only when you run it.
@@ -53,6 +63,17 @@ uRPF is applied only to external-facing interfaces, using the interface classifi
 It is pushed with `allow-default`. Strict-mode uRPF validates a packet's source against the routing table and discards anything with no matching route; without `allow-default`, sources reachable only via the default route fail that check and every packet from them is dropped. On a lab router whose return path to the automation host is the default route, that includes the management traffic itself.
 
 Unlike an `access-class`, uRPF filters **per packet** rather than at connection admission, so an already-established session is not exempt from it. That makes it categorically different from the ACL and AAA scripts: their pattern of applying a change and then checking connectivity does not apply here, because a bad push drops the packets carrying the correction. This one is verified against `inventory.yaml`'s classification before the push, not after.
+
+### `securecrt/capture_l2s_bulk.py` — unattended collection across a fleet
+`capture_l2s.py` cannot connect to anything. It attaches to the SecureCRT session already in front of it, which makes it impossible to aim at the wrong device and impossible to run without a human having logged in first. That property is most of its security argument.
+
+The bulk collector gives it up: it opens its own session to each saved SecureCRT session in turn, on credentials SecureCRT already holds. That is a materially different thing to put in front of whoever approved the audit tooling, and it deserves its own approval rather than riding along on `capture_l2s.py`'s — which is why it is a second file and not a `--all` flag on the first.
+
+It never aborts. A switch that is offline, in a login quiet period, or refusing credentials is logged and skipped: across several hundred switches not all of them answer on a given night, and a collector that stops at the first problem would never finish one.
+
+Auditing stays outside the loop. Running it per switch inside the collector would start a Python subprocess per device and, worse, make a failed audit indistinguishable from a failed capture in the log. Collection and audit are separate passes for that reason.
+
+Both files are copied together: the bulk script imports the guards, the command list and the capture format from `capture_l2s.py` rather than restating them, so the two cannot drift.
 
 ### Trunk ports and DHCP snooping
 `l2_stig_harden_global.py` sets both `ip dhcp snooping trust` and `ip arp inspection trust` on trunk ports. DHCP snooping bindings are learned per-switch only, so trunk and uplink ports carrying transit traffic from other switches need both trusted — otherwise DAI drops that traffic against this switch's own incomplete binding table.
