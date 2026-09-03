@@ -12,9 +12,6 @@ ansible/reports/
 # network. This repository is public. Never commit one.
 captures/
 
-# Ad-hoc command files passed to push_config.py
-commands*.txt
-
 # Plaintext secrets used by the *_stig_harden.py scripts (VTP password, NTP auth
 # key, etc.) - never commit this. See secrets.yaml.example for the format.
 secrets.yaml

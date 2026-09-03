@@ -268,8 +268,8 @@ _SECRET_PATTERNS = [
     #   radius-server host 192.168.100.10 key 7 "<secret>" authentication accounting
     #
     # This gap disclosed the real RADIUS key in a session transcript on
-    # 2026-08-12, via a `show running-config | include radius` through
-    # show_command.py. Note that `key 7` does NOT mean the value is safe to
+    # 2026-08-12, via a `show running-config | include radius` through an
+    # ad-hoc show command. Note that `key 7` does NOT mean the value is safe to
     # print - NX-OS rendered the key in readable form regardless.
     #
     # Deliberately scoped to radius-server lines rather than matching any

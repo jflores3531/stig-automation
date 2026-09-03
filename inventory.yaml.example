@@ -16,7 +16,7 @@
 
     "automation_host": "IP address of the host that runs these scripts. It is the sole permitted source in the vty ACL that ios_router_stig_harden_acl.py and l2_stig_harden_acl.py build for V-220575. Set this before running either harden script - getting it wrong locks you out of the device.",
 
-    "unused_vlan": "VLAN ID designated for disabled and unused ports (V-220641). Must be a VLAN with no routing and no reachability - not VLAN 1, and not any VLAN carrying real traffic. Read by l2_stig_audit.py, l2_stig_harden_global.py, l2_device_tracking.py.",
+    "unused_vlan": "VLAN ID designated for disabled and unused ports (V-220641). Must be a VLAN with no routing and no reachability - not VLAN 1, and not any VLAN carrying real traffic. Read by l2_stig_audit.py, l2_stig_harden_global.py.",
 
     "native_vlan": "VLAN ID to assign as the native VLAN on 802.1q trunk links (V-220646). Must differ from the default VLAN 1 and must not be a VLAN carrying user data. Read by l2_stig_audit.py and l2_stig_harden_global.py.",
 

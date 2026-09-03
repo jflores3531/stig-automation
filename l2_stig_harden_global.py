@@ -69,9 +69,9 @@ BASE_FIXES = {
 # it doesn't rely on the DHCP snooping binding table).
 #
 # Also IOS-era: IOS XE replaced this with SISF (`device-tracking policy` /
-# `device-tracking attach-policy`), which l2_device_tracking.py implements.
-# Expect the legacy command to be rejected or deprecated on IOS XE - it is
-# optional and nothing in the audit depends on it either way.
+# `device-tracking attach-policy`). Expect the legacy command to be rejected
+# or deprecated on IOS XE - it is optional and nothing in the audit depends
+# on it either way.
 OPTIONAL_FIXES = {
     'IP Device Tracking (host visibility, not a STIG requirement; IOS-era, SISF on IOS XE)': 'ip device tracking',
 }

@@ -86,7 +86,7 @@ So no value this image supports can satisfy the rule, and V-220607 is a permanen
 
 The matching encryption line (V-220608) is accepted, which is why the two rules split.
 
-The scripts still push all of these unconditionally, since they're correct for real Cisco hardware. `l2_device_tracking.py` in particular is IOS-XE only and untested against real hardware so far.
+The scripts still push all of these unconditionally, since they're correct for real Cisco hardware.
 
 ## Mapping one STIG onto another
 
