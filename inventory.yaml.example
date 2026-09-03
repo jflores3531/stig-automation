@@ -12,7 +12,7 @@
 
     "non_user_vlans_by_device": "Per-device override for non_user_vlans, keyed by device name. The same VLAN ID does not always mean the same thing on every switch - VLAN 10 may be a management segment on one device and a user VLAN on another. A device listed here uses its own list INSTEAD of the shared non_user_vlans, not in addition to it. Leave as {} if the shared list is correct everywhere.",
 
-    "management_subnet": "The management network in CIDR form, e.g. '10.10.50.0/24'. Used to verify that vty access-class ACLs are actually scoped to the management network rather than permitting any source (V-220575). If this is absent the check cannot verify scoping. Read by ios_router_audit.py and l2_stig_audit.py.",
+    "management_subnet": "The management network in CIDR form, e.g. '10.10.50.0/24'. Used to verify that vty access-class ACLs are actually scoped to the management network rather than permitting any source (V-220575). If this is absent, V-220575 reports FAIL with reason 'no management_subnet configured in inventory.yaml' on every device audited - not NOT AUTOMATED, so a fleet-wide run shows a finding on every switch. Read by ios_router_audit.py and l2_stig_audit.py.",
 
     "automation_host": "IP address of the host that runs these scripts. It is the sole permitted source in the vty ACL that ios_router_stig_harden_acl.py and l2_stig_harden_acl.py build for V-220575. Set this before running either harden script - getting it wrong locks you out of the device.",
 
