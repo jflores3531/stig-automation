@@ -150,7 +150,10 @@ python3 ios_router_stig_harden_aaa.py R1
 python3 save_config.py NXCore1
 python3 save_config.py            # or every device in the inventory
 
-# Tests - no framework, no device needed
+# Tests - no framework, no device needed. A fresh clone has no inventory.yaml
+# (gitignored), and the suites that drive the audit through the CLI need one -
+# the example's placeholder values are enough to make all six pass.
+cp inventory.yaml.example inventory.yaml
 python3 tests/test_capture.py
 python3 tests/test_ios_xe_map.py
 python3 tests/test_securecrt_script.py
