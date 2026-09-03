@@ -61,6 +61,20 @@ Which of the two paths applies is decided by whether the host lets you install a
 
 **Offline audit — nothing installed, and nothing installable.** On the work machine neither netmiko nor PyYAML can be installed at all, so the offline path is written not to need them: `yaml.py` stands in for PyYAML, and netmiko is imported inside `netauto.connect()`, which an offline audit never calls. The SecureCRT collectors and `l2_stig_audit.py --from-capture` therefore run on a stock Python and nothing else — copy the files in and run them. This is the deployment target, not a fallback.
 
+The inventory it reads can be this small:
+
+```json
+{
+  "devices": {},
+  "non_user_vlans": [1, 10],
+  "unused_vlan": 999,
+  "native_vlan": 998,
+  "management_subnet": "10.0.0.0/24"
+}
+```
+
+`devices` stays an empty object because `load_inventory()` indexes that key directly; captures are audited under whatever label you pass on the command line, so no switch needs an entry. `management_subnet` is **not** optional — with it absent the vty management ACL rule (V-220575, or V-220523 under the IOS XE checklist) reports FAIL on every device with the missing key as its reason, rather than a real verdict about the switch. `automation_host` is not needed here: only the `*_harden_acl.py` scripts read it, and those push config over a live connection. Every key is documented in [`inventory.yaml.example`](inventory.yaml.example).
+
 **Live runs — Netmiko over SSH.** Only for scripts that actually open a connection: the `*_stig_harden*.py` pushes, live audits, and the backup/diff/save utilities. On a host where installs are possible:
 
 ```
