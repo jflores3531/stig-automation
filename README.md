@@ -6,6 +6,7 @@ Manually STIG-checking a single switch means checking ~65 rules by hand against 
 
 | Platform | DISA Benchmarks | Rules | Automated checks |
 |---|---|---|---|
+| Cisco IOS XE Switch | L2S + NDM | 64 | 61 |
 | Cisco IOS Switch | L2S + NDM | 65 | 61 |
 | Cisco NX-OS Switch | L2S + NDM | 64 | 57 |
 | Cisco IOS Router | NDM + RTR | 127 | 59 |
@@ -33,7 +34,7 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 - **`securecrt/capture_l2s_bulk.py`** — The same collection unattended, across every saved SecureCRT session: connect, send the five commands, write a capture, disconnect. It never aborts — a switch that is offline, in a login quiet period or refusing credentials is logged and skipped, because on a fleet of hundreds not all of them answer on a given night. Deliberately separate from `capture_l2s.py`, which cannot connect to anything and so cannot be pointed at the wrong device; this one logs into every switch on its own authority, which is a materially different thing to put in front of whoever approved the tooling. Copy both files together — it imports the guards, command list and capture format from `capture_l2s.py` rather than duplicating them.
 - **`capture.py`** — Offline auditing. Every check is a pure function of command output, so an audit can read a capture file instead of a switch — for networks where the tooling can't be pointed at the devices directly. A malformed, truncated or partial capture is refused rather than audited, since a check handed empty text returns a verdict just as confidently as one handed real config.
 - **`l2_stig_audit.py`** — Audit against the IOS XE Switch L2S/NDM STIG (the default) or the IOS Switch one (`--checklist ios` — what the lab's vios_l2 switches are). Full interface-scoped coverage, live discovery for root ports/VTP/user VLANs. `--from-capture` audits collected output; `--capture-to` records a live run so the two can be compared.
-- **`ios_xe_rule_map.py`** — The IOS and IOS XE switch STIGs share no rule IDs, but 58 of the IOS XE STIG's 64 rules are the same requirement as an IOS rule already checked here. This maps them, accepting a pair only when the literal "this is a finding" condition matches in both. Four rules are deliberately excluded and report NOT AUTOMATED — reusing their IOS check would answer a different question.
+- **`ios_xe_rule_map.py`** — The IOS and IOS XE switch STIGs share no rule IDs, but 59 of the IOS XE STIG's 64 rules are the same requirement as an IOS rule already checked here. This maps them, accepting a pair only when the literal "this is a finding" condition matches in both. Two rules are deliberately excluded and report NOT AUTOMATED — reusing their IOS check would answer a different question. Two more, NTP and PKI, the IOS XE book asks differently enough to need their own checks, which live in `l2_stig_audit.py` rather than the map.
 - **`nxos_stig_audit.py`** — Audit against the NX-OS Switch L2S/NDM STIG.
 - **`ios_router_audit.py`** — Audit against the IOS Router NDM/RTR STIG. Most RTR rules need topology/policy context and report NOT AUTOMATED.
 - **`l2_stig_harden_global.py`** — Bulk L2S hardening: BPDU/Loop Guard, Rapid-PVST, UDLD, IGMP + DHCP snooping, archive logging, VTP, per-port access/trunk hardening, NTP, syslog, SNMPv3. **Run first** — the other `l2_stig_harden_*.py` scripts depend on it.
