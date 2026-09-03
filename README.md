@@ -1,6 +1,6 @@
 # STIG Automation — DISA STIG Compliance for Cisco Infrastructure
 
-Python and Ansible tooling that **audits and remediates Cisco network devices against DISA STIG benchmarks** — the hardening standard required on U.S. Department of Defense networks. Built on [Netmiko](https://github.com/ktbyers/netmiko) over SSH for live runs — and on the standard library alone for the offline audit path, which is the one that runs where nothing can be installed.
+Python tooling that **audits and remediates Cisco network devices against DISA STIG benchmarks** — the hardening standard required on U.S. Department of Defense networks. Built on [Netmiko](https://github.com/ktbyers/netmiko) over SSH for live runs — and on the standard library alone for the offline audit path, which is the one that runs where nothing can be installed.
 
 Manually STIG-checking a single switch means checking ~65 rules by hand against the running-config, then doing it again after every change. The scripts I created automate the compliance check across three platforms, and pushes the fixes.
 
@@ -13,7 +13,7 @@ Manually STIG-checking a single switch means checking ~65 rules by hand against 
 
 Rules needing external infrastructure (PKI, org-defined DoS safeguards) or topology/policy judgment are reported **NOT AUTOMATED** rather than guessed at — a false pass on a compliance tool is worse than no answer. Every rule check is coded against the STIG's literal Check Text, and every fix against its Fix Text.
 
-Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX-OS cores). Ansible roles under [`ansible/`](ansible/) replicate the Python hardening for fleet-wide runs. See [`docs/DESIGN.md`](docs/DESIGN.md) for the reasoning behind script isolation, run order, and credential handling.
+Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX-OS cores). See [`docs/DESIGN.md`](docs/DESIGN.md) for the reasoning behind script isolation, run order, and credential handling.
 
 ## What's here
 
