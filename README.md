@@ -76,6 +76,8 @@ The inventory it reads can be this small:
 
 `devices` stays an empty object because `load_inventory()` indexes that key directly; captures are audited under whatever label you pass on the command line, so no switch needs an entry. `management_subnet` is **not** optional — with it absent the vty management ACL rule (V-220575, or V-220523 under the IOS XE checklist) reports FAIL on every device with the missing key as its reason, rather than a real verdict about the switch. `automation_host` is not needed here: only the `*_harden_acl.py` scripts read it, and those push config over a live connection. Every key is documented in [`inventory.yaml.example`](inventory.yaml.example).
 
+Across a fleet where each site numbers its user and voice VLANs differently, add `user_vlan_names: ["USERS", "VOICE"]`. Those names are matched against the name column of `show vlan brief`, which every capture already carries, and they override `non_user_vlans` — so a switch whose user VLAN is 10 is still checked even though 10 is the management VLAN elsewhere and sits in that ID list. Without it the ID exclusion wins and the audit reports PASS for DHCP snooping and DAI coverage it never verified. `non_user_vlan_names` is the mirror, for a non-user VLAN whose ID moves instead; where every non-user VLAN is consistently numbered, leave it empty. `--user-vlan-names` and `--non-user-vlan-names` override either list for one run.
+
 **Live runs — Netmiko over SSH.** Only for scripts that actually open a connection: the `*_stig_harden*.py` pushes, live audits, and the backup/diff/save utilities. On a host where installs are possible:
 
 ```
@@ -154,6 +156,7 @@ python3 tests/test_ios_xe_map.py
 python3 tests/test_securecrt_script.py
 python3 tests/test_switchports.py
 python3 tests/test_securecrt_bulk.py
+python3 tests/test_user_vlans.py
 ```
 
 ## Notes

@@ -222,7 +222,9 @@ if unused_vlan:
     non_user_vlan_exclude.append(unused_vlan)
 if native_vlan_id:
     non_user_vlan_exclude.append(native_vlan_id)
-vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=non_user_vlan_exclude)
+vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=non_user_vlan_exclude,
+                                           exclude_names=netauto.load_non_user_vlan_names(),
+                                           include_names=netauto.load_user_vlan_names())
 
 # V-220692: trunks should carry only VLANs that actually exist in the switch's
 # VLAN database, minus the default VLAN (1), the designated unused VLAN, and

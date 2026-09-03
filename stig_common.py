@@ -94,15 +94,42 @@ def exec_timeout_ok(cfg, max_minutes=5):
     return True
 
 
-def discover_user_vlans(net_connect, exclude=()):
+def discover_user_vlans(net_connect, exclude=(), exclude_names=(), include_names=()):
     """Return a switch's user VLAN IDs from `show vlan brief`, excluding the
-    reserved fddi/token-ring VLAN range (1002-1005) plus any VLAN IDs in `exclude`
-    (e.g. management/servers/unused VLANs from inventory.yaml's non_user_vlans)."""
+    reserved fddi/token-ring VLAN range (1002-1005), any VLAN IDs in `exclude`
+    (e.g. management/servers/unused VLANs from inventory.yaml's non_user_vlans),
+    and any VLAN whose name is in `exclude_names` (non_user_vlan_names).
+
+    `include_names` is the important one on a fleet. A VLAN's number is a
+    per-switch fact while its name tends to be a fleet-wide one: the user and
+    voice VLANs get whatever ID each site had free, but they are called the same
+    thing everywhere. A name listed here marks that VLAN a user VLAN whatever
+    its number, and overrides both kinds of exclusion - so VLAN 10 named USERS
+    on one switch is still audited for DHCP snooping and DAI coverage even
+    though 10 is the management VLAN elsewhere and sits in non_user_vlans.
+    Without that, the ID exclusion silently drops a real user VLAN and the audit
+    reports PASS for coverage it never verified (V-220633/635, V-220684/686).
+
+    `exclude_names` is the mirror, for a non-user VLAN whose ID varies instead.
+    Where every non-user VLAN is consistently numbered, the ID list already
+    covers them and this can stay empty.
+
+    Name matching is exact and case-insensitive, never a substring. A loose
+    include is the dangerous direction only in reverse - it can only add VLANs
+    to the audited set, so the cost of a wrong name is a spurious finding rather
+    than a silent pass. An entry that matches nothing changes nothing.
+
+    `show vlan brief` already carries the name column, so this costs no extra
+    command and works on a capture exactly as it does on a live session."""
     exclude_ids = {int(v) for v in exclude}
+    excluded_names = {str(name).strip().casefold() for name in exclude_names}
+    included_names = {str(name).strip().casefold() for name in include_names}
     vlan_brief = str(net_connect.send_command('show vlan brief'))
     return [
-        vid for vid in re.findall(r'^(\d+)\s+\S+', vlan_brief, re.M)
-        if not (1002 <= int(vid) <= 1005) and int(vid) not in exclude_ids
+        vid for vid, name in re.findall(r'^(\d+)\s+(\S+)', vlan_brief, re.M)
+        if not (1002 <= int(vid) <= 1005)
+        and (name.casefold() in included_names
+             or (int(vid) not in exclude_ids and name.casefold() not in excluded_names))
     ]
 
 

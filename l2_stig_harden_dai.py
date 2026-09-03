@@ -42,7 +42,9 @@ if net_connect is None:
 # Discover the switch's user VLANs, excluding management/servers/unused VLANs
 # from inventory.yaml's non_user_vlans - same discovery l2_stig_harden_global.py uses
 # for V-220633 (DHCP snooping), since DAI must cover the same VLAN set.
-vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=netauto.load_non_user_vlans())
+vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=netauto.load_non_user_vlans(),
+                                           exclude_names=netauto.load_non_user_vlan_names(),
+                                           include_names=netauto.load_user_vlan_names())
 
 commands = [f'ip arp inspection vlan {",".join(vlan_ids)}'] if vlan_ids else []
 

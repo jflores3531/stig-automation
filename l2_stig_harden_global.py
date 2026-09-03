@@ -166,7 +166,9 @@ if net_connect is None:
 
 # Discover the switch's user VLANs (V-220633: DHCP snooping, V-220635: DAI),
 # excluding management/servers/unused VLANs from inventory.yaml's non_user_vlans
-vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=netauto.load_non_user_vlans())
+vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=netauto.load_non_user_vlans(),
+                                           exclude_names=netauto.load_non_user_vlan_names(),
+                                           include_names=netauto.load_user_vlan_names())
 
 # V-220641's unused VLAN and V-220646's native VLAN come from inventory.yaml -
 # only their VLAN-database entries are created here, the per-port

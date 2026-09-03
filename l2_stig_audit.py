@@ -1132,6 +1132,20 @@ parser.add_argument('--non-user-vlans', metavar='IDS', dest='non_user_vlans',
                     help='Comma-separated VLAN IDs to treat as non-user (management, servers, '
                          'unused), overriding inventory.yaml. Needed alongside --from-capture for '
                          'a switch whose VLAN scheme this inventory does not describe.')
+parser.add_argument('--user-vlan-names', metavar='NAMES', dest='user_vlan_names',
+                    help='Comma-separated VLAN names that are always user VLANs, whatever ID they '
+                         "carry here, overriding inventory.yaml's user_vlan_names. Matched exactly "
+                         'and case-insensitively against the name column of `show vlan brief`. This '
+                         'is what covers a fleet whose user and voice VLANs are numbered per site: '
+                         'the name wins over --non-user-vlans, so a switch whose user VLAN is 10 is '
+                         'still checked even where 10 is the management VLAN.')
+parser.add_argument('--non-user-vlan-names', metavar='NAMES', dest='non_user_vlan_names',
+                    help='Comma-separated VLAN names to treat as non-user, overriding '
+                         "inventory.yaml's non_user_vlan_names. Matched exactly and case-"
+                         'insensitively against the name column of `show vlan brief`. Use this '
+                         'where a fleet numbers the same VLAN differently on each switch but '
+                         'names it consistently - excluding by ID alone then drops a real user '
+                         'VLAN from the DHCP snooping and DAI coverage checks.')
 parser.add_argument('--checklist', choices=('ios', 'ios-xe'), default='ios-xe',
                     help='Which DISA checklist to audit against. The IOS and IOS XE switch '
                          'STIGs share no rule IDs at all, so auditing against the wrong one '
@@ -1209,8 +1223,23 @@ else:
     if native_vlan_id:
         non_user_vlan_exclude.append(native_vlan_id)
 
+# Names are a separate axis from IDs, so --non-user-vlan-names overrides only
+# the name list and leaves the ID exclusions above alone. A VLAN is non-user if
+# either matches.
+if args.non_user_vlan_names:
+    non_user_vlan_names = [name.strip() for name in args.non_user_vlan_names.split(',') if name.strip()]
+else:
+    non_user_vlan_names = netauto.load_non_user_vlan_names()
+
+if args.user_vlan_names:
+    user_vlan_names = [name.strip() for name in args.user_vlan_names.split(',') if name.strip()]
+else:
+    user_vlan_names = netauto.load_user_vlan_names()
+
 try:
-    user_vlans = stig_common.discover_user_vlans(discovery_connect, exclude=non_user_vlan_exclude)
+    user_vlans = stig_common.discover_user_vlans(discovery_connect, exclude=non_user_vlan_exclude,
+                                                 exclude_names=non_user_vlan_names,
+                                                 include_names=user_vlan_names)
     root_ports = stig_common.discover_root_port_interfaces(discovery_connect)
     vtp_password_output = str(discovery_connect.send_command('show vtp password'))
     snmp_user_output = str(discovery_connect.send_command('show snmp user'))

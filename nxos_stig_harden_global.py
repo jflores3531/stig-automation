@@ -265,7 +265,9 @@ if unused_vlan:
     non_user_vlan_exclude.append(unused_vlan)
 if native_vlan_id:
     non_user_vlan_exclude.append(native_vlan_id)
-vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=non_user_vlan_exclude)
+vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=non_user_vlan_exclude,
+                                           exclude_names=netauto.load_non_user_vlan_names(),
+                                           include_names=netauto.load_user_vlan_names())
 
 # V-220695 (native VLAN): created in the VLAN database here so the companion
 # script (nxos_stig_harden_interfaces.py) can assign it as a trunk's native

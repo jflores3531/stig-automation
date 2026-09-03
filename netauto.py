@@ -62,6 +62,36 @@ def load_non_user_vlans(path=INVENTORY_PATH, device_name=None):
     return inventory.get('non_user_vlans', [])
 
 
+def load_non_user_vlan_names(path=INVENTORY_PATH):
+    """Load the non_user_vlan_names list from the YAML inventory - VLAN *names*
+    to exclude when discovering user VLANs. For a fleet where the same purpose
+    carries a different VLAN ID on each switch but the same name everywhere,
+    which is the common case once there is more than one site: VLAN 10 is
+    management here and a user VLAN there, while both are called MGMT.
+
+    Complements non_user_vlans rather than replacing it - a VLAN is non-user if
+    its ID or its name matches. Returns an empty list if nothing is defined, in
+    which case discovery behaves exactly as it did before names existed."""
+    with open(path) as f:
+        inventory = yaml.safe_load(f)
+    return inventory.get('non_user_vlan_names', [])
+
+
+def load_user_vlan_names(path=INVENTORY_PATH):
+    """Load the user_vlan_names list from the YAML inventory - VLAN *names* that
+    are always user VLANs, whatever ID they carry on a given switch. The user
+    and voice VLANs are the ones that move: each site numbers them with whatever
+    was free, while calling them the same thing everywhere.
+
+    A name here overrides the non_user_vlans ID list, which is what makes it
+    useful - a switch whose user VLAN is 10 is still audited for DHCP snooping
+    and DAI coverage even though 10 is the management VLAN on other switches and
+    is therefore in that list. Returns an empty list if nothing is defined."""
+    with open(path) as f:
+        inventory = yaml.safe_load(f)
+    return inventory.get('user_vlan_names', [])
+
+
 def load_management_subnet(path=INVENTORY_PATH):
     """Load the management_subnet string (e.g. '10.10.50.0/24') from the YAML
     inventory, used to verify vty access-class ACLs are actually scoped to the
