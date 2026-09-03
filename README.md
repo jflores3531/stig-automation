@@ -2,7 +2,7 @@
 
 Python tooling that **audits and remediates Cisco network devices against DISA STIG benchmarks** — the hardening standard required on U.S. Department of Defense networks. Built on [Netmiko](https://github.com/ktbyers/netmiko) over SSH for live runs — and on the standard library alone for the offline audit path, which is the one that runs where nothing can be installed.
 
-Manually STIG-checking a single switch means checking ~65 rules by hand against the running-config, then doing it again after every change. The scripts I created automate the compliance check across three platforms, and pushes the fixes.
+Manually STIG-checking a single switch means working through ~65 rules by hand against the running-config, then doing it again after every change. These scripts automate that check across four DISA benchmarks and push the fixes.
 
 | Platform | DISA Benchmarks | Rules | Automated checks |
 |---|---|---|---|
