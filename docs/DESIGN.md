@@ -2,6 +2,8 @@
 
 Why this repo is structured the way it is. The [README](../README.md) covers what each script does; this covers why.
 
+Two constraints shape most of what follows. Every check is coded against the literal text of four DISA benchmarks, so where a rule cannot be answered from a device's own config it is reported unanswered rather than guessed at. And the audit path has to run on a host where nothing can be installed, which is why the offline path exists at all and why it is the one held to the strictest requirements here.
+
 ## Core principles
 
 **Isolated high-impact changes.** The vty management ACL and the AAA/RADIUS cutover each live in their own script rather than the bulk hardening pass, so they can be run, reviewed, and rolled back independently.
