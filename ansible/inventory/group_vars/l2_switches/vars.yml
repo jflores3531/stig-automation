@@ -2,6 +2,14 @@
 # Non-secret variables for the l2_switches group. Values mirror
 # ../../../../inventory.yaml exactly (same STIG rules, same network-design
 # facts) so the Ansible and Python implementations stay in sync.
+#
+# Addresses and VLAN IDs are placeholders - x.x.x.x, [] and "" - because this
+# file is committed while inventory.yaml is gitignored, and a site's addressing
+# and numbering belong in neither a public repo nor a template. Every empty
+# value here means "skip that feature" to the roles, so a play run against this
+# file as it stands configures less than it should rather than configuring
+# something wrong. Fill them in locally, and keep them in step with
+# inventory.yaml, which is what the comments below refer to.
 
 # Consumed by the stig_audit role - runs l2_stig_audit.py against this group.
 # --checklist ios: the script defaults to the IOS XE STIG (the work target),
@@ -11,14 +19,17 @@ audit_args: --checklist ios
 
 # VLAN IDs excluded when discovering "user VLANs" for DHCP snooping/DAI
 # (V-220633/V-220635) - see non_user_vlans in inventory.yaml.
-non_user_vlans:
-  - 1    # default VLAN, unused
-  - 10   # management / automation host segment
-  - 100  # servers VLAN
+#
+# Empty here for the same reason the addresses are x.x.x.x: this file is
+# committed, so it carries no site's numbering. Fill in the default VLAN, the
+# management segment and any server VLANs before a real run. Left empty, every
+# VLAN on the switch counts as a user VLAN - which over-reports rather than
+# skipping one silently, the safe direction to be wrong in.
+non_user_vlans: []
 
 # Designated "unused ports" VLAN for V-220641 - see unused_vlan in inventory.yaml.
 #
-# Deliberately a DIFFERENT VLAN than native_vlan below. The two were both 999
+# Deliberately a DIFFERENT VLAN than native_vlan below. The two shared one ID
 # originally - a dedicated black-hole VLAN doing double duty as the native VLAN
 # prevents double-tagging/VLAN-hopping via untagged native-VLAN traffic, which
 # seemed reasonable - but once disabled access ports started being parked here,
@@ -26,32 +37,38 @@ non_user_vlans:
 # native VLAN, a literal V-220696 violation. Split so the two rules' fixes
 # cannot collide.
 #
-# This file lagged that split until 2026-08-12: inventory.yaml and the
-# nxos_switches group_vars moved to 1000, this one stayed at 999, and the
-# header's claim that it mirrors inventory.yaml quietly stopped being true.
-# Live effect on S1 - VLAN 1000 was allowed across trunks instead of pruned,
-# because the exclude list resolved to [1, 999, 999]. Commit 64951ec, which
-# added native_vlan to that exclude expression in both roles, was a no-op here
-# for exactly this reason: the code fix landed without its data.
-unused_vlan: 1000
+# This file once lagged that split (2026-08-12): inventory.yaml and the
+# nxos_switches group_vars moved to the new unused VLAN, this one kept the old
+# ID for both, and the header's claim that it mirrors inventory.yaml quietly
+# stopped being true. Live effect on S1 - the unused VLAN was allowed across
+# trunks instead of pruned, because the exclude list resolved to the same ID
+# twice. Commit 64951ec, which added native_vlan to that exclude expression in
+# both roles, was a no-op here for exactly this reason: the code fix landed
+# without its data.
+#
+# Empty, like the list above, so no numbering is committed. An empty value
+# means "skip this feature" throughout the role - the same convention as
+# defaults/main.yml - so V-220641 is simply not attempted until an ID is set,
+# rather than a bare `switchport access vlan` reaching a device.
+unused_vlan: ""
 
 # Native VLAN for all 802.1q trunk links, V-220646 - see native_vlan in
-# inventory.yaml. Stays 999; see the split described above.
-native_vlan: 999
+# inventory.yaml. Must differ from unused_vlan; see the split described above.
+native_vlan: ""
 
 # Default VLAN for host-facing/access ports not already in trunk mode,
 # V-220642/645 - see default_access_vlan in inventory.yaml.
-default_access_vlan: 50
+default_access_vlan: ""
 
 # NTP servers, V-220601 - see services.ntp_servers in inventory.yaml.
 ntp_servers:
-  - 192.168.100.10
-  - 192.168.100.11
+  - x.x.x.x
+  - x.x.x.x
 
 # Syslog servers, V-220620 - see services.syslog_servers in inventory.yaml.
 syslog_servers:
-  - 192.168.100.10
-  - 192.168.100.11
+  - x.x.x.x
+  - x.x.x.x
 
 # The automation host's own IP, V-220575 - see automation_host in
 # inventory.yaml. The sole permitted source in the vty management ACL pushed by
@@ -60,15 +77,15 @@ syslog_servers:
 #
 # Getting this wrong locks every management source out of the device, so the
 # role asserts it is a bare IPv4 address rather than trusting it.
-automation_host: 10.10.50.10
+automation_host: x.x.x.x
 
 # RADIUS servers, V-220587/617 - see services.radius_servers in inventory.yaml.
 # Consumed by the l2s_stig_harden_aaa role, which ABORTS rather than skipping if
 # this is empty (unlike the ntp/syslog lists above, which the bulk role skips
 # with a warning) - there is no safe partial version of an AAA push.
 radius_servers:
-  - 192.168.100.10
-  - 192.168.100.11
+  - x.x.x.x
+  - x.x.x.x
 
 # Bridges the vaulted secrets (vault.yml, encrypted) to plain variable names -
 # standard Ansible vault convention (vault_* holds the raw secret, the

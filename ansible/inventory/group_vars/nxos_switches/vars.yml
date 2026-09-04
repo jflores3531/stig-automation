@@ -2,31 +2,43 @@
 # Non-secret variables for the nxos_switches group. Values mirror
 # ../../../../inventory.yaml exactly (same STIG rules, same network-design
 # facts) so the Ansible and Python implementations stay in sync.
+#
+# Addresses and VLAN IDs are placeholders - x.x.x.x, [] and "" - because this
+# file is committed while inventory.yaml is gitignored. Every empty value means
+# "skip that feature" to the role, so a play run against this file as it stands
+# configures less than it should rather than configuring something wrong.
 
 # Consumed by the stig_audit role - runs nxos_stig_audit.py against this group.
 audit_script: nxos_stig_audit.py
 
 # VLAN IDs excluded when discovering "user VLANs" for DHCP snooping/DAI
-# (V-220684/V-220686). This is inventory.yaml's non_user_vlans_by_device
-# entry for NXCore1, not the shared non_user_vlans list: VLAN 100 carries
-# real server traffic on Ethernet1/3-4 here, unlike on the L2S switches
-# where it's pure infrastructure, so it is deliberately NOT excluded and
-# does get DHCP snooping/IPSG/DAI coverage. VLAN 10 stays excluded - still
-# just the management SVI, no access ports on it.
-non_user_vlans:
-  - 1    # default VLAN, unused
-  - 10   # management SVI, no access ports on it
+# (V-220684/V-220686). This mirrors inventory.yaml's non_user_vlans_by_device
+# entry for NXCore1 rather than the shared non_user_vlans list, and the
+# difference is the point: the servers VLAN carries real server traffic on
+# access ports here, unlike on the L2S switches where it is pure
+# infrastructure, so it is deliberately NOT excluded and does get DHCP
+# snooping/IPSG/DAI coverage. The management SVI's VLAN stays excluded - no
+# access ports on it.
+#
+# Empty here because this file is committed and carries no site's numbering.
+# Fill it in before a real run; left empty, every VLAN counts as a user VLAN,
+# which over-reports rather than skipping one silently.
+non_user_vlans: []
 
 # Designated "unused ports" VLAN for V-220690 - see unused_vlan in
 # inventory.yaml. Also excluded from the user-VLAN discovery below.
-unused_vlan: 1000
+#
+# Empty, like the list above. An empty value means "skip this feature"
+# throughout the role, so V-220690 is not attempted until an ID is set.
+unused_vlan: ""
 
 # Native VLAN for all 802.1q trunk links, V-220695 - see native_vlan in
 # inventory.yaml. A different VLAN than unused_vlan on purpose: V-220696
 # makes any access port sharing the native VLAN's ID a finding with no
 # carve-out for shutdown ports, so once disabled ports were parked in
 # unused_vlan, sharing an ID with native_vlan became a literal violation.
-native_vlan: 999
+# Empty for the same reason as the two above.
+native_vlan: ""
 
 # VTP domain, V-220676 - NX-OS rejects 'vtp password' with "Domain not set"
 # unless a domain is configured first, confirmed live on NXCore1.
@@ -34,20 +46,20 @@ vtp_domain: NETAUTO
 
 # NTP servers, V-220498 - see services.ntp_servers in inventory.yaml.
 ntp_servers:
-  - 192.168.100.10
-  - 192.168.100.11
+  - x.x.x.x
+  - x.x.x.x
 
 # Syslog servers, V-220516 - see services.syslog_servers in inventory.yaml.
 syslog_servers:
-  - 192.168.100.10
-  - 192.168.100.11
+  - x.x.x.x
+  - x.x.x.x
 
 # RADIUS servers, V-220513 - see services.radius_servers in inventory.yaml.
 # Shared with the L2S group, not platform-specific. Consumed by the
 # nxos_stig_harden_aaa role, which ABORTS rather than skipping if this is empty.
 radius_servers:
-  - 192.168.100.10
-  - 192.168.100.11
+  - x.x.x.x
+  - x.x.x.x
 
 # Bridges the vaulted secrets (vault.yml, encrypted) to plain variable names -
 # standard Ansible vault convention (vault_* holds the raw secret, the

@@ -105,13 +105,26 @@
 
 # The default VLAN only lands on ports still on VLAN 1 - explicitly or by
 # having no 'switchport access vlan' line at all (V-220642).
+#
+# The default_access_vlan guard is not decoration. This role's own defaults set
+# it to "" (see defaults/main.yml: an unset value means skip the feature, the
+# same convention the Python scripts use), and every other task that
+# interpolates a VLAN ID checks for that - V-220641a via disabled_ports, which
+# is only computed when unused_vlan is set, and the trunk native-VLAN task
+# inline. This one did not, so an inventory that left default_access_vlan unset
+# would push a bare `switchport access vlan` to every unassigned access port on
+# the device. Nothing in the lab hit it because the group_vars always carried a
+# value; emptying that file to keep site numbering out of the repo is exactly
+# the case it was waiting for.
 - name: "V-220642 - move unassigned access ports off the default VLAN"
   cisco.ios.ios_config:
     parents: "interface {{ item }}"
     lines:
       - "switchport access vlan {{ default_access_vlan }}"
   loop: "{{ access_ports | difference(disabled_ports | default([])) | difference(assigned_ports) }}"
-  when: access_ports | difference(disabled_ports | default([])) | difference(assigned_ports) | length > 0
+  when:
+    - default_access_vlan | string | length > 0
+    - access_ports | difference(disabled_ports | default([])) | difference(assigned_ports) | length > 0
 
 # Same three lines as the task above, but landing on unused_vlan rather than
 # default_access_vlan. Kept as a separate task rather than a conditional inside

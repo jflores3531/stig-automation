@@ -368,7 +368,7 @@ table against a `shutdown` line in running-config, on the reasoning that two
 signals are safer than one. Confirmed live on NXCore1 (2026-08-12) that the
 cross-check matched **zero** ports on a switch with **59** disabled ones -
 `Ethernet1/5` is administratively down and its config block reads only
-`switchport` / `switchport access vlan 1000`. It silently reduced V-220690 to a
+`switchport` / `switchport access vlan <unused_vlan>`. It silently reduced V-220690 to a
 permanent no-op, and the `--check` run looked completely clean while doing so.
 Same default-value trap as `radius-server retransmit 1` in the AAA role.
 
@@ -532,9 +532,23 @@ pip install ansible
 ansible-galaxy collection install -r requirements.yml
 ```
 
-Fill in real values in `inventory/group_vars/l2_switches/vault.yml` (see the
-adjacent `vault.yml.example` for the full list - the AAA roles add
-`vault_radius_key`, and the L2S one also needs `vault_enable_secret`), then
+The committed inventory carries no site data. `inventory/hosts.yml` has
+`ansible_host: x.x.x.x` for every device, and both `group_vars/*/vars.yml`
+ship `x.x.x.x` for the NTP, syslog and RADIUS servers and the automation host,
+with `[]`/`""` for every VLAN ID - the same treatment `inventory.yaml.example`
+gets on the Python side, and for the same reason: `inventory.yaml` is
+gitignored, these files are not. Fill them in locally before any live run.
+
+Left as shipped, an empty VLAN ID means "skip that feature" throughout the
+roles, so a play configures less than it should rather than something wrong.
+The address placeholders are refused outright instead: the ACL role's
+preflight requires `automation_host` to look like an IPv4 address, and both
+AAA roles now apply the same test to `radius_servers`, so `x.x.x.x` aborts the
+play rather than reaching a device mid-push.
+
+Then fill in real values in `inventory/group_vars/l2_switches/vault.yml` (see
+the adjacent `vault.yml.example` for the full list - the AAA roles add
+`vault_radius_key`, and the L2S one also needs `vault_enable_secret`), and
 encrypt it - **never commit real secrets in plaintext**:
 
 ```

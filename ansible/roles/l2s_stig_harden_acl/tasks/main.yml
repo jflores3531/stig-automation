@@ -231,8 +231,8 @@
       changed_when: false
 
     # Plain substring test rather than a regex: the value is an IPv4 address, so
-    # its dots would be regex wildcards and 10.10.50.10 would happily match
-    # 10x10x50x10. Escaping would fix that, but there is nothing here a regex is
+    # its dots would be regex wildcards and 10.0.0.1 would happily match
+    # 10x0x0x1. Escaping would fix that, but there is nothing here a regex is
     # needed for.
     - name: Confirm the ACL is present and permits the automation host
       assert:

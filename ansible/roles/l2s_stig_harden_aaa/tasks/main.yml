@@ -54,10 +54,17 @@
       - radius_key | default('') | length > 0
       - radius_key != 'CHANGE_ME'
       - radius_servers | default([]) | length > 0
+      # Shape, not just presence. group_vars ships x.x.x.x placeholders so no
+      # site's addressing is committed, and a placeholder passes every
+      # emptiness check there is - it would reach the device as
+      # `radius server x.x.x.x` mid-AAA-push. Same test the ACL role applies to
+      # automation_host, for the same reason.
+      - radius_servers | reject('match', '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') | list | length == 0
     fail_msg: >-
       Refusing to run. This role needs vault_enable_secret and vault_radius_key
       (inventory/group_vars/l2_switches/vault.yml, encrypted) and radius_servers
-      (that group's vars.yml). The enable secret is the only way back into
+      (that group's vars.yml) set to real IPv4 addresses - the committed file
+      carries x.x.x.x placeholders. The enable secret is the only way back into
       privileged EXEC once aaa new-model is active, and this role verifies it
       works before relying on it - so there is no version of this push that is
       safe to run without it.
