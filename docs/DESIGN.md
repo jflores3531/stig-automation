@@ -157,6 +157,22 @@ The pair is mapped anyway, and the audit tests the management SVI on both. This 
 
 SNMPv3 auth/priv (V-220604/605) is config-only — there's no NMS in this lab to actually poll it.
 
+## Configuration that running-config does not show
+
+An audit reads `show running-config` and treats it as the device's configuration. On the work fleet that assumption is false: user ports are configured from an **interface template**, so the port's block carries one line — `source template USER_PORT` — and the access VLAN, switchport mode, PortFast, BPDU Guard and 802.1x it stands for appear nowhere in the config text. Read against config alone those ports look bare, and four rules reported a finding against ports that are configured correctly (`V-220649`, `V-220656`, `V-220668`, `V-220671`, checked by hand against the running-config that produced them).
+
+`show template interface source user <name>` shows the body — one command per template rather than one per interface, which matters on a switch with 48 templated ports. Its commands are spliced into every block that sources them before any check runs, so no check needs a notion of templates: they see the port's effective configuration, which is what the STIG asks about. The `source template` line is kept rather than replaced, so a report's evidence still shows where the commands came from.
+
+Two consequences worth naming:
+
+- **Which commands a capture must carry is now a function of the config it carries.** The template names are only knowable from running-config, so `capture.load_l2s()` loads twice: once for the fixed five commands, then again demanding a section per template the config sources. A capture that sources templates it does not carry is refused, by the same rule that refuses one missing `show vtp password` — the alternative is a report full of findings against interfaces whose configuration was never read, and those verdicts read exactly like real ones. `securecrt/capture_l2s.py` collects the same second pass, so captures taken the normal way already carry it.
+- **Expansion must not become a pass.** Splicing commands into a block could just as easily hide a genuine gap, which is the failure this project exists to avoid, so `tests/test_interface_templates.py` pins both directions: a templated port draws no findings for what its template configures, and a template missing BPDU Guard still produces the BPDU Guard finding against every port sourcing it.
+
+The same reading of a real report against the switch that produced it found two more false FAILs of the recognition kind, both fixed with `tests/test_false_fails.py` pinning them:
+
+- `V-220650` (VTP): `show vtp password` has three wordings, and the one the fleet answers with — `VTP Password is configured`, set but not disclosed — matched neither the `VTP Password: <value>` form nor the "not set" form, so it fell through to "unexpected output" and FAILed a switch that has a VTP password.
+- `V-220523` (management ACL): the check read only `permit ip <source> any`, the shape DISA's own fix text builds. An ACL written to let the management network reach SSH and nothing else says `permit tcp <source> <wildcard> any eq 22 log` — *narrower* than what the rule asks for — and was read as an ACL with no permit entries at all. Any protocol is accepted now; the rule is about the source, and that is still checked against `management_subnet`. A source that cannot be resolved from config text at all (`object-group MGMT`) is reported as needing review by hand rather than as a source outside the subnet, which would be a claim the audit cannot support.
+
 ## Captures arrive in whatever encoding saved them
 
 The work switches are reachable only through PowerShell or SecureCRT, and both of PowerShell's obvious ways to save output add a byte order mark: `>` and `Out-File` default to UTF-16LE on Windows PowerShell 5.1, and `Out-File -Encoding utf8` writes UTF-8 with a BOM. Read as plain UTF-8, neither failed in a way that named its cause — a UTF-8 BOM glues itself to the first delimiter line, so only `show running-config` goes missing, and UTF-16 decodes to NUL-riddled text matching nothing at all. Both refusals are correct and neither is actionable, which on someone else's network costs a second trip to the switch. `capture.py` sniffs the BOM instead, and a UTF-16 file with the BOM stripped — the one case that cannot be sniffed — names the encoding in its error.

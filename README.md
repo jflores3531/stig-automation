@@ -30,10 +30,10 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 
 ### Audit & hardening
 - **`stig_common.py`** — Shared audit engine: loads a DISA `.cklb` checklist, checks the device against it, reports PASS/FAIL/NOT AUTOMATED by severity.
-- **`securecrt/capture_l2s.py`** — Runs *inside* SecureCRT (Script → Run) against an already-open session, sending the five read-only show commands and writing a capture file — then, when it finds the repo next to itself, runs the audit and opens the report, making the whole flow one action: connect, run script, read report. Collection is standalone by design (no netmiko, no repo imports), and the offline audit itself needs only Python — `yaml.py` stands in for PyYAML and netmiko is imported lazily, only when a live connection is actually opened.
+- **`securecrt/capture_l2s.py`** — Runs *inside* SecureCRT (Script → Run) against an already-open session, sending the five read-only show commands — plus one per interface template the config turns out to source — and writing a capture file — then, when it finds the repo next to itself, runs the audit and opens the report, making the whole flow one action: connect, run script, read report. Collection is standalone by design (no netmiko, no repo imports), and the offline audit itself needs only Python — `yaml.py` stands in for PyYAML and netmiko is imported lazily, only when a live connection is actually opened.
 - **`securecrt/capture_l2s_bulk.py`** — The same collection unattended, across every saved SecureCRT session: connect, send the five commands, write a capture, disconnect. It never aborts — a switch that is offline, in a login quiet period or refusing credentials is logged and skipped, because on a fleet of hundreds not all of them answer on a given night. Deliberately separate from `capture_l2s.py`, which cannot connect to anything and so cannot be pointed at the wrong device; this one logs into every switch on its own authority, which is a materially different thing to put in front of whoever approved the tooling. Copy both files together — it imports the guards, command list and capture format from `capture_l2s.py` rather than duplicating them.
-- **`capture.py`** — Offline auditing. Every check is a pure function of command output, so an audit can read a capture file instead of a switch — for networks where the tooling can't be pointed at the devices directly. A malformed, truncated or partial capture is refused rather than audited, since a check handed empty text returns a verdict just as confidently as one handed real config.
-- **`l2_stig_audit.py`** — Audit against the IOS XE Switch L2S/NDM STIG (the default) or the IOS Switch one (`--checklist ios` — what the lab's vios_l2 switches are). Full interface-scoped coverage, live discovery for root ports/VTP/user VLANs. `--from-capture` audits collected output; `--capture-to` records a live run so the two can be compared.
+- **`capture.py`** — Offline auditing. Every check is a pure function of command output, so an audit can read a capture file instead of a switch — for networks where the tooling can't be pointed at the devices directly. A malformed, truncated or partial capture is refused rather than audited, since a check handed empty text returns a verdict just as confidently as one handed real config. Which commands a capture must cover is partly a fact about the capture: a config whose interfaces say `source template <name>` must also carry that template, or the per-port rules would be answered against configuration nobody read.
+- **`l2_stig_audit.py`** — Audit against the IOS XE Switch L2S/NDM STIG (the default) or the IOS Switch one (`--checklist ios` — what the lab's vios_l2 switches are). Full interface-scoped coverage, live discovery for root ports/VTP/user VLANs. `--from-capture` audits collected output; `--capture-to` records a live run so the two can be compared. Interface templates are read and expanded into the ports that source them, so a templated port is audited on what it is actually configured with — see [`docs/DESIGN.md`](docs/DESIGN.md).
 - **`ios_xe_rule_map.py`** — The IOS and IOS XE switch STIGs share no rule IDs, but 59 of the IOS XE STIG's 64 rules are the same requirement as an IOS rule already checked here. This maps them, accepting a pair only when the literal "this is a finding" condition matches in both. Two rules are deliberately excluded and report NOT AUTOMATED — reusing their IOS check would answer a different question. Two more, NTP and PKI, the IOS XE book asks differently enough to need their own checks, which live in `l2_stig_audit.py` rather than the map.
 - **`nxos_stig_audit.py`** — Audit against the NX-OS Switch L2S/NDM STIG.
 - **`ios_router_audit.py`** — Audit against the IOS Router NDM/RTR STIG. Most RTR rules need topology/policy context and report NOT AUTOMATED.
@@ -109,7 +109,10 @@ python3 nxos_stig_audit.py NXCore1
 python3 ios_router_audit.py R1
 
 # Audit without connecting. Collect the five read-only show commands into a
-# file - a logged terminal session works - then audit it from anywhere.
+# file - a logged terminal session works - then audit it from anywhere. A
+# switch whose ports are configured from interface templates needs one more
+# command per template; the audit names any that are missing and refuses the
+# capture rather than reporting against config it could not see.
 # --capture-to records a live run; auditing that file must give the same
 # report, which is how the offline path is checked against a real switch.
 python3 l2_stig_audit.py S1 --checklist ios --capture-to captures/S1.capture
@@ -152,7 +155,7 @@ python3 save_config.py            # or every device in the inventory
 
 # Tests - no framework, no device needed. A fresh clone has no inventory.yaml
 # (gitignored), and the suites that drive the audit through the CLI need one -
-# the example's placeholder values are enough to make all six pass.
+# the example's placeholder values are enough to make all eight pass.
 cp inventory.yaml.example inventory.yaml
 python3 tests/test_capture.py
 python3 tests/test_ios_xe_map.py
@@ -160,12 +163,15 @@ python3 tests/test_securecrt_script.py
 python3 tests/test_switchports.py
 python3 tests/test_securecrt_bulk.py
 python3 tests/test_user_vlans.py
+python3 tests/test_interface_templates.py
+python3 tests/test_false_fails.py
 ```
 
 ## Notes
 
 - Devices are defined in `inventory.yaml` by name, host, and Netmiko `device_type` (e.g. `cisco_ios`, `cisco_nxos`).
 - Backups are written to `backups/`, with dated copies in `backups/archive/`.
+- The L2 audit prints, above the report, which VLANs it classified as user VLANs and which it skipped and why. A VLAN wrongly excluded there produces no finding at all - DHCP snooping and DAI coverage is simply never asked about it - so the list is the only place that omission is visible. Any VLAN even one user can reside on belongs in it; `user_vlan_names` in `inventory.yaml` is how to put it there, and it overrides any ID exclusion.
 - STIG rules requiring external infrastructure (org-defined DoS safeguards, PKI, IOS-version tracking) or manual/topology review are reported NOT AUTOMATED rather than guessed at.
 - `l2_stig_harden_ipsg.py` and `l2_stig_harden_dai.py` both only trust the DHCP snooping binding table — a statically-addressed host with no DHCP lease is invisible to either and can have its traffic dropped once they're pushed. Confirmed live. If a statically-addressed host (e.g. the automation host itself) is directly connected to a device, consider skipping one or both scripts for that device until this has a real fix.
 - Scripts that push config append a JSON-line audit record (timestamp, script, device, username, commands) to `audit_logs/audit.log`. Not tracked in git.

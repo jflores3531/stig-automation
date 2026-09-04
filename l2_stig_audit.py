@@ -485,15 +485,57 @@ def _vty_acl_blocks(cfg):
     return results
 
 
+# An extended ACE names its source right after the protocol, in one of three
+# shapes: `any`, `host <addr>`, or `<addr> <wildcard>`. Everything after it -
+# the destination, a port operator, `log` - is another entry's business, and
+# this rule only asks who is permitted in.
+def _take_source_spec(tokens):
+    if not tokens:
+        return None
+    if tokens[0] == 'any':
+        return 'any'
+    if tokens[0] == 'host':
+        return f'host {tokens[1]}' if len(tokens) >= 2 else None
+    if len(tokens) >= 2:
+        return f'{tokens[0]} {tokens[1]}'
+    return None
+
+
+# The vty ACL that survives a real switch is rarely `permit ip <source> any`.
+# DISA's own fix text builds that shape, but an ACL written to let the
+# management network reach SSH and nothing else reads
+# `permit tcp <source> <wildcard> any eq 22 log` - narrower than what the rule
+# asks for, and it was being read as an ACL with no permit entries at all, so
+# the rule FAILed a switch that is more restrictive than compliant. Confirmed
+# on the work fleet. Any protocol is accepted now; what the rule is actually
+# about is the source, and that is still checked against the management subnet
+# exactly as before.
 def _acl_permit_sources(acl_block, kind):
     """Source specs from an ACL's permit entries, in whichever syntax the ACL
-    uses: `permit ip <source> any` for extended, `permit <source>` for
-    standard (no protocol, no destination)."""
+    uses: `permit <protocol> <source> <destination> ...` for extended,
+    `permit <source>` for standard (no protocol, no destination)."""
     if kind == 'standard':
-        return [s.strip() for s in re.findall(
+        # A trailing `log`/`log-input` is a logging keyword, not part of the
+        # source - left on, the whole entry reads as an address this cannot
+        # resolve, and a permit squarely inside the management subnet is
+        # reported as needing review by hand.
+        return [re.sub(r'\s+log(-input)?$', '', s.strip()) for s in re.findall(
             r'^\s*(?:\d+\s+)?permit\s+(.+?)\s*$', acl_block, re.M)]
-    return [s.strip() for s in re.findall(
-        r'^\s*(?:\d+\s+)?permit ip (.+?)\s+any\s*$', acl_block, re.M)]
+    sources = []
+    for rest in re.findall(r'^\s*(?:\d+\s+)?permit\s+(\S+)\s+(.+?)\s*$', acl_block, re.M):
+        source = _take_source_spec(rest[1].split())
+        if source:
+            sources.append(source)
+    return sources
+
+
+# A source this cannot read as an address - `object-group MGMT`, an FQDN - is
+# not the same finding as one that resolves and sits outside the management
+# subnet, and must not be reported as though it were. Neither is a pass: the
+# group's contents are not in the text handed to this check.
+def _source_is_readable(source_spec):
+    return source_spec == 'any' or bool(
+        re.match(r'(host\s+)?\d+\.\d+\.\d+\.\d+(\s+\d+\.\d+\.\d+\.\d+)?$', source_spec.strip()))
 
 
 def _vty_management_acl_check(cfg, subnet_str):
@@ -524,9 +566,15 @@ def _vty_management_acl_check(cfg, subnet_str):
                             f'`access-list {acl_name} ...` lines found')
             continue
         permits = _acl_permit_sources(acl_block, kind)
-        shape = 'permit <source>' if kind == 'standard' else 'permit ip <source> any'
+        shape = ('permit <source>' if kind == 'standard'
+                 else 'permit <protocol> <source> <destination>')
         if not permits:
             problems.append(f'{header}: {kind} ACL `{acl_name}` has no `{shape}` lines')
+            continue
+        unreadable = [src for src in permits if not _source_is_readable(src)]
+        if unreadable:
+            problems.append(f'{header}: `{acl_name}` permits source(s) this cannot resolve from '
+                            f'config text (review by hand): {", ".join(unreadable)}')
             continue
         bad = [src for src in permits if not _acl_source_in_subnet(src, subnet)]
         if bad:
@@ -711,16 +759,33 @@ def _radius_redundancy_check(cfg):
 # than silently no-op'ing, proving it's genuinely active despite never
 # appearing in the config text. A regex against running-config can never find
 # it, so this needs live `show vtp password` output instead.
+#
+# Three answers, not two. Which one a switch gives depends on the platform and
+# on whether it will disclose the value at all:
+#
+#   VTP Password: <value>            the value, IOS classic
+#   VTP Password is configured       set, value withheld
+#   The VTP password is not configured / not set    nothing set
+#
+# Only the first and the "not set" wording were recognised, so the middle form
+# - a switch that IS compliant and says so - fell through to "unexpected
+# output" and was reported FAIL. Confirmed on the work fleet, where the
+# switches are VTP transparent and answer with the middle form. The negative
+# wording is tested first: "is not configured" contains "is configured".
 def _vtp_password_check(vtp_password_output):
-    if not vtp_password_output or re.search(r'not set', vtp_password_output, re.I):
+    if not vtp_password_output:
+        return False, 'no VTP password set (`show vtp password` returned nothing)'
+    if re.search(r'not (set|configured)', vtp_password_output, re.I):
         return False, 'no VTP password set (`show vtp password` reports none)'
-    m = re.search(r'VTP Password:\s*(\S+)', vtp_password_output)
+    m = re.search(r'VTP Password:\s*(\S+)', vtp_password_output, re.I)
     if m:
         # The value itself is never printed - the rule only asks whether a
         # password is set, and audit output gets pasted into tickets and
         # reports. Length is enough to tell a real password from a stray
         # placeholder without disclosing it.
         return True, f'VTP password set (`show vtp password`): {len(m.group(1))} characters'
+    if re.search(r'password is configured', vtp_password_output, re.I):
+        return True, 'VTP password set (`show vtp password` reports it configured, value withheld)'
     return False, 'unexpected `show vtp password` output (withheld - may contain the password)'
 
 
@@ -1182,7 +1247,7 @@ if args.from_capture:
     device_info = None
     username = password = None
     try:
-        audit_session = capture.load(args.from_capture, capture.AUDIT_COMMANDS_L2S)
+        audit_session = capture.load_l2s(args.from_capture)
     except capture.CaptureError as capture_error:
         print(capture_error)
         raise SystemExit(1)
@@ -1244,32 +1309,65 @@ else:
     user_vlan_names = netauto.load_user_vlan_names()
 
 try:
-    user_vlans = stig_common.discover_user_vlans(discovery_connect, exclude=non_user_vlan_exclude,
-                                                 exclude_names=non_user_vlan_names,
-                                                 include_names=user_vlan_names)
+    vlan_classification = stig_common.classify_vlans(discovery_connect, exclude=non_user_vlan_exclude,
+                                                     exclude_names=non_user_vlan_names,
+                                                     include_names=user_vlan_names)
+    user_vlans = [vid for vid, _, is_user, _ in vlan_classification if is_user]
     root_ports = stig_common.discover_root_port_interfaces(discovery_connect)
     vtp_password_output = str(discovery_connect.send_command('show vtp password'))
     snmp_user_output = str(discovery_connect.send_command('show snmp user'))
+    # Read here rather than left to run_stig_audit's own read because the
+    # template names are in it: which `show template interface source user`
+    # commands this switch needs is a fact about its config, so the config has
+    # to be in hand before they can be asked for. A switch that sources no
+    # templates asks nothing extra.
+    discovery_config = str(discovery_connect.send_command('show running-config'))
+    template_outputs = {
+        name: str(discovery_connect.send_command(capture.template_command(name)))
+        for name in capture.sourced_template_names(discovery_config)
+    }
+    template_bodies = {name: stig_common.parse_interface_template(output)
+                       for name, output in template_outputs.items()}
     # discover_user_vlans/discover_root_port_interfaces don't hand back the raw
     # text they parsed, so --capture-to re-reads those two commands rather than
     # reshaping those helpers around recording. run_stig_audit opens its own
     # connection for running-config, which is why that is read here as well:
-    # all five commands come off this one session so the capture is internally
+    # all the commands come off this one session so the capture is internally
     # consistent, at the cost of reading running-config twice during a
     # --capture-to run. All read-only, and only when explicitly asked for.
     if args.capture_to:
-        capture.write(args.capture_to, {
-            'show running-config': str(discovery_connect.send_command('show running-config')),
+        recorded = {
+            'show running-config': discovery_config,
             'show vlan brief': str(discovery_connect.send_command('show vlan brief')),
             'show spanning-tree': str(discovery_connect.send_command('show spanning-tree')),
             'show vtp password': vtp_password_output,
             'show snmp user': snmp_user_output,
-        })
+        }
+        # The template sections go in the capture too, or an offline re-run of
+        # this same audit would be refused for missing exactly what the live
+        # run just read.
+        for name, output in template_outputs.items():
+            recorded[capture.template_command(name)] = output
+        capture.write(args.capture_to, recorded)
         print(f'Wrote capture to {args.capture_to}')
 except (capture.CaptureError, stig_common.InventoryError) as discovery_error:
     print(discovery_error)
     raise SystemExit(1)
 discovery_connect.disconnect()
+
+# Both of these are printed above the report rather than folded into a verdict,
+# because both decide what the verdicts are able to say. A VLAN classified
+# non-user is not audited for DHCP snooping or DAI coverage at all - the rule
+# PASSes without ever asking about it - and a template that could not be read
+# leaves the ports sourcing it looking bare. Neither shows up as a finding, so
+# neither is visible unless it is stated.
+coverage_rule_ids = 'V-220659/661' if args.checklist == 'ios-xe' else 'V-220633/635'
+print(stig_common.describe_vlan_classification(vlan_classification, coverage_rule_ids))
+print()
+template_summary = stig_common.describe_template_expansion(discovery_config, template_bodies)
+if template_summary:
+    print(template_summary)
+    print()
 
 CHECKS['V-220633'] = lambda cfg: _dhcp_snooping_check(cfg, user_vlans)
 CHECKS['V-220635'] = lambda cfg: _vlan_range_covers_user_vlans(
@@ -1301,6 +1399,13 @@ if args.checklist == 'ios-xe':
 else:
     checklist_path = CHECKLIST_PATH
     audit_title = 'STIG audit'
+
+# Last, so the re-keyed checks and the IOS XE-only ones are wrapped as well.
+# A check reads the config it is handed, and on a switch that sources interface
+# templates the config alone is not the switch's configuration.
+if template_bodies:
+    CHECKS = {rule_id: stig_common.through_templates(check, template_bodies)
+              for rule_id, check in CHECKS.items()}
 
 stig_common.run_stig_audit(
     device_name, device_info, checklist_path, CHECKS,

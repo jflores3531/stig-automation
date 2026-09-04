@@ -56,6 +56,34 @@ def empty_is_an_answer(command):
     return _normalise(command) in {_normalise(c) for c in EMPTY_IS_AN_ANSWER}
 
 
+# A sixth command, but a per-device one, so it cannot live in the tuple above.
+# An IOS XE interface can be configured by `source template <name>` instead of
+# carrying the commands itself, and running-config then shows only that one
+# line - the access VLAN, the mode, PortFast, BPDU Guard, 802.1x all sit in the
+# template and appear nowhere in the config text. Read against config alone
+# those ports look bare, which is a false FAIL on every per-port rule at once
+# (V-220649/656/668/671 on the work fleet). The template body has to be asked
+# for by name, and the names are only knowable from the config, so which
+# commands a capture must cover depends on the config it carries. load_l2s
+# below does that in two passes.
+TEMPLATE_COMMAND_PREFIX = 'show template interface source user '
+
+
+def template_command(name):
+    return TEMPLATE_COMMAND_PREFIX + name
+
+
+def sourced_template_names(running_config):
+    """Distinct interface-template names a running-config sources, in the order
+    they first appear. Empty for a switch that uses no templates, which is why
+    nothing about this is required of a capture that does not need it."""
+    names = []
+    for name in re.findall(r'^\s*source template (\S+)\s*$', running_config, re.M):
+        if name not in names:
+            names.append(name)
+    return names
+
+
 # Deliberately loose. This only has to tell a running-config apart from shell
 # error text or an appliance's help output - not validate the configuration,
 # which is the audit's whole job. Any single marker is enough, since platforms
@@ -339,3 +367,24 @@ def load(path, required_commands=AUDIT_COMMANDS_L2S):
             'than a Cisco switch.'
         )
     return CaptureSession(sections, source)
+
+
+def load_l2s(path):
+    """Load an L2S capture, including the interface templates its own config
+    says the interfaces are configured from.
+
+    Two passes, because the second list of required commands is written in the
+    first pass's output: the config names the templates, and each name is its
+    own show command. A capture that sources templates but does not carry them
+    is refused by the same rule as one missing `show vtp password` - the audit
+    would report every per-port rule against interfaces whose configuration it
+    cannot see, and those verdicts would read exactly like real findings.
+
+    Re-loading rather than patching the first session also fixes a plain
+    session log, where sections are split on the echoed command and the
+    template commands were not among the ones being looked for."""
+    session = load(path, AUDIT_COMMANDS_L2S)
+    names = sourced_template_names(str(session.send_command('show running-config')))
+    if not names:
+        return session
+    return load(path, AUDIT_COMMANDS_L2S + tuple(template_command(name) for name in names))

@@ -4,9 +4,9 @@
 """Collect an L2 switch STIG capture from inside SecureCRT.
 
 Run this from an already-connected, already-authenticated SecureCRT session
-(Script > Run...). It types five read-only show commands into that session and
-writes their output to a capture file, which l2_stig_audit.py then audits
-offline:
+(Script > Run...). It types the read-only show commands an audit needs into that
+session and writes their output to a capture file, which l2_stig_audit.py then
+audits offline:
 
     python3 l2_stig_audit.py SW01 --from-capture <file>
 
@@ -55,7 +55,7 @@ OPEN_REPORT = True
 # dialog, so the actual path is never a guess.
 CAPTURE_DIR = r'C:\Documents'
 
-# The five commands an L2S audit reads. Four of these exist because the state
+# The five commands every L2S audit reads. Four of these exist because the state
 # is not in running-config: user VLANs, the STP root port, the VTP password,
 # and the SNMPv3 users. Keep in step with capture.AUDIT_COMMANDS_L2S.
 COMMANDS = (
@@ -65,6 +65,32 @@ COMMANDS = (
     'show vtp password',
     'show snmp user',
 )
+
+# And then one more per interface template the config turns out to use. An
+# IOS XE port configured by `source template <name>` shows that single line in
+# running-config and none of the commands it stands for, so a capture with only
+# the five above hands the audit interfaces that look unconfigured - a false
+# FAIL on every per-port rule at once. The names cannot be known before the
+# config is read, which is why this is a second pass rather than a longer
+# COMMANDS tuple. Must match capture.TEMPLATE_COMMAND_PREFIX.
+TEMPLATE_COMMAND_PREFIX = 'show template interface source user '
+
+
+def template_command(name):
+    return TEMPLATE_COMMAND_PREFIX + name
+
+
+def sourced_template_names(running_config):
+    """Distinct interface-template names a running-config sources, in the order
+    they first appear. Mirrors capture.sourced_template_names."""
+    names = []
+    for line in running_config.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] == 'source' and parts[1] == 'template':
+            if parts[2] not in names:
+                names.append(parts[2])
+    return names
+
 
 # Commands allowed to come back with nothing. Must match capture.py's
 # EMPTY_IS_AN_ANSWER. `show snmp user` prints nothing when no SNMPv3 users are
@@ -114,9 +140,15 @@ def strip_echo(text, command):
 
 
 def render(outputs):
-    """Build the capture file text. Mirrors capture.render()."""
+    """Build the capture file text. Mirrors capture.render().
+
+    COMMANDS first, in their fixed order, then whatever else was collected -
+    the per-device template commands - in the order they were read. A command
+    in `outputs` and not written here would be one the audit then refuses the
+    capture for missing."""
     blocks = []
-    for command in COMMANDS:
+    ordered = list(COMMANDS) + [c for c in outputs if c not in COMMANDS]
+    for command in ordered:
         blocks.append(format_delimiter(command))
         blocks.append(outputs[command].rstrip('\n'))
         blocks.append('')
@@ -269,7 +301,8 @@ def collect(prompt=None):
             'again.'.format(wrong_device), 'Not a Cisco switch')
 
     outputs = {}
-    for command in COMMANDS:
+
+    def collect(command):
         outputs[command] = run_command(command, prompt)
         if not outputs[command].strip() and command not in EMPTY_IS_AN_ANSWER:
             raise CollectionError(
@@ -293,6 +326,14 @@ def collect(prompt=None):
                     'configuration - {0}.\n\nNo capture was written. Check '
                     'that this session is on the switch you meant.'
                     .format(wrong_output), 'Not a Cisco switch')
+
+    for command in COMMANDS:
+        collect(command)
+    # The second pass: one command per interface template the config just read
+    # turns out to source. A switch that uses none adds nothing here, and the
+    # capture is exactly what it always was.
+    for name in sourced_template_names(outputs['show running-config']):
+        collect(template_command(name))
     return hostname, outputs
 
 
@@ -348,7 +389,7 @@ def main():
             crt.Dialog.MessageBox(
                 'Captured {0} commands from {1} and audited the capture.\n\n'
                 '{2}\n\nCapture: {3}\nReport:  {4}'
-                .format(len(COMMANDS), hostname, detail, path, report_path),
+                .format(len(outputs), hostname, detail, path, report_path),
                 'Capture and audit complete')
             if OPEN_REPORT and hasattr(os, 'startfile'):
                 os.startfile(report_path)
@@ -356,7 +397,7 @@ def main():
             crt.Dialog.MessageBox(
                 'Captured {0} commands from {1}.\n\nWritten to:\n{2}\n\n'
                 'The audit did not run here - {3}'
-                .format(len(COMMANDS), hostname, path, detail), 'Capture complete')
+                .format(len(outputs), hostname, path, detail), 'Capture complete')
     except Exception as error:  # surfaced in a dialog; SecureCRT hides tracebacks
         crt.Dialog.MessageBox('{0}\n\nNo capture was written.'.format(error), 'Capture failed')
     finally:

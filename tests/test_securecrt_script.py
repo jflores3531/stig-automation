@@ -128,6 +128,17 @@ def test_constants_match_capture_module():
     check('empty-is-an-answer list identical',
           tuple(capture_l2s.EMPTY_IS_AN_ANSWER) == tuple(capture.EMPTY_IS_AN_ANSWER),
           f'{capture_l2s.EMPTY_IS_AN_ANSWER} vs {capture.EMPTY_IS_AN_ANSWER}')
+    # The per-device sixth command. The collector spells it, the loader demands
+    # it by the same spelling, and a capture whose section headers disagree with
+    # what the audit asks for is one the audit refuses.
+    check('interface template command identical',
+          capture_l2s.template_command('USER_PORT') == capture.template_command('USER_PORT'),
+          capture_l2s.template_command('USER_PORT'))
+    sourcing = ' source template A\n source template A\n source template B\n'
+    check('and both find the same names in a config, in order and without repeats',
+          capture_l2s.sourced_template_names(sourcing)
+          == capture.sourced_template_names(sourcing) == ['A', 'B'],
+          capture_l2s.sourced_template_names(sourcing))
 
 
 def test_render_round_trips():
@@ -187,6 +198,38 @@ def test_full_run(tmpdir):
         for command, original in OUTPUTS.items():
             check(f'{command!r} survives the whole path',
                   session.send_command(command) == original.strip('\n'))
+
+
+def test_interface_templates_are_collected(tmpdir):
+    """A capture is only as complete as the commands that were sent, and on an
+    IOS XE switch that templates its user ports the fixed five are not all of
+    them: the port's own block says `source template <name>` and nothing else.
+    Collected here or the audit never sees that configuration - and since it
+    refuses a capture that sources a template it does not carry, a collector
+    that skipped this would produce files that cannot be audited at all."""
+    print('\ntemplates the config sources are collected in a second pass')
+    templated = OUTPUTS['show running-config'].replace(
+        ' description user port\n', ' description user port\n source template USER_PORT\n')
+    template_command = capture_l2s.template_command('USER_PORT')
+    outputs = {**OUTPUTS, 'show running-config': templated,
+               template_command: 'Template Name : USER_PORT\n switchport mode access'}
+
+    path = os.path.join(tmpdir, 'templated.capture')
+    capture_l2s.OPEN_REPORT = False
+    fake = run_script(path=path, outputs=outputs)
+    check('the template command is sent, after the fixed five',
+          fake.Screen.sent[1:] == list(capture_l2s.COMMANDS) + [template_command],
+          fake.Screen.sent[1:])
+    if os.path.exists(path):
+        session = capture.load_l2s(path)
+        check('the two-pass loader accepts the capture',
+              'switchport mode access' in session.send_command(template_command))
+
+    # And nothing extra on a switch that uses no templates - the fixture config
+    # sources none, so test_full_run's exact-command assertion still holds.
+    plain = run_script(path=os.path.join(tmpdir, 'plain.capture'))
+    check('a switch with no templates is asked nothing extra',
+          plain.Screen.sent[1:] == list(capture_l2s.COMMANDS), plain.Screen.sent[1:])
 
 
 def test_refusals(tmpdir):
@@ -254,6 +297,7 @@ if __name__ == '__main__':
     test_strip_echo()
     with tempfile.TemporaryDirectory() as tmpdir:
         test_full_run(tmpdir)
+        test_interface_templates_are_collected(tmpdir)
         test_refusals(tmpdir)
     print('\n' + ('ALL CHECKS PASSED' if not failures
                   else f'{len(failures)} FAILED: {", ".join(failures)}'))
