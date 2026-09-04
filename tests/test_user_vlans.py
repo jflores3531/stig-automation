@@ -15,6 +15,14 @@ A false PASS on a compliance tool is the failure this project exists to avoid,
 so the classification is pinned here from both directions: a named user VLAN
 must survive its ID appearing in the non-user list, and a name must never
 capture a VLAN it does not actually name.
+
+Names alone are not always enough either. A fleet that calls the same role
+army-xxx-abc-user1 at one site and army-yyy-def-user15 at the next cannot be
+described by a list of exact names without listing every site's spelling of
+every user VLAN - and the one eventually missed is the silent PASS again. An
+entry carrying a wildcard is matched as a glob for that case, and the last
+section here pins how far each pattern reaches, including one written
+deliberately too broadly.
 """
 
 import os
@@ -113,6 +121,89 @@ check('a misspelled exclude leaves every VLAN in, which is a finding not a pass'
 check('a misspelled include also only ever adds VLANs to the audited set',
       set(discover(exclude=[10], include_names=['MGM'])) <= set(discover(exclude=[10], include_names=['MGMT'])))
 
+print()
+print('naming a role rather than a VLAN - the wildcard form')
+# The fleet the exact-name list cannot describe: the first three parts of the
+# name are the site and stay put, the last word is the role and changes, the
+# number changes with it, and each carries a different VLAN ID per switch.
+# Listing every switch's spelling of every user VLAN is the thing that
+# eventually misses one, and a missed user VLAN is a silent PASS on DHCP
+# snooping and DAI coverage. 950 is the trap: a name with 'user' inside it
+# that is not a user VLAN.
+FLEET_BRIEF = """VLAN Name                             Status    Ports
+---- -------------------------------- --------- -------------------------------
+1    default                          active
+600  army-xxx-abc-mgmt                active    Vl600
+700  army-xxx-abc-tel                 active    Gi1/0/6
+750  army-yyy-def-tel2                active    Gi1/0/7
+800  army-xxx-abc-user1               active    Gi1/0/1
+850  army-xxx-abc-user15              active    Gi1/0/2
+860  army-yyy-def-user                active    Gi1/0/3
+950  army-xxx-abc-superuser-admin     active    Gi1/0/5"""
+
+# Every ID on that switch. Excluding all of them means each check below sees
+# only what its pattern actually claimed, rather than what the ID list happened
+# to leave behind.
+FLEET_IDS = [1, 600, 700, 750, 800, 850, 860, 950]
+
+fleet = FakeSession(FLEET_BRIEF)
+
+
+def fleet_vlans(**kwargs):
+    return stig_common.discover_user_vlans(fleet, **kwargs)
+
+
+def claimed_by(*patterns):
+    return fleet_vlans(exclude=FLEET_IDS, include_names=list(patterns))
+
+
+check("'*user' catches the names that end in it, and only those",
+      claimed_by('*user') == ['860'], claimed_by('*user'))
+check("'*user[0-9]*' catches the numbered ones whatever the number",
+      claimed_by('*user[0-9]*') == ['800', '850'], claimed_by('*user[0-9]*'))
+check('the two together cover the role across sites, whatever ID each carries',
+      claimed_by('*user', '*user[0-9]*') == ['800', '850', '860'])
+# The voice VLAN is a second role under the same site prefix, spelled by its
+# own last word - one more pattern, not one more list of names.
+check("the voice role is its own pattern - '*tel' and '*tel[0-9]*'",
+      claimed_by('*tel', '*tel[0-9]*') == ['700', '750'], claimed_by('*tel', '*tel[0-9]*'))
+check('roles combine: every user-carrying VLAN, none of the infrastructure',
+      claimed_by('*user', '*user[0-9]*', '*tel', '*tel[0-9]*')
+      == ['700', '750', '800', '850', '860'],
+      claimed_by('*user', '*user[0-9]*', '*tel', '*tel[0-9]*'))
+check('the management VLAN is claimed by none of them',
+      '600' not in claimed_by('*user', '*user[0-9]*', '*tel', '*tel[0-9]*'))
+check('a pattern beats an ID exclusion, same as an exact name does',
+      '800' in fleet_vlans(exclude=[800], include_names=['*user[0-9]*']))
+check('patterns are case-insensitive too',
+      claimed_by('*USER[0-9]*') == claimed_by('*user[0-9]*'))
+check("'*user*' reaches further - superuser-admin comes with it",
+      '950' in claimed_by('*user*'),
+      'the broad pattern is allowed, but it must be visible in the classification')
+check('an entry with no wildcard is still exact, not a substring',
+      claimed_by('user') == [], claimed_by('user'))
+# The site prefix is matchable too, for a switch where everything under it is
+# a user VLAN - but here it would take the management VLAN with it, which is
+# why the roles are named by their last word instead.
+check("'army-xxx-abc-*' matches by prefix, mgmt VLAN included",
+      claimed_by('army-xxx-abc-*') == ['600', '700', '800', '850', '950'],
+      claimed_by('army-xxx-abc-*'))
+check('excluding by pattern works the same way',
+      '600' not in fleet_vlans(exclude_names=['*mgmt']),
+      fleet_vlans(exclude_names=['*mgmt']))
+check('a pattern matching nothing changes nothing',
+      fleet_vlans(include_names=['*printer*']) == fleet_vlans())
+
+# Which pattern claimed a VLAN is printed above every report, because the cost
+# of a pattern reaching too far is only visible if it can be read back.
+reasons = {vid: why for vid, _, _, why in stig_common.classify_vlans(
+    fleet, exclude=[1, 600, 800, 850, 860, 900, 950], include_names=['*user[0-9]*'])}
+check('the classification names the pattern that matched',
+      '*user[0-9]*' in reasons['800'], reasons['800'])
+check('and says so per VLAN, not once for the list',
+      'ID listed as non-user' in reasons['950'], reasons['950'])
+
+print()
 print('a VLAN ID that is not a number stops the run instead of skewing it')
 # Skipping the bad entry would leave the exclusion set wrong and every DHCP
 # snooping and DAI verdict downstream reported with full confidence anyway.

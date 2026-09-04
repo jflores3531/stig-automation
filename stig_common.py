@@ -3,6 +3,7 @@
 nxos_stig_audit.py: loads a DISA .cklb checklist, checks a device's
 running-config against it, and prints a PASS/FAIL/NOT AUTOMATED report."""
 
+import fnmatch
 import json
 import re
 
@@ -103,9 +104,47 @@ class InventoryError(ValueError):
     one. Refusing is the same call capture.py makes on a malformed capture."""
 
 
+# A fleet does not always name a VLAN the same way twice. Where the user VLANs
+# are called army-xxx-abc-user1 on one switch and army-yyy-def-user15 on the
+# next - same role, different site prefix, different number, and a different
+# VLAN ID under each - listing them by exact name means listing every switch's
+# spelling of every one of them, and the first one missed is a real user VLAN
+# silently dropped from the DHCP snooping and DAI coverage checks.
+#
+# So an entry carrying *, ? or [ ] is a glob (fnmatch), and anything else is
+# the exact, case-insensitive match this has always done - existing inventories
+# behave exactly as before. `*user` catches the names ending in it, `*user[0-9]*`
+# the numbered ones, `*user*` both at the cost of also catching anything else
+# with "user" in the name.
+#
+# Loose matching is safe in the include direction and dangerous in the exclude
+# one, and that asymmetry is worth keeping in mind when writing a pattern: a
+# too-broad user_vlan_names entry can only add VLANs to the audited set, which
+# costs a spurious finding, while a too-broad non_user_vlan_names entry removes
+# them, which costs a silent PASS on coverage nobody verified. The classification
+# printed above each report names the pattern that matched, so a pattern that
+# reaches further than intended is visible rather than inferred.
+def _name_pattern_match(name, patterns):
+    """The entry in `patterns` that matches `name`, or None. Exact match is
+    case-insensitive; an entry with a wildcard is matched as a glob."""
+    lowered = name.casefold()
+    for pattern in patterns:
+        candidate = str(pattern).strip()
+        folded = candidate.casefold()
+        if any(char in folded for char in '*?['):
+            if fnmatch.fnmatchcase(lowered, folded):
+                return candidate
+        elif lowered == folded:
+            return candidate
+    return None
+
+
 def classify_vlans(net_connect, exclude=(), exclude_names=(), include_names=()):
     """Return [(vlan_id, name, is_user, why), ...] for every VLAN in `show vlan
     brief`, with the reason each one was or was not classified a user VLAN.
+
+    Names in `include_names`/`exclude_names` match exactly and case-insensitively,
+    or as a glob if the entry carries a wildcard - see _name_pattern_match.
 
     discover_user_vlans keeps only the IDs; this is the same decision with its
     working shown, so an audit can print what it classified and be argued with.
@@ -125,20 +164,21 @@ def classify_vlans(net_connect, exclude=(), exclude_names=(), include_names=()):
             f'inventory.yaml: VLAN IDs must be numbers, but {", ".join(unreadable)} '
             f'{"is" if len(unreadable) == 1 else "are"} not - check non_user_vlans, '
             'non_user_vlans_by_device, unused_vlan and native_vlan')
-    excluded_names = {str(name).strip().casefold() for name in exclude_names}
-    included_names = {str(name).strip().casefold() for name in include_names}
     vlan_brief = str(net_connect.send_command('show vlan brief'))
 
     classified = []
     for vid, name in re.findall(r'^(\d+)\s+(\S+)', vlan_brief, re.M):
+        included = _name_pattern_match(name, include_names)
+        excluded = _name_pattern_match(name, exclude_names)
         if 1002 <= int(vid) <= 1005:
             classified.append((vid, name, False, 'reserved fddi/token-ring VLAN'))
-        elif name.casefold() in included_names:
-            classified.append((vid, name, True, 'name listed in user_vlan_names'))
+        elif included:
+            classified.append((vid, name, True, f'name matches user_vlan_names entry `{included}`'))
         elif int(vid) in exclude_ids:
             classified.append((vid, name, False, 'ID listed as non-user in inventory.yaml'))
-        elif name.casefold() in excluded_names:
-            classified.append((vid, name, False, 'name listed in non_user_vlan_names'))
+        elif excluded:
+            classified.append((vid, name, False,
+                               f'name matches non_user_vlan_names entry `{excluded}`'))
         else:
             classified.append((vid, name, True, 'not excluded'))
     return classified
@@ -184,10 +224,14 @@ def discover_user_vlans(net_connect, exclude=(), exclude_names=(), include_names
     Where every non-user VLAN is consistently numbered, the ID list already
     covers them and this can stay empty.
 
-    Name matching is exact and case-insensitive, never a substring. A loose
-    include is the dangerous direction only in reverse - it can only add VLANs
-    to the audited set, so the cost of a wrong name is a spurious finding rather
-    than a silent pass. An entry that matches nothing changes nothing.
+    A name is matched exactly and case-insensitively, or as a glob if the entry
+    carries a wildcard - `*user`, `*user[0-9]*` - which is what covers a fleet
+    that names the same role army-xxx-abc-user1 here and army-yyy-def-user15
+    there. See _name_pattern_match; a substring is never implied, so a pattern
+    reaches exactly as far as it says. A loose include is the dangerous
+    direction only in reverse - it can only add VLANs to the audited set, so the
+    cost of an over-broad name is a spurious finding rather than a silent pass.
+    An entry that matches nothing changes nothing.
 
     `show vlan brief` already carries the name column, so this costs no extra
     command and works on a capture exactly as it does on a live session.

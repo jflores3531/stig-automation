@@ -1207,17 +1207,23 @@ parser.add_argument('--non-user-vlans', metavar='IDS', dest='non_user_vlans',
 parser.add_argument('--user-vlan-names', metavar='NAMES', dest='user_vlan_names',
                     help='Comma-separated VLAN names that are always user VLANs, whatever ID they '
                          "carry here, overriding inventory.yaml's user_vlan_names. Matched exactly "
-                         'and case-insensitively against the name column of `show vlan brief`. This '
-                         'is what covers a fleet whose user and voice VLANs are numbered per site: '
-                         'the name wins over --non-user-vlans, so a switch whose user VLAN is 10 is '
-                         'still checked even where 10 is the management VLAN.')
+                         'and case-insensitively against the name column of `show vlan brief`, or '
+                         'as a glob if the entry has a wildcard: `*user` for the names ending in '
+                         'it, `*user[0-9]*` for the numbered ones. This is what covers a fleet '
+                         'whose user and voice VLANs are numbered per site and named per site too '
+                         '- army-xxx-abc-user1 on VLAN 800 here, army-yyy-def-user15 on VLAN 850 '
+                         'there. The name wins over --non-user-vlans, so a switch whose user VLAN '
+                         'is 10 is still checked even where 10 is the management VLAN.')
 parser.add_argument('--non-user-vlan-names', metavar='NAMES', dest='non_user_vlan_names',
                     help='Comma-separated VLAN names to treat as non-user, overriding '
                          "inventory.yaml's non_user_vlan_names. Matched exactly and case-"
-                         'insensitively against the name column of `show vlan brief`. Use this '
-                         'where a fleet numbers the same VLAN differently on each switch but '
-                         'names it consistently - excluding by ID alone then drops a real user '
-                         'VLAN from the DHCP snooping and DAI coverage checks.')
+                         'insensitively against the name column of `show vlan brief`, or as a glob '
+                         'if the entry has a wildcard. Use this where a fleet numbers the same VLAN '
+                         'differently on each switch but names it consistently - excluding by ID '
+                         'alone then drops a real user VLAN from the DHCP snooping and DAI coverage '
+                         'checks. Keep patterns tight here: this direction removes VLANs from the '
+                         'audited set, so an over-broad one costs a silent PASS rather than a '
+                         'spurious finding.')
 parser.add_argument('--checklist', choices=('ios', 'ios-xe'), default='ios-xe',
                     help='Which DISA checklist to audit against. The IOS and IOS XE switch '
                          'STIGs share no rule IDs at all, so auditing against the wrong one '
