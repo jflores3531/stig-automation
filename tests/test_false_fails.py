@@ -22,9 +22,12 @@ real, and the direction that eventually gets a tool ignored:
     what DISA's own fix text builds - and was read as an ACL with no permit
     entries at all.
 
-The subnet these ACLs are written against is read from inventory.yaml rather
-than hardcoded, since a fresh clone's copy of the example names a different
-one and the point here is the ACL's shape, not its address.
+The subnet these ACLs are written against is passed to the audit with
+--management-subnet rather than read from inventory.yaml, so the suite pins
+the audit's behaviour rather than whatever the local inventory happens to say
+- including a placeholder like x.x.x.0/24, which is what the example ships so
+that no real addressing is committed. RFC 5737 documentation space here, same
+as fixtures.py.
 """
 
 import os
@@ -38,7 +41,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture
 import fixtures
-import netauto
 
 failures = []
 
@@ -51,10 +53,10 @@ def check(name, condition, detail=''):
         failures.append(name)
 
 
-MANAGEMENT = netauto.load_management_subnet()
-NETWORK = MANAGEMENT.split('/')[0]                      # e.g. 10.10.50.0
-INSIDE_HOST = NETWORK.rsplit('.', 1)[0] + '.25'         # e.g. 10.10.50.25
-OUTSIDE = '203.0.113.0'                                 # never a management subnet here
+MANAGEMENT = '192.0.2.0/24'      # RFC 5737 documentation space, passed in per run
+NETWORK = '192.0.2.0'
+INSIDE_HOST = '192.0.2.25'
+OUTSIDE = '203.0.113.0'          # a different documentation range - never inside MANAGEMENT
 
 
 def report_for(tmpdir, name, running_config=None, vtp_password=None):
@@ -66,7 +68,8 @@ def report_for(tmpdir, name, running_config=None, vtp_password=None):
     path = capture.write(os.path.join(tmpdir, name + '.capture'), outputs)
     result = subprocess.run(
         [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'TESTSW01',
-         '--from-capture', path, '--non-user-vlans', '999,1000'],
+         '--from-capture', path, '--non-user-vlans', '999,1000',
+         '--management-subnet', MANAGEMENT],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)
     return result.stdout + result.stderr
 

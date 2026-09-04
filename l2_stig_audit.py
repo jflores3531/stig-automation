@@ -1138,6 +1138,8 @@ CHECKS = {
     'V-220613': _archive_logging_enabled,
     'V-220578': _admin_activity_logged,
     'V-220570': _session_limit_check,
+    # Re-pointed at --management-subnet below when that flag is given; the
+    # inventory's value is the default, as with the VLAN lists.
     'V-220575': lambda cfg: _vty_management_acl_check(cfg, netauto.load_management_subnet()),
     'V-220581': _vty_acl_log_input_check,
     'V-220587': _single_local_account_check,
@@ -1224,6 +1226,14 @@ parser.add_argument('--non-user-vlan-names', metavar='NAMES', dest='non_user_vla
                          'checks. Keep patterns tight here: this direction removes VLANs from the '
                          'audited set, so an over-broad one costs a silent PASS rather than a '
                          'spurious finding.')
+parser.add_argument('--management-subnet', metavar='CIDR', dest='management_subnet',
+                    help="The management network in CIDR form (e.g. 10.10.50.0/24), overriding "
+                         "inventory.yaml's management_subnet. V-220575/523 checks that the vty "
+                         'access-class ACL permits only sources inside it, so a switch on a '
+                         'management network this inventory does not describe - the usual case '
+                         'with --from-capture, and the case where the inventory carries a '
+                         'placeholder rather than a real address - can still be audited for it '
+                         'without editing the file.')
 parser.add_argument('--checklist', choices=('ios', 'ios-xe'), default='ios-xe',
                     help='Which DISA checklist to audit against. The IOS and IOS XE switch '
                          'STIGs share no rule IDs at all, so auditing against the wrong one '
@@ -1374,6 +1384,9 @@ template_summary = stig_common.describe_template_expansion(discovery_config, tem
 if template_summary:
     print(template_summary)
     print()
+
+if args.management_subnet:
+    CHECKS['V-220575'] = lambda cfg: _vty_management_acl_check(cfg, args.management_subnet)
 
 CHECKS['V-220633'] = lambda cfg: _dhcp_snooping_check(cfg, user_vlans)
 CHECKS['V-220635'] = lambda cfg: _vlan_range_covers_user_vlans(

@@ -1,6 +1,6 @@
 {
   "_comments": {
-    "ABOUT_THIS_FILE": "Copy to inventory.yaml and fill in real values. inventory.yaml is gitignored - it holds site-specific addressing and VLAN IDs and must never be committed. The content is JSON, not YAML, because hosts that cannot install PyYAML fall back to the stdlib parser via yaml.py. JSON is a subset of YAML 1.2, so this same file also parses correctly anywhere real PyYAML is installed.",
+    "ABOUT_THIS_FILE": "Copy to inventory.yaml and fill in real values. inventory.yaml is gitignored - it holds site-specific addressing and VLAN IDs and must never be committed. Every address here is written x.x.x.x for the same reason: no real addressing is committed, not even as an example, so the placeholders have to be replaced before anything that connects to a device or checks a management subnet will work. An x.x.x.0/24 management_subnet is not a network, so V-220575/523 reports 'not a network' until it is replaced - or pass --management-subnet to l2_stig_audit.py for a one-off run against a switch this file does not describe. The content is JSON, not YAML, because hosts that cannot install PyYAML fall back to the stdlib parser via yaml.py. JSON is a subset of YAML 1.2, so this same file also parses correctly anywhere real PyYAML is installed.",
 
     "WHY_MISSING_KEYS_ARE_DANGEROUS": "Only 'devices' is required. Every other key is read with .get() and a default, so an absent or wrong value does NOT raise - it silently returns None or an empty collection and the audit reports a wrong result. A partially filled inventory produces confident, incorrect findings. Fill in every key that applies to your environment.",
 
@@ -16,7 +16,7 @@
 
     "non_user_vlan_names": "VLAN NAMES to exclude when discovering user VLANs, matched against the name column of `show vlan brief` exactly and case-insensitively, or as a glob when the entry carries a wildcard - same syntax as user_vlan_names. Keep patterns tighter here than there: this direction REMOVES VLANs from the audited set, so an over-broad pattern costs a silent PASS on coverage nobody verified, while an over-broad user_vlan_names pattern only costs a spurious finding. Use this where the same VLAN carries a different ID on each switch but the same name everywhere - excluding only by ID then leaves a real user VLAN out of the DHCP snooping and DAI coverage checks, and the audit reports PASS for coverage it never verified. Combines with non_user_vlans rather than replacing it: a VLAN is non-user if its ID or its name matches. An entry that matches nothing leaves the VLAN in, so a typo costs a spurious finding rather than a silent pass. Consumed by l2_stig_audit.py, nxos_stig_audit.py, l2_stig_harden_global.py, l2_stig_harden_dai.py, nxos_stig_harden_global.py, nxos_stig_harden_interfaces.py.",
 
-    "management_subnet": "The management network in CIDR form, e.g. '10.10.50.0/24'. Used to verify that vty access-class ACLs are actually scoped to the management network rather than permitting any source (V-220575). If this is absent, V-220575 reports FAIL with reason 'no management_subnet configured in inventory.yaml' on every device audited - not NOT AUTOMATED, so a fleet-wide run shows a finding on every switch. Read by ios_router_audit.py and l2_stig_audit.py.",
+    "management_subnet": "The management network in CIDR form, e.g. 'x.x.x.0/24' - replace the x's with your real management network. Used to verify that vty access-class ACLs are actually scoped to the management network rather than permitting any source (V-220575). If this is absent, V-220575 reports FAIL with reason 'no management_subnet configured in inventory.yaml' on every device audited - not NOT AUTOMATED, so a fleet-wide run shows a finding on every switch. Read by ios_router_audit.py and l2_stig_audit.py.",
 
     "automation_host": "IP address of the host that runs these scripts. It is the sole permitted source in the vty ACL that ios_router_stig_harden_acl.py and l2_stig_harden_acl.py build for V-220575. Set this before running either harden script - getting it wrong locks you out of the device.",
 
@@ -32,15 +32,15 @@
   },
 
   "devices": {
-    "ROUTER01": { "host": "192.0.2.1", "device_type": "cisco_ios" },
-    "SWITCH01": { "host": "192.0.2.11", "device_type": "cisco_ios" },
-    "NXCORE01": { "host": "192.0.2.21", "device_type": "cisco_nxos" }
+    "ROUTER01": { "host": "x.x.x.x", "device_type": "cisco_ios" },
+    "SWITCH01": { "host": "x.x.x.x", "device_type": "cisco_ios" },
+    "NXCORE01": { "host": "x.x.x.x", "device_type": "cisco_nxos" }
   },
 
   "services": {
-    "ntp_servers": ["192.0.2.100", "192.0.2.101"],
-    "syslog_servers": ["192.0.2.100"],
-    "radius_servers": ["192.0.2.100"]
+    "ntp_servers": ["x.x.x.x", "x.x.x.x"],
+    "syslog_servers": ["x.x.x.x"],
+    "radius_servers": ["x.x.x.x"]
   },
 
   "non_user_vlans": [1, 10, 100],
@@ -53,8 +53,8 @@
 
   "non_user_vlan_names": [],
 
-  "management_subnet": "192.0.2.0/24",
-  "automation_host": "192.0.2.10",
+  "management_subnet": "x.x.x.0/24",
+  "automation_host": "x.x.x.x",
 
   "unused_vlan": 1000,
   "native_vlan": 999,
