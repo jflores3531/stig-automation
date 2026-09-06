@@ -97,6 +97,18 @@ Copy `secrets.yaml.example` to `secrets.yaml` and fill in real values before run
 
 Each script prompts for your SSH username and password via `getpass` (not echoed or stored).
 
+**On Windows, in PowerShell**, the commands below are the same with two changes: run them with
+`python`, not `python3` (`python3` is usually not on PATH, and where it is it can be the Microsoft
+Store stub, which opens the Store instead of running anything), and put each command on **one
+line** — the `\` continuations here are bash, and PowerShell's continuation character is a
+backtick. Paths take `\` or `/`; both work. The checklist export below, as PowerShell takes it:
+
+```powershell
+python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out\SW01.cklb
+```
+
+Output directories are created if they do not exist.
+
 ```bash
 # Back up one device or all devices
 python3 backup_config.py R1
