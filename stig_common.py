@@ -195,21 +195,121 @@ def parse_fqdn(cfg, device_name=None):
     return f'{host}.{domain}'
 
 
+# --- Reading `show version` on a stack ---------------------------------------
+#
+# Everything a stack member has of its own - its model, its serial, its base
+# MAC - is printed once per member, under a `Switch NN` heading, in member
+# order. So the first match of any of them is switch 1's, which is only the
+# right answer when switch 1 is the active member.
+#
+# The table at the end of the output is what says which member that is: it
+# marks the active one with `*`. Pairing the two is the whole of what these
+# helpers do, and the reason they exist is that not doing it puts one switch's
+# hardware and another switch's software in the same row of a compliance
+# artifact, under one name, with nothing about it looking wrong.
+#
+# A standalone switch prints one member section and often no table at all, and
+# falls through all of this to the same answer it always gave.
+_SWITCH_TABLE_HEADER = re.compile(r'^\s*Switch\s+Ports\s+Model\s+SW\s+Version', re.M | re.I)
+_SWITCH_TABLE_ROW = re.compile(
+    r'^\s*(?P<active>\*?)\s*(?P<number>\d+)\s+\d+\s+(?P<model>\S+)\s+(?P<release>\d\S*)')
+
+
+def switch_table_rows(version_output):
+    """[(is_active, number, model, release), ...] from the table `show version`
+    ends with on a stackable Catalyst. Empty where there is no such table.
+
+    Anchored to the header rather than matched line by line: `show version` is
+    full of lines that begin with numbers - interface counts, memory sizes -
+    and a loose row pattern would eventually read one of them as a switch."""
+    output = str(version_output)
+    header = _SWITCH_TABLE_HEADER.search(output)
+    if not header:
+        return []
+    # The match ends mid-line - the header carries SW Image and Mode after the
+    # column this anchors on - so the rest of that line is stepped over first.
+    rest = output.find('\n', header.end())
+    if rest == -1:
+        return []
+    rows = []
+    for line in output[rest + 1:].splitlines():
+        if not line.strip() or set(line.strip()) <= set('- '):
+            continue  # the rule under the header, and the blank line after it
+        match = _SWITCH_TABLE_ROW.match(line)
+        if not match:
+            break  # past the end of the table
+        rows.append((bool(match.group('active')), int(match.group('number')),
+                     match.group('model'), match.group('release')))
+    return rows
+
+
+def active_member(version_output):
+    """(number, model, release) for the stack member the table marks active, or
+    None where there is no table. Where no row is marked - a standalone switch
+    prints one unmarked row on some images - the first row is the only row."""
+    rows = switch_table_rows(version_output)
+    if not rows:
+        return None
+    row = next((row for row in rows if row[0]), rows[0])
+    return row[1], row[2], row[3]
+
+
+def member_section(version_output, number):
+    """The `Switch NN` block for one stack member, or '' if the output has no
+    such heading. `Switch 02` and `Switch 2` are both in the wild."""
+    output = str(version_output)
+    match = re.search(rf'^Switch\s+0*{number}\s*$', output, re.M)
+    if not match:
+        return ''
+    # Up to the next member heading, or the end.
+    following = re.search(r'^Switch\s+\d+\s*$', output[match.end():], re.M)
+    return output[match.end():match.end() + following.start()] if following else output[match.end():]
+
+
+def _active_member_field(version_output, pattern):
+    """A per-member field, preferring the active member's copy of it.
+
+    Falls back to the first match in the whole output, which is the right and
+    only answer on a switch that prints no table and no member sections."""
+    active = active_member(version_output)
+    if active:
+        section = member_section(version_output, active[0])
+        match = re.search(pattern, section) if section else None
+        if match:
+            return match.group(1)
+    match = re.search(pattern, str(version_output))
+    return match.group(1) if match else None
+
+
 def parse_base_mac(version_output):
     """The switch's `Base Ethernet MAC Address` from `show version`, normalised
     to the colon-separated form STIG Viewer shows. Platforms print it either
     way - 00:1A:2B:3C:4D:5E on IOS XE, 001a.2b3c.4d5e elsewhere - and the field
     should not record which platform it was read off. Anything that is not
     twelve hex digits is handed back untouched rather than reshaped into
-    something that looks canonical without being right."""
-    match = re.search(r'Base [Ee]thernet MAC [Aa]ddress\s*:\s*(\S+)', str(version_output))
-    if not match:
+    something that looks canonical without being right.
+
+    On a stack this is the active member's, not switch 1's - see the note above
+    _SWITCH_TABLE_HEADER."""
+    raw = _active_member_field(version_output,
+                               r'Base [Ee]thernet MAC [Aa]ddress\s*:\s*(\S+)')
+    if not raw:
         return None
-    raw = match.group(1)
     digits = re.sub(r'[^0-9A-Fa-f]', '', raw)
     if len(digits) != 12:
         return raw
     return ':'.join(digits[i:i + 2] for i in range(0, 12, 2)).upper()
+
+
+def parse_serial_number(version_output):
+    """The switch's serial from `show version` - `System Serial Number` on
+    Catalyst, the `Processor board ID` line on everything else. The active
+    member's on a stack, for the same reason as the MAC."""
+    serial = _active_member_field(version_output, r'System Serial Number\s*:\s*(\S+)')
+    if serial:
+        return serial
+    match = re.search(r'^Processor board ID\s+(\S+)', str(version_output), re.M)
+    return match.group(1) if match else None
 
 
 def parse_interface_addresses(ip_interface_brief):

@@ -1464,57 +1464,14 @@ EMR_MINOR_INTERVAL = 3
 CISCO_SUPPORT_URL = 'www.cisco.com/c/en/us/support/ios-nx-os-software'
 
 
-# The table `show version` ends with on a stackable Catalyst, and the only
-# place either fact appears on some of them:
-#
-#   Switch Ports Model              SW Version        SW Image              Mode
-#   ------ ----- -----              ----------        ----------            ----
-#   *    1 52    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL
-#
-# Reading it matters because the header lines above it are not guaranteed. A
-# switch whose banner says only "Cisco IOS Software [Amsterdam] ... Version
-# 16.12.5b" but prints no `Model Number :` line has a model here and nowhere
-# else, and V-220569/V-220621 then reported NOT AUTOMATED - "could not read a
-# model from `show version`" - on a switch whose model was on screen the whole
-# time. A stack shows one row per member; the active one is marked `*` and is
-# the one the rule is about, so it wins where the rows disagree.
-#
-# Anchored to the header rather than matched line by line across the whole
-# output: `show version` is full of lines that begin with numbers (interface
-# counts, memory sizes), and a loose row pattern would eventually read one of
-# them as a switch.
-_SWITCH_TABLE_HEADER = re.compile(r'^\s*Switch\s+Ports\s+Model\s+SW\s+Version', re.M | re.I)
-_SWITCH_TABLE_ROW = re.compile(
-    r'^\s*(?P<active>\*?)\s*\d+\s+\d+\s+(?P<model>\S+)\s+(?P<release>\d\S*)')
-
-
+# The switch table `show version` ends with on a stackable Catalyst lives in
+# stig_common, because the asset block reads the active member's MAC and serial
+# out of it too - see the note above stig_common._SWITCH_TABLE_HEADER for why
+# the active member is the one that matters.
 def _show_version_switch_table(output):
-    """(model, release) from the switch table's active row, or (None, None).
-
-    The row marked `*` is the active switch in a stack; where nothing is
-    marked - a standalone switch prints one unmarked row on some images - the
-    first row is the only row."""
-    header = _SWITCH_TABLE_HEADER.search(output)
-    if not header:
-        return None, None
-    # The match ends mid-line - the header carries SW Image and Mode after the
-    # column this anchors on - so the rest of that line is stepped over before
-    # the rows begin.
-    rest = output.find('\n', header.end())
-    if rest == -1:
-        return None, None
-    rows = []
-    for line in output[rest + 1:].splitlines():
-        if set(line.strip()) <= set('- ') or not line.strip():
-            continue  # the rule under the header, and the blank line after the table
-        match = _SWITCH_TABLE_ROW.match(line)
-        if not match:
-            break  # past the end of the table
-        rows.append((bool(match.group('active')), match.group('model'), match.group('release')))
-    if not rows:
-        return None, None
-    active = next((row for row in rows if row[0]), rows[0])
-    return active[1], active[2]
+    """(model, release) from the switch table's active row, or (None, None)."""
+    active = stig_common.active_member(output)
+    return (active[1], active[2]) if active else (None, None)
 
 
 def _normalise_release(release):

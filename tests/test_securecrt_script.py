@@ -118,17 +118,43 @@ def run_script(**kwargs):
 # l2_stig_audit.py parses argv and runs an audit at import, so its readers
 # cannot simply be imported here. They are lifted out of its source instead -
 # ugly, and much less ugly than a second hand-written copy of what they are
-# supposed to agree with.
+# supposed to agree with. The switch table they lean on lives in stig_common,
+# which imports cleanly, so only the two readers themselves need lifting.
 def audit_version_readers():
     """The audit's `show version` readers, executed out of its source."""
+    import stig_common
     with open(os.path.join(PROJECT, 'l2_stig_audit.py'), encoding='utf-8') as handle:
         source = handle.read()
-    start = source.index('_SWITCH_TABLE_HEADER = ')
+    start = source.index('def _show_version_switch_table')
     end = source.index('def _ios_release_supported_check')
-    namespace = {'re': __import__('re')}
+    namespace = {'re': __import__('re'), 'stig_common': stig_common}
     exec(compile(source[start:end], 'l2_stig_audit.py', 'exec'), namespace)
     return namespace
 
+
+# A stack of two models with the active member second. Every per-member field -
+# model, serial, base MAC - is printed once per member in member order, so both
+# readers have to pair them with the table's active row rather than take the
+# first. They disagreeing here would put one switch's serial in the log beside
+# another switch's model.
+SHOW_VERSION_MIXED_STACK = """Cisco IOS XE Software, Version 17.12.04
+
+Switch 01
+---------
+Base Ethernet MAC Address            : 00:11:11:11:11:11
+Model Number                         : C9300-24P
+System Serial Number                 : FOC1111X1XX
+
+Switch 02
+---------
+Base Ethernet MAC Address            : 00:22:22:22:22:22
+Model Number                         : C9300-48P
+System Serial Number                 : FOC2222X2XX
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+     1 24    C9300-24P          17.12.04          CAT9K_IOSXE           INSTALL
+*    2 48    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL"""
 
 # A `show version` with no version banner and no `Model Number` line, where the
 # switch table is the only place either fact appears. Both readers have to
@@ -181,15 +207,23 @@ def test_constants_match_capture_module():
     # own readers on the same output, rather than against a hand-written
     # expectation that could go stale with both of them.
     audit = audit_version_readers()
+    import stig_common
     for name, ours, theirs, expected in (
             ('model', capture_l2s.show_version_model,
              audit['_show_version_model'], 'C9300-48P'),
             ('release', capture_l2s.show_version_release,
-             audit['_show_version_release'], '17.12.4')):
+             audit['_show_version_release'], '17.12.4'),
+            ('serial', capture_l2s.show_version_serial,
+             stig_common.parse_serial_number, 'FOC0000X0XX')):
         for label, output in (('the Catalyst form', fixtures.SHOW_VERSION),
-                              ('the switch table alone', SHOW_VERSION_TABLE_ONLY)):
+                              ('the switch table alone', SHOW_VERSION_TABLE_ONLY),
+                              ('a mixed stack', SHOW_VERSION_MIXED_STACK)):
+            # The walker returns '' where the audit returns None: a blank CSV
+            # cell against an unset checklist field. Not a disagreement about
+            # the value, so absence is compared as absence.
             check(f'{name} from {label} is what the audit reads',
-                  ours(output) == theirs(output), f'{ours(output)!r} vs {theirs(output)!r}')
+                  (ours(output) or None) == (theirs(output) or None),
+                  f'{ours(output)!r} vs {theirs(output)!r}')
         check(f'{name} is right on the fixture', ours(fixtures.SHOW_VERSION) == expected,
               ours(fixtures.SHOW_VERSION))
     check('and the hostname is the config\'s, which is what names the checklist',

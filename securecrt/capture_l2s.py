@@ -185,28 +185,49 @@ def render(outputs):
 # whose checklist names both - the two disagreeing about the same device, which
 # is the thing this duplication most has to avoid.
 def _switch_table(output):
-    """(model, release) from the `Switch Ports Model SW Version` table's active
-    row, or ('', ''). Mirrors l2_stig_audit._show_version_switch_table."""
+    """(number, model, release) for the member the table marks active, or
+    (0, '', ''). Mirrors stig_common.active_member."""
     import re
     header = re.search(r'^\s*Switch\s+Ports\s+Model\s+SW\s+Version', output or '',
                        re.M | re.I)
     if not header:
-        return '', ''
+        return 0, '', ''
     rest = (output or '').find('\n', header.end())
     if rest == -1:
-        return '', ''
+        return 0, '', ''
     rows = []
     for line in output[rest + 1:].splitlines():
         if not line.strip() or set(line.strip()) <= set('- '):
             continue
-        match = re.match(r'^\s*(\*?)\s*\d+\s+\d+\s+(\S+)\s+(\d\S*)', line)
+        match = re.match(r'^\s*(\*?)\s*(\d+)\s+\d+\s+(\S+)\s+(\d\S*)', line)
         if not match:
             break
-        rows.append((bool(match.group(1)), match.group(2), match.group(3)))
+        rows.append((bool(match.group(1)), int(match.group(2)),
+                     match.group(3), match.group(4)))
     if not rows:
-        return '', ''
+        return 0, '', ''
     active = next((row for row in rows if row[0]), rows[0])
-    return active[1], active[2]
+    return active[1], active[2], active[3]
+
+
+def _active_member_field(output, pattern):
+    """A per-member field - model, serial, base MAC - preferring the active
+    member's copy. Each is printed once per member under a `Switch NN` heading,
+    in member order, so the first match is switch 1's and only right when
+    switch 1 is the member in charge. Mirrors stig_common._active_member_field."""
+    import re
+    number = _switch_table(output)[0]
+    if number:
+        heading = re.search(r'^Switch\s+0*{0}\s*$'.format(number), output or '', re.M)
+        if heading:
+            following = re.search(r'^Switch\s+\d+\s*$', output[heading.end():], re.M)
+            section = (output[heading.end():heading.end() + following.start()]
+                       if following else output[heading.end():])
+            match = re.search(pattern, section)
+            if match:
+                return match.group(1)
+    match = re.search(pattern, output or '')
+    return match.group(1) if match else ''
 
 
 def running_config_hostname(output):
@@ -232,7 +253,7 @@ def show_version_model(output):
     member, else `Model Number : C9300-48P`, else the `cisco <model> (<cpu>)
     processor` line that everything without a table prints."""
     import re
-    model = _switch_table(output)[0]
+    model = _switch_table(output)[1]
     if model:
         return model
     for pattern in (r'^Model [Nn]umber\s*:\s*(\S+)',
@@ -243,11 +264,22 @@ def show_version_model(output):
     return ''
 
 
+def show_version_serial(output):
+    """The switch's serial, or '' - `System Serial Number` on Catalyst, the
+    `Processor board ID` line elsewhere. The active member's on a stack."""
+    import re
+    serial = _active_member_field(output, r'System Serial Number\s*:\s*(\S+)')
+    if serial:
+        return serial
+    match = re.search(r'^Processor board ID\s+(\S+)', output or '', re.M)
+    return match.group(1) if match else ''
+
+
 def show_version_release(output):
     """The IOS/IOS XE release, or ''. Normalised the way the audit normalises
     it, so 17.12.04 and 17.12.4 do not read as two different switches."""
     import re
-    release = _switch_table(output)[1]
+    release = _switch_table(output)[2]
     if not release:
         for pattern in (r'Cisco IOS XE Software, Version (\S+)',
                         r'Cisco IOS Software.*?,\s*(?:Experimental )?Version ([^\s,]+)',

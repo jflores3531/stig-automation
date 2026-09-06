@@ -35,6 +35,27 @@ import stig_common
 
 IOS_XE_CHECKLIST = os.path.join(PROJECT, 'checklists', 'IOS-XE Checklist.cklb')
 
+# A stack of two different models with the active member second. Each member
+# section carries its own MAC, model and serial; the table marks the active one.
+MIXED_STACK = """Cisco IOS XE Software, Version 17.12.04
+
+Switch 01
+---------
+Base Ethernet MAC Address            : 00:11:11:11:11:11
+Model Number                         : C9300-24P
+System Serial Number                 : FOC1111X1XX
+
+Switch 02
+---------
+Base Ethernet MAC Address            : 00:22:22:22:22:22
+Model Number                         : C9300-48P
+System Serial Number                 : FOC2222X2XX
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+     1 24    C9300-24P          17.12.04          CAT9K_IOSXE           INSTALL
+*    2 48    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL"""
+
 failures = []
 
 
@@ -73,6 +94,41 @@ def test_reads_each_field():
           == '00:1A:2B:3C:4D:5E')
     check('output with no MAC line yields nothing, not an empty-looking value',
           stig_common.parse_base_mac('Cisco IOS XE Software, Version 17.12.04') is None)
+
+    check('serial from `show version`',
+          stig_common.parse_serial_number(fixtures.SHOW_VERSION) == 'FOC0000X0XX')
+    check('and the `Processor board ID` line platforms print instead',
+          stig_common.parse_serial_number('Processor board ID FDO1234ABCD') == 'FDO1234ABCD')
+
+
+def test_stack_reads_the_active_member():
+    """Model, serial and base MAC are each printed once per stack member, in
+    member order, so the first match of any of them is switch 1's. That is only
+    the right answer when switch 1 is the member in charge - and when it is
+    not, taking it puts one switch's hardware in the checklist under the active
+    switch's name, which is a thing no reviewer can see is wrong."""
+    print('\non a stack, every per-member field comes from the active member')
+    check('the table says which member is active',
+          stig_common.active_member(MIXED_STACK)[:2] == (2, 'C9300-48P'),
+          stig_common.active_member(MIXED_STACK))
+    check('the MAC is that member\'s, not switch 1\'s',
+          stig_common.parse_base_mac(MIXED_STACK) == '00:22:22:22:22:22',
+          stig_common.parse_base_mac(MIXED_STACK))
+    check('and so is the serial',
+          stig_common.parse_serial_number(MIXED_STACK) == 'FOC2222X2XX',
+          stig_common.parse_serial_number(MIXED_STACK))
+
+    # `Switch 2` and `Switch 02` are both in the wild.
+    unpadded = MIXED_STACK.replace('Switch 01', 'Switch 1').replace('Switch 02', 'Switch 2')
+    check('a member heading without its leading zero is read the same way',
+          stig_common.parse_serial_number(unpadded) == 'FOC2222X2XX',
+          stig_common.parse_serial_number(unpadded))
+
+    # A standalone switch prints one member section and often no table, and has
+    # to keep answering exactly as it did before any of this existed.
+    check('a switch with no stack table still answers from its one section',
+          (stig_common.parse_base_mac(fixtures.SHOW_VERSION) == '00:1A:2B:3C:4D:5E'
+           and stig_common.parse_serial_number(fixtures.SHOW_VERSION) == 'FOC0000X0XX'))
 
 
 def test_management_ip():
@@ -226,6 +282,7 @@ def test_older_capture(tmpdir):
 
 if __name__ == '__main__':
     test_reads_each_field()
+    test_stack_reads_the_active_member()
     test_management_ip()
     test_filename()
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -333,14 +333,14 @@ def describe_connect_failure(error_text):
 # hostname is the switch's own where the walk got far enough to ask it, and the
 # saved session's name where it did not: a row for a device nobody could reach
 # still has to be identifiable, and the session name is what the person chasing
-# it will recognise. model and ios_version are blank on those rows for the
-# honest reason - nothing read them, because nothing answered.
+# it will recognise. model, serial_number and ios_version are blank on those
+# rows for the honest reason - nothing read them, because nothing answered.
 #
 # outcome, session and timestamp follow, and are what make the file a census
 # rather than a report: one row per session in the list, countable in a
 # spreadsheet without picking the newest row per switch out of a history.
-LOG_COLUMNS = ('hostname', 'ip_address', 'model', 'ios_version', 'comment',
-               'outcome', 'session', 'timestamp')
+LOG_COLUMNS = ('hostname', 'ip_address', 'model', 'serial_number', 'ios_version',
+               'comment', 'outcome', 'session', 'timestamp')
 
 
 class RunLog:
@@ -365,9 +365,9 @@ class RunLog:
             handle.write(','.join(LOG_COLUMNS) + '\n')
 
     def record(self, session_path, host, outcome, comment='',
-               hostname='', model='', ios_version=''):
+               hostname='', model='', ios_version='', serial=''):
         self.counts[outcome] = self.counts.get(outcome, 0) + 1
-        row = (hostname or session_path, host, model, ios_version, comment,
+        row = (hostname or session_path, host, model, serial, ios_version, comment,
                outcome, session_path, time.strftime('%Y-%m-%d %H:%M:%S'))
         with open(self.path, 'a', encoding='utf-8') as handle:
             handle.write(','.join('"{0}"'.format(str(f).replace('"', "'")) for f in row) + '\n')
@@ -560,14 +560,15 @@ def main():
         version = outputs.get('show version', '')
         model = capture_l2s.show_version_model(version)
         release = capture_l2s.show_version_release(version)
+        serial = capture_l2s.show_version_serial(version)
         # The config's hostname rather than the prompt's, so a row and the
         # checklist it produced name the same switch - the audit reads this one.
         named = capture_l2s.running_config_hostname(
             outputs.get('show running-config', '')) or hostname
 
         def record(outcome, comment=''):
-            log.record(session_path, host, outcome, comment,
-                       hostname=named, model=model, ios_version=release)
+            log.record(session_path, host, outcome, comment, hostname=named,
+                       model=model, ios_version=release, serial=serial)
 
         key = index_key(session_path, host)
         path = os.path.join(output_dir, key)
