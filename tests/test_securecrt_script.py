@@ -144,7 +144,7 @@ def test_constants_match_capture_module():
 def test_render_round_trips():
     print('\nrendered text parses back through capture.py')
     parsed = capture.parse(capture_l2s.render(OUTPUTS))
-    check('all five sections recovered', set(parsed) == set(OUTPUTS), sorted(parsed))
+    check('all six sections recovered', set(parsed) == set(OUTPUTS), sorted(parsed))
     for command, original in OUTPUTS.items():
         check(f'{command!r} verbatim', parsed.get(command) == original.strip('\n'))
 
@@ -168,7 +168,7 @@ def test_full_run(tmpdir):
     fake = run_script(path=path)
     check('paging disabled first', fake.Screen.sent[0] == 'terminal length 0',
           fake.Screen.sent[:2])
-    check('all five commands sent',
+    check('all six commands sent',
           fake.Screen.sent[1:] == list(capture_l2s.COMMANDS), fake.Screen.sent[1:])
     check('synchronous mode restored', fake.Screen.Synchronous is False)
     check('capture file written', os.path.exists(path))
@@ -202,7 +202,7 @@ def test_full_run(tmpdir):
 
 def test_interface_templates_are_collected(tmpdir):
     """A capture is only as complete as the commands that were sent, and on an
-    IOS XE switch that templates its user ports the fixed five are not all of
+    IOS XE switch that templates its user ports the fixed six are not all of
     them: the port's own block says `source template <name>` and nothing else.
     Collected here or the audit never sees that configuration - and since it
     refuses a capture that sources a template it does not carry, a collector
@@ -217,7 +217,7 @@ def test_interface_templates_are_collected(tmpdir):
     path = os.path.join(tmpdir, 'templated.capture')
     capture_l2s.OPEN_REPORT = False
     fake = run_script(path=path, outputs=outputs)
-    check('the template command is sent, after the fixed five',
+    check('the template command is sent, after the fixed six',
           fake.Screen.sent[1:] == list(capture_l2s.COMMANDS) + [template_command],
           fake.Screen.sent[1:])
     if os.path.exists(path):

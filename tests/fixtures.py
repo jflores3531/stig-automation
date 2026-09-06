@@ -6,6 +6,9 @@ the hostname is invented, so this file is safe to commit where a real capture
 would not be - see capture.py. Shaped like a Catalyst running IOS XE, including
 a TwentyFiveGigE uplink, so the interface-prefix handling is exercised too.
 
+The version, model and release in SHOW_VERSION are consistent with the config:
+a Catalyst 9300 on IOS XE 17.12.4, which is a release V-220621's table knows.
+
 It also carries the two Layer 3 interfaces whose names look like switchports:
 the out-of-band management port GigabitEthernet0/0 (in Mgmt-vrf, and never a
 switchport on Catalyst hardware) and a routed uplink carrying 'no switchport'.
@@ -17,7 +20,7 @@ RUNNING_CONFIG = """Building configuration...
 
 Current configuration : 4211 bytes
 !
-version 17.9
+version 17.12
 service timestamps debug datetime msec localtime show-timezone
 service timestamps log datetime msec localtime show-timezone
 service password-encryption
@@ -30,6 +33,16 @@ aaa accounting exec default start-stop group radius
 !
 no ip domain-lookup
 ip domain name example.test
+!
+crypto pki trustpoint TP-self-signed-1234567890
+ enrollment selfsigned
+ subject-name cn=IOS-Self-Signed-Certificate-1234567890
+ revocation-check none
+ rsakeypair TP-self-signed-1234567890
+!
+crypto pki certificate chain TP-self-signed-1234567890
+ certificate self-signed 01
+  quit
 !
 vtp mode transparent
 !
@@ -52,6 +65,27 @@ ip dhcp snooping vlan 20
 ip dhcp snooping
 ip arp inspection vlan 20
 !
+class-map match-all C2_VOICE
+ match ip dscp 47
+class-map match-all VOICE
+ match ip dscp ef
+class-map match-all VIDEO
+ match ip dscp af41
+class-map match-all PREFERRED_DATA
+ match ip dscp af33
+!
+policy-map QOS_POLICY_SWITCHPORT
+ class C2_VOICE
+  priority level 1 10
+ class VOICE
+  priority level 2 15
+ class VIDEO
+  bandwidth percent 25
+ class PREFERRED_DATA
+  bandwidth percent 25
+ class class-default
+  bandwidth percent 25
+!
 interface GigabitEthernet1/0/1
  description user port
  switchport mode access
@@ -59,11 +93,13 @@ interface GigabitEthernet1/0/1
  spanning-tree portfast
  spanning-tree bpduguard enable
  ip verify source
+ service-policy output QOS_POLICY_SWITCHPORT
 !
 interface GigabitEthernet1/0/2
  description disabled port
  switchport mode access
  switchport access vlan 1000
+ service-policy output QOS_POLICY_SWITCHPORT
  shutdown
 !
 interface TwentyFiveGigE1/1/1
@@ -73,6 +109,7 @@ interface TwentyFiveGigE1/1/1
  switchport trunk allowed vlan 10,20
  ip dhcp snooping trust
  ip arp inspection trust
+ service-policy output QOS_POLICY_SWITCHPORT
 !
 interface GigabitEthernet0/0
  description out-of-band management
@@ -146,6 +183,27 @@ VLAN0020
              Port        1 (TwentyFiveGigE1/1/1)
              Hello Time  2 sec  Max Age 20 sec  Forward Delay 15 sec"""
 
+SHOW_VERSION = """Cisco IOS XE Software, Version 17.12.04
+Cisco IOS Software [Dublin], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.12.4, RELEASE SOFTWARE (fc2)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2024 by Cisco Systems, Inc.
+
+TESTSW01 uptime is 3 weeks, 2 days, 4 hours, 11 minutes
+System image file is "flash:packages.conf"
+Last reload reason: Reload Command
+
+cisco C9300-48P (X86) processor with 1419044K/6147K bytes of memory.
+Processor board ID FOC0000X0XX
+1 Virtual Ethernet interface
+52 Gigabit Ethernet interfaces
+2048K bytes of non-volatile configuration memory.
+
+Model Number                         : C9300-48P
+System Serial Number                 : FOC0000X0XX
+
+Configuration register is 0x102"""
+
+
 VTP_PASSWORD = 'The VTP password is not configured.'
 
 SNMP_USER = """User name: stigadmin
@@ -161,4 +219,5 @@ OUTPUTS = {
     'show spanning-tree': SPANNING_TREE,
     'show vtp password': VTP_PASSWORD,
     'show snmp user': SNMP_USER,
+    'show version': SHOW_VERSION,
 }

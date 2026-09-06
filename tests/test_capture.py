@@ -105,7 +105,7 @@ def test_session_log():
     log = ''.join(f'TESTSW01#{command}\n{output}\nTESTSW01#\n'
                   for command, output in OUTPUTS.items())
     parsed = capture.parse(log)
-    check('all five commands recovered', set(parsed) == set(OUTPUTS), f'got {sorted(parsed)}')
+    check('all six commands recovered', set(parsed) == set(OUTPUTS), f'got {sorted(parsed)}')
     for command, original in OUTPUTS.items():
         check(f'{command!r} matches the delimited form', parsed.get(command) == original.strip('\n'))
     check('trailing prompt stripped', not parsed['show vtp password'].endswith('#'))
@@ -161,7 +161,7 @@ def test_encodings(tmpdir):
 
 def test_not_a_switch(tmpdir):
     """A session pointed at something that is not a Cisco switch yields a file
-    with all five sections present and none of them config - bash answers every
+    with all six sections present and none of them config - bash answers every
     command with an error, so nothing is empty and nothing is truncated. The
     audit would then answer 64 rules against shell error text and report a
     switch that does not exist. Caught here, however the capture was collected."""

@@ -55,21 +55,23 @@ OPEN_REPORT = True
 # dialog, so the actual path is never a guess.
 CAPTURE_DIR = r'C:\Documents'
 
-# The five commands every L2S audit reads. Four of these exist because the state
+# The six commands every L2S audit reads. Five of these exist because the state
 # is not in running-config: user VLANs, the STP root port, the VTP password,
-# and the SNMPv3 users. Keep in step with capture.AUDIT_COMMANDS_L2S.
+# the SNMPv3 users, and the model and release the switch is running. Keep in
+# step with capture.AUDIT_COMMANDS_L2S.
 COMMANDS = (
     'show running-config',
     'show vlan brief',
     'show spanning-tree',
     'show vtp password',
     'show snmp user',
+    'show version',
 )
 
 # And then one more per interface template the config turns out to use. An
 # IOS XE port configured by `source template <name>` shows that single line in
 # running-config and none of the commands it stands for, so a capture with only
-# the five above hands the audit interfaces that look unconfigured - a false
+# the six above hands the audit interfaces that look unconfigured - a false
 # FAIL on every per-port rule at once. The names cannot be known before the
 # config is read, which is why this is a second pass rather than a longer
 # COMMANDS tuple. Must match capture.TEMPLATE_COMMAND_PREFIX.
@@ -165,7 +167,7 @@ def looks_paginated(text):
 
 # A prompt ending in '#' is not proof of a Cisco switch. root's shell prompt
 # ends in '#' too, and so does the prompt on plenty of appliances - so the
-# enable-mode check above passes on a Linux box and the five show commands go
+# enable-mode check above passes on a Linux box and the show commands go
 # to bash. That mattered little when the only way here was connecting by hand,
 # but a walker driving a list of saved sessions will eventually meet a jump
 # host, a console server, or an iDRAC, and a junk capture that only fails later
@@ -253,7 +255,7 @@ class CollectionError(Exception):
 
 
 def collect(prompt=None):
-    """Send the five show commands to the current session and return
+    """Send the six show commands to the current session and return
     (hostname, outputs). Raises CollectionError if the session is not a Cisco
     switch in enable mode, or if any output arrives truncated or empty.
 

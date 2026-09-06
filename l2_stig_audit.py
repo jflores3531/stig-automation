@@ -8,6 +8,7 @@ the same requirements - the same checks serve both, re-keyed through
 ios_xe_rule_map.py."""
 
 import argparse
+import datetime
 import ipaddress
 import re
 import os
@@ -908,14 +909,39 @@ def _logging_trap_check(cfg):
 # deletion, and limit privileges to change software libraries - DISA reuses
 # the same evidence (file privilege 15) for all three, and all three are
 # explicitly conditional: "If persistent logging is enabled ... Otherwise,
-# this requirement is not applicable." No `logging persistent` line means
-# PASS (not a finding), not FAIL.
+# this requirement is not applicable."
+#
+# No `logging persistent` line is NOT APPLICABLE, not PASS. Both are
+# non-findings and the distinction looks cosmetic from inside the script, but
+# it is the difference between two sentences on a checklist: PASS says the
+# switch protects its persistent log files, and the switch keeps no persistent
+# log files at all. Reported as PASS, three rules on every report claimed
+# evidence for something never examined, and the reason line contradicted the
+# status beside it. `NOT_A_FINDING` and `NOT_APPLICABLE` are also different
+# statuses in a .cklb, so this is the one that transcribes correctly.
 def _audit_info_protection_check(cfg):
     if not re.search(r'^logging persistent', cfg, re.M):
-        return True, 'persistent logging not configured - not applicable per DISA (only required when `logging persistent` is enabled)'
-    if re.search(r'^file privilege 15', cfg, re.M):
+        return None, 'persistent logging not configured - not applicable per DISA (only required when `logging persistent` is enabled)'
+    # Absence of `file privilege` is compliance, not a missing fix. The rule's
+    # own Note says so: "The default privilege level required for access to the
+    # file system is 15; hence, the command file privilege 15 will not be shown
+    # in the configuration", and its finding is "if the switch is configured
+    # with a privilege level OTHER than 15". Requiring the line to be present
+    # failed every switch that had never been told to lower it - the one state
+    # the rule is written to accept.
+    m = re.search(r'^file privilege (\d+)', cfg, re.M)
+    if m and m.group(1) != '15':
+        return False, (
+            f'persistent logging enabled and `file privilege {m.group(1)}` opens the file '
+            'system - and the persistent log files on it - to privilege level '
+            f'{m.group(1)}, below the 15 this rule requires'
+        )
+    if m:
         return True, 'persistent logging enabled and `file privilege 15` present'
-    return False, 'persistent logging enabled but missing `file privilege 15` (required to restrict file-system access once persistent logging is on)'
+    return True, (
+        'persistent logging enabled and no `file privilege` line, so file-system access is '
+        'at the IOS default of privilege 15 (which DISA notes is never shown in the config)'
+    )
 
 
 # V-220644: default VLAN (1) must not carry management traffic - verifies
@@ -1025,20 +1051,79 @@ def _ntp_auth_cryptographic_check(cfg):
     )
 
 
-# V-220567 (IOS XE): Check Content is a certificate-issuer review. When no
-# trustpoint exists the rule has nothing to apply to; when one does,
-# confirming its issuer is DOD-approved needs live CA review
-# (`show crypto pki certificates` CN/O/OU), not derivable from config text.
+# V-220567 (IOS XE): the switch must obtain its public key certificates from an
+# approved service provider. The rule opens "This requirement is not applicable
+# if the router or switch does not have any public key certificates", and its
+# whole procedure is one step: find the trustpoint, read the URL of the CA it
+# enrolled with, verify that CA is DOD or DOD-approved.
+#
+# The presence of a trustpoint was read as "there is a certificate to review"
+# and reported NOT AUTOMATED. On the work fleet that is wrong on every switch:
+# what they carry is `TP-self-signed-<serial>`, which IOS XE generates by
+# itself the moment the HTTPS server comes up. It enrolls with nothing - the
+# switch signs its own certificate - so there is no service provider, no CA
+# URL, and nothing the review step could be performed against. Verified on a
+# real switch with `show running-config | include enrollment url` (no output)
+# and `show crypto pki trustpoints`.
+#
+# So the enrollment method, not the existence of a trustpoint, is what decides
+# this rule, and it is in running-config:
+#
+#   `enrollment url http://ca.example.mil`  - enrolled with a CA; whether that
+#       CA is DOD-approved is a CN/O/OU judgement, still NOT AUTOMATED, but the
+#       URL to check is now printed in the report instead of requiring a login.
+#   `enrollment terminal`                   - enrolled with a CA by cut and
+#       paste. Same review, no URL to show for it.
+#   `enrollment selfsigned` / no enrollment - self-signed. Certificates exist
+#       but none of them came from a provider: NOT APPLICABLE.
+#
 # Ported from ios_router_audit.py's V-215711, itself ported from NX-OS -
 # IOS/IOS XE use `crypto pki trustpoint`, NX-OS uses `crypto ca trustpoint`.
+def _block_body(chunk, start):
+    """The body of a top-level block: everything from `start` up to the next
+    line that begins in column 1, which is the next top-level command."""
+    return re.split(r'^\S', chunk[start:], maxsplit=1, flags=re.M)[0]
+
+
+def _trustpoint_blocks(cfg):
+    """Yield (name, body) for every `crypto pki trustpoint` in the config. The
+    body stops at the next top-level line, so the certificate chain that
+    follows a trustpoint is not read as part of its enrollment method."""
+    for chunk in re.split(r'^(?=crypto pki trustpoint \S+)', cfg, flags=re.M):
+        m = re.match(r'crypto pki trustpoint (\S+)', chunk)
+        if m:
+            yield m.group(1), _block_body(chunk, m.end())
+
+
 def _pki_trustpoint_check(cfg):
-    m = re.search(r'^crypto pki trustpoint (\S+)', cfg, re.M)
-    if not m:
+    enrolled = []
+    self_signed = []
+    for name, body in _trustpoint_blocks(cfg):
+        # Anything that is not `enrollment selfsigned` counts as enrollment with
+        # a CA, including forms this has never seen (`enrollment profile`,
+        # `enrollment mode ra`). An unknown form then reports NOT AUTOMATED
+        # rather than NOT APPLICABLE, which costs a look at a switch that may
+        # not have needed one - the direction that cannot hide a real finding.
+        methods = [line.strip() for line in
+                   re.findall(r'^\s*enrollment\s+(.+?)\s*$', body, re.M)
+                   if line.split()[0] != 'selfsigned']
+        if methods:
+            enrolled.append(f'{name} (enrollment {"; enrollment ".join(methods)})')
+        else:
+            self_signed.append(name)
+
+    if not enrolled and not self_signed:
         return None, 'not applicable - no CA trustpoint configured'
+    if not enrolled:
+        return None, (
+            f'not applicable - trustpoint(s) {", ".join(sorted(self_signed))} are self-signed '
+            '(`enrollment selfsigned`, or no enrollment at all), so the switch holds no certificate '
+            'obtained from a service provider for this rule to review'
+        )
     return 'NOT AUTOMATED', (
-        f'CA trustpoint `{m.group(1)}` configured - verify its issuer is a DOD/DOD-approved '
-        'provider via `show crypto pki certificates` (CN/O/OU review), not derivable from '
-        'running-config text'
+        f'CA-enrolled trustpoint(s) {", ".join(sorted(enrolled))} - verify the issuer is a '
+        'DOD/DOD-approved provider via `show crypto pki certificates` (CN/O/OU review), '
+        'which running-config text cannot answer'
     )
 
 
@@ -1085,6 +1170,283 @@ def _udld_check(cfg):
         return True, f'enabled per-interface (`udld port`) on: {", ".join(sorted(per_interface))}'
     return False, 'no `udld enable`/`udld aggressive` globally and no `udld port` on any interface'
 
+
+# V-220651 (IOS XE): manage excess bandwidth to limit the effects of packet
+# flooding. This was excluded from the IOS map because the IOS book's check is
+# a single `mls qos` (V-220625), a command IOS XE does not have - inheriting
+# that predicate would report a permanent FAIL on a compliant Catalyst.
+#
+# The IOS XE Check Content asks for the MQC shape instead, in three steps:
+# class-maps matching DSCP values, a policy-map reserving bandwidth per class,
+# and the policy applied outbound on the switchports. All three are
+# running-config text, so all three are checkable here - `show class-map` and
+# `show policy-map` print the same configuration back.
+#
+# Matched on DSCP value, not on the example's class-map names. The finding
+# sentence is only "If quality of service (QoS) has not been enabled, this is
+# a finding", so a switch that reserves the same bandwidth under a local naming
+# scheme has enabled QoS and must not be failed for spelling. The STIG's own
+# traffic types are still reported by name in the reason, and any of them the
+# policy does not cover is said out loud on the PASS - visible to a reviewer
+# transcribing the checklist, without inventing a finding DISA did not write.
+#
+# Coverage, unlike naming, is a finding: a policy applied to some switchports
+# and not others leaves the uncovered ones exactly as floodable as before, and
+# the rule's own Fix Text applies the service-policy to every port in its
+# example, access and trunk alike. Ports missing it are named, the way every
+# other per-port rule here names them.
+STIG_QOS_TRAFFIC_TYPES = (
+    ('C2_VOICE', '47'),
+    ('VOICE', 'ef'),
+    ('VIDEO', 'af41'),
+    ('PREFERRED_DATA', 'af33'),
+)
+
+# Per-hop behaviour keywords and the DSCP value each stands for, so a class-map
+# written `match ip dscp ef` and one written `match ip dscp 46` compare equal.
+DSCP_KEYWORDS = {
+    'default': 0, 'ef': 46,
+    'af11': 10, 'af12': 12, 'af13': 14, 'af21': 18, 'af22': 20, 'af23': 22,
+    'af31': 26, 'af32': 28, 'af33': 30, 'af41': 34, 'af42': 36, 'af43': 38,
+    'cs1': 8, 'cs2': 16, 'cs3': 24, 'cs4': 32, 'cs5': 40, 'cs6': 48, 'cs7': 56,
+}
+
+
+def _dscp_value(token):
+    """The numeric DSCP a token names, or None if it names none."""
+    token = token.lower()
+    if token in DSCP_KEYWORDS:
+        return DSCP_KEYWORDS[token]
+    return int(token) if token.isdigit() else None
+
+
+def _class_map_dscp_values(cfg):
+    """{class-map name: set of DSCP values it matches}."""
+    maps = {}
+    for chunk in re.split(r'^(?=class-map )', cfg, flags=re.M):
+        m = re.match(r'class-map (?:match-all |match-any )?(\S+)', chunk)
+        if not m:
+            continue
+        values = set()
+        for match_line in re.findall(r'^\s*match (?:ip )?dscp (.+?)\s*$',
+                                     _block_body(chunk, m.end()), re.M):
+            for token in match_line.split():
+                value = _dscp_value(token)
+                if value is not None:
+                    values.add(value)
+        maps[m.group(1)] = values
+    return maps
+
+
+def _policy_map_classes(cfg):
+    """{policy-map name: {class name: that class's body}}."""
+    policies = {}
+    for chunk in re.split(r'^(?=policy-map )', cfg, flags=re.M):
+        m = re.match(r'policy-map (\S+)', chunk)
+        if not m:
+            continue
+        classes = {}
+        for part in re.split(r'^(?=\s+class \S+)', _block_body(chunk, m.end()), flags=re.M):
+            class_name = re.match(r'\s+class (\S+)', part)
+            if class_name:
+                classes[class_name.group(1)] = part
+        policies[m.group(1)] = classes
+    return policies
+
+
+def _reserves_bandwidth(class_body):
+    """True if a policy-map class actually reserves capacity - `priority`,
+    `priority level 1 10`, `bandwidth percent 25`, `bandwidth remaining
+    percent 25`, or a shaper. A class that only marks or polices reserves
+    nothing, and a policy made entirely of those is not the bandwidth
+    management this rule is about."""
+    return bool(re.search(r'^\s*(priority|bandwidth|shape)\b', class_body, re.M))
+
+
+def _qos_bandwidth_check(cfg):
+    switchports = dict(_switchport_blocks(cfg))
+    if not switchports:
+        return False, 'no switchports found in config'
+
+    attached, unattached = {}, []
+    for name, block in sorted(switchports.items()):
+        m = re.search(r'^\s*service-policy output (\S+)', block, re.M)
+        if m:
+            attached.setdefault(m.group(1), []).append(name)
+        else:
+            unattached.append(name)
+
+    if not attached:
+        return False, (
+            'QoS is not enabled: no switchport carries a `service-policy output <policy>`, '
+            'so no traffic type has bandwidth reserved and nothing limits a flood'
+        )
+
+    policies = _policy_map_classes(cfg)
+    class_dscp = _class_map_dscp_values(cfg)
+    reserving = {}
+    for policy_name, ports in sorted(attached.items()):
+        classes = policies.get(policy_name)
+        if classes is None:
+            return False, (
+                f'`service-policy output {policy_name}` is applied to {", ".join(ports)} but no '
+                f'`policy-map {policy_name}` is configured - it reserves nothing because it '
+                'does not exist'
+            )
+        reserved = {name: body for name, body in classes.items() if _reserves_bandwidth(body)}
+        if not reserved:
+            return False, (
+                f'`policy-map {policy_name}` is applied to {", ".join(ports)} but no class in it '
+                'reserves bandwidth (no `priority`, `bandwidth` or `shape`), so it does not '
+                'manage excess bandwidth'
+            )
+        reserving[policy_name] = reserved
+
+    if unattached:
+        return False, (
+            f'missing `service-policy output` on: {", ".join(unattached)} - '
+            f'`{"`/`".join(sorted(attached))}` reserves bandwidth on the other '
+            f'{len(switchports) - len(unattached)} switchport(s), leaving these unprotected'
+        )
+
+    # Everything below is a PASS. What it says is which of the STIG's example
+    # traffic types this switch actually reserves for, matched by DSCP.
+    covered, uncovered = [], []
+    for label, dscp in STIG_QOS_TRAFFIC_TYPES:
+        value = _dscp_value(dscp)
+        if any(value in class_dscp.get(class_name, set())
+               for reserved in reserving.values() for class_name in reserved):
+            covered.append(f'{label} (dscp {dscp})')
+        else:
+            uncovered.append(f'{label} (dscp {dscp})')
+    default_reserved = any('class-default' in reserved for reserved in reserving.values())
+
+    reason = (
+        f'QoS enabled: `service-policy output {"`/`".join(sorted(attached))}` on all '
+        f'{len(switchports)} switchport(s), reserving bandwidth for '
+        f'{", ".join(covered) if covered else "locally defined classes"}'
+        f'{" and class-default" if default_reserved else ""}'
+    )
+    if uncovered:
+        reason += (
+            f'. Not reserved for: {", ".join(uncovered)} - the Check Content lists these as its '
+            'example and its finding condition is only that QoS is not enabled, so this is '
+            'reported rather than failed'
+        )
+    if not default_reserved:
+        reason += '. No `class class-default` reservation, which the example also shows'
+    return True, reason
+
+
+# V-220621 (IOS) / V-220569 (IOS XE): the switch must run a release Cisco still
+# supports. The Check Content is `show version` plus a lookup on
+# cisco.com/c/en/us/support/ios-nx-os-software, so the rule was NOT AUTOMATED
+# and every report said "log into the switch and read its version" - a trip per
+# switch to collect a fact the audit was already connected to read.
+#
+# What `show version` answers is model and release. What it cannot answer is
+# whether Cisco still supports that pair, which is a date on a Cisco end-of-life
+# bulletin and not a property of the device. Both tables below therefore carry
+# their evidence: a hardware last-date-of-support is compared against today
+# rather than baked into a verdict, and the release list records when it was
+# last checked and stops being trusted once that reading goes stale. A silent
+# PASS from a table nobody has re-read since is the failure this rule would be
+# worst to have - a high-severity finding reported as compliant.
+#
+# Anything the tables do not cover still reports NOT AUTOMATED, but now with
+# the model and release printed, so the manual step is one lookup rather than
+# one login.
+
+# Cisco's published last date of support, per hardware family. A switch past
+# this date fails regardless of the release it runs: no supported release
+# exists for it any more. Matched as a substring of the model, so 'WS-C3850'
+# covers every WS-C3850-nn variant.
+PLATFORM_LAST_DATE_OF_SUPPORT = {
+    'WS-C3850': ('2025-10-31', 'Catalyst 3850'),
+    'WS-C3650': ('2025-10-31', 'Catalyst 3650'),
+    'WS-C3750': ('2021-10-31', 'Catalyst 3750/3750-X'),
+    'WS-C3560': ('2021-10-31', 'Catalyst 3560/3560-X'),
+}
+
+# Releases confirmed supported on RELEASE_LIST_REVIEWED. Deliberately short:
+# every entry is a release someone read off cisco.com on that date, not a
+# guess at a train. A release that is not listed is not a finding - it is
+# NOT AUTOMATED, which is what "this list does not know" honestly reads as.
+RELEASE_LIST_REVIEWED = '2026-09-05'
+RELEASE_LIST_STALE_AFTER_DAYS = 180
+SUPPORTED_RELEASES = {
+    '17.12.4': 'Cisco suggested release for Catalyst 9000 IOS XE',
+    '17.12.3a': 'Cisco suggested release for Catalyst 9000 IOS XE',
+}
+
+CISCO_SUPPORT_URL = 'www.cisco.com/c/en/us/support/ios-nx-os-software'
+
+
+def _show_version_release(output):
+    """The release string from `show version`, normalized so the two lines
+    IOS XE prints for one release agree: the banner says 17.12.04 and the
+    IOS Software line says 17.12.4, and only one of those can be in a table."""
+    for pattern in (r'Cisco IOS XE Software, Version (\S+)',
+                    r'Cisco IOS Software.*?,\s*(?:Experimental )?Version ([^\s,]+)',
+                    r'^Version (\S+)'):
+        m = re.search(pattern, output, re.M)
+        if m:
+            return re.sub(r'(^|\.)0+(\d)', r'\1\2', m.group(1).strip().rstrip(','))
+    return None
+
+
+def _show_version_model(output):
+    """The switch model from `show version`. 'Model Number' is the Catalyst
+    form; the 'cisco <model> (<cpu>) processor' line is what everything else,
+    including the lab's vios_l2 image, prints."""
+    for pattern in (r'^Model [Nn]umber\s*:\s*(\S+)',
+                    r'^\s*[Cc]isco (\S+) \(.*\) processor'):
+        m = re.search(pattern, output, re.M)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _ios_release_supported_check(version_output, today=None):
+    today = today or datetime.date.today()
+    model = _show_version_model(version_output)
+    release = _show_version_release(version_output)
+
+    if model:
+        for family, (last_date, name) in PLATFORM_LAST_DATE_OF_SUPPORT.items():
+            if family.lower() in model.lower():
+                if datetime.date.fromisoformat(last_date) < today:
+                    return False, (
+                        f'{model} is a {name} - Cisco\'s last date of support was {last_date}, '
+                        f'so no release it can run is supported (running {release or "an unreadable release"}). '
+                        'The fix is hardware, not an upgrade.'
+                    )
+                break
+
+    if release is None or model is None:
+        return 'NOT AUTOMATED', (
+            f'could not read {"a release" if release is None else "a model"} from `show version` - '
+            f'check the release by hand against {CISCO_SUPPORT_URL}'
+        )
+
+    reviewed = datetime.date.fromisoformat(RELEASE_LIST_REVIEWED)
+    stale = (today - reviewed).days > RELEASE_LIST_STALE_AFTER_DAYS
+    if release in SUPPORTED_RELEASES and not stale:
+        return True, (
+            f'running {release} on {model} - {SUPPORTED_RELEASES[release]}, supported as of '
+            f'{RELEASE_LIST_REVIEWED}'
+        )
+    if release in SUPPORTED_RELEASES:
+        return 'NOT AUTOMATED', (
+            f'running {release} on {model}, which was supported as of {RELEASE_LIST_REVIEWED} - '
+            f'more than {RELEASE_LIST_STALE_AFTER_DAYS} days ago, so re-check it against '
+            f'{CISCO_SUPPORT_URL} and update SUPPORTED_RELEASES rather than trust this'
+        )
+    return 'NOT AUTOMATED', (
+        f'running {release} on {model} - not in the list of releases reviewed on '
+        f'{RELEASE_LIST_REVIEWED} ({", ".join(sorted(SUPPORTED_RELEASES))}), which means '
+        f'unknown, not unsupported: confirm at {CISCO_SUPPORT_URL}'
+    )
 
 # Regex/keyword checks for rules that can be verified directly from running-config
 # text. Rules with no entry here need external infrastructure (RADIUS, syslog,
@@ -1332,6 +1694,7 @@ try:
     root_ports = stig_common.discover_root_port_interfaces(discovery_connect)
     vtp_password_output = str(discovery_connect.send_command('show vtp password'))
     snmp_user_output = str(discovery_connect.send_command('show snmp user'))
+    version_output = str(discovery_connect.send_command('show version'))
     # Read here rather than left to run_stig_audit's own read because the
     # template names are in it: which `show template interface source user`
     # commands this switch needs is a fact about its config, so the config has
@@ -1358,6 +1721,7 @@ try:
             'show spanning-tree': str(discovery_connect.send_command('show spanning-tree')),
             'show vtp password': vtp_password_output,
             'show snmp user': snmp_user_output,
+            'show version': version_output,
         }
         # The template sections go in the capture too, or an offline re-run of
         # this same audit would be refused for missing exactly what the live
@@ -1396,6 +1760,11 @@ CHECKS['V-220629'] = lambda cfg: _root_guard_check(cfg, root_ports)
 CHECKS['V-220624'] = lambda cfg: _vtp_password_check(vtp_password_output)
 CHECKS['V-220604'] = lambda cfg: _snmpv3_user_live_check(snmp_user_output, require_priv=False)
 CHECKS['V-220605'] = lambda cfg: _snmpv3_user_live_check(snmp_user_output, require_priv=True)
+# The release is in running-config's `version 17.12` line, but the model is not,
+# and the two together are what decides the rule - a release Cisco still ships
+# for one platform can be unsupported hardware on another. So this reads
+# `show version` like the other live-state checks rather than the config.
+CHECKS['V-220621'] = lambda cfg: _ios_release_supported_check(version_output)
 
 # Re-key onto the IOS XE STIG last, after the live-discovery entries above have
 # been added, so those carry over too. Anything ios_xe_rule_map leaves out has
@@ -1408,6 +1777,7 @@ CHECKS['V-220605'] = lambda cfg: _snmpv3_user_live_check(snmp_user_output, requi
 IOS_XE_ONLY_CHECKS = {
     'V-220554': _ntp_auth_cryptographic_check,  # weaker than IOS V-220606, see the check
     'V-220567': _pki_trustpoint_check,          # no IOS L2S counterpart at all
+    'V-220651': _qos_bandwidth_check,           # MQC; the IOS rule's `mls qos` cannot answer it
 }
 
 if args.checklist == 'ios-xe':

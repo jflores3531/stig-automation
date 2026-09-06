@@ -24,19 +24,27 @@ import netauto
 
 CAPTURE_DIR = os.path.join(netauto.PROJECT_ROOT, 'captures')
 
-# The complete set of commands an L2S audit reads. Four rules need live state
+# The complete set of commands an L2S audit reads. Five of its checks need state
 # that never appears in running-config: user VLANs for V-220633/635, the STP
 # root port for V-220629 (Root Guard must never be pushed there), the VTP
-# password for V-220624 and the SNMPv3 users for V-220604/605 - IOS classic
-# never writes `snmp-server user` to running-config at all. Anything added to
-# a discovery step in l2_stig_audit.py has to be added here too, or a capture
-# that looks complete will be missing it.
+# password for V-220624, the SNMPv3 users for V-220604/605 - IOS classic never
+# writes `snmp-server user` to running-config at all - and the model and
+# release for V-220621, which running-config's bare `version 17.12` line does
+# not carry. Anything added to a discovery step in l2_stig_audit.py has to be
+# added here too, or a capture that looks complete will be missing it.
+#
+# A capture taken before `show version` joined this list is refused with
+# "missing output for: show version" rather than audited without it. That is
+# the same rule as every other command here and for the same reason - the
+# alternative is a rule answered against empty output - but it does mean older
+# capture files have to be re-collected.
 AUDIT_COMMANDS_L2S = (
     'show running-config',
     'show vlan brief',
     'show spanning-tree',
     'show vtp password',
     'show snmp user',
+    'show version',
 )
 
 # Commands whose empty output is an answer rather than a failed read. Refusing
@@ -56,7 +64,7 @@ def empty_is_an_answer(command):
     return _normalise(command) in {_normalise(c) for c in EMPTY_IS_AN_ANSWER}
 
 
-# A sixth command, but a per-device one, so it cannot live in the tuple above.
+# One more command, but a per-device one, so it cannot live in the tuple above.
 # An IOS XE interface can be configured by `source template <name>` instead of
 # carrying the commands itself, and running-config then shows only that one
 # line - the access VLAN, the mode, PortFast, BPDU Guard, 802.1x all sit in the
@@ -353,7 +361,7 @@ def load(path, required_commands=AUDIT_COMMANDS_L2S):
     # Last line of defence, and the only one that applies however the capture
     # was collected. A session driven against something that is not a Cisco
     # switch - a jump host, a console server, an appliance answering on :22 -
-    # produces a file with all five sections present and none of them config.
+    # produces a file with every section present and none of them config.
     # Every rule would then be answered against shell error text, and a report
     # of 60 findings is indistinguishable from a switch that is genuinely
     # non-compliant. Refuse it instead.

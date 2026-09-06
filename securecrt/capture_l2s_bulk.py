@@ -5,7 +5,7 @@
 
 Run this from SecureCRT (Script > Run...) with no session connected, or with
 any session connected - it opens and closes its own. For each saved session it
-connects using the credentials SecureCRT already holds, sends the five
+connects using the credentials SecureCRT already holds, sends the six
 read-only show commands, writes a capture file, and disconnects. Nothing is
 configured on any device. The only non-show command sent is `terminal length 0`,
 which is session-scoped.

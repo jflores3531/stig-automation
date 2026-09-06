@@ -178,7 +178,7 @@ def test_a_switch_without_templates_asks_for_nothing_extra(tmpdir):
 !
 """
     report, code = report_for(tmpdir, 'plain', template_output=None, interfaces=plain)
-    check('the audit runs on the five commands it always needed', code == 0, report[-400:])
+    check('the audit runs on the fixed commands alone', code == 0, report[-400:])
     check('and says nothing about templates',
           'Interface templates' not in report, findings_naming(report, 'template'))
 
