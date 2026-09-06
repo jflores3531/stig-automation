@@ -3,6 +3,10 @@
 
 """Fill in a STIG Viewer 3 checklist for every saved SecureCRT session, unattended.
 
+For an inventory of the fleet rather than an audit of it - hostname, address,
+model, serial and release, in minutes rather than hours - use inventory_l2s.py
+beside this file. It asks one command per switch instead of seven.
+
 Run this from SecureCRT (Script > Run...) with no session connected, or with
 any session connected - it opens and closes its own. For each saved session it
 connects using the credentials SecureCRT already holds, sends the read-only
@@ -325,22 +329,24 @@ def describe_connect_failure(error_text):
     return first_line(error_text)
 
 
-# The run log's columns. The first five are the ones a person reads: what the
-# switch is called, where it lives, what hardware and software were found on
-# it, and a sentence saying what happened - "Connection timed out", "System
-# refused connection", or what the audit made of it.
+# The run log's columns. This is the STIG walk's record of what happened to
+# each switch, not an inventory of the fleet - inventory_l2s.py answers that
+# question, in minutes rather than hours, and carries the serial and the
+# release. Duplicating them here would leave two files disagreeing about a
+# switch the day one of them is a week old.
+#
+# The model stays, because the walk cannot say what it audited without it: a
+# checklist's verdicts mean something different on a C9300 than on a WS-C3850
+# whose hardware is past support, and this is the file that lists both.
 #
 # hostname is the switch's own where the walk got far enough to ask it, and the
 # saved session's name where it did not: a row for a device nobody could reach
 # still has to be identifiable, and the session name is what the person chasing
-# it will recognise. model, serial_number and ios_version are blank on those
-# rows for the honest reason - nothing read them, because nothing answered.
-#
-# outcome, session and timestamp follow, and are what make the file a census
-# rather than a report: one row per session in the list, countable in a
-# spreadsheet without picking the newest row per switch out of a history.
-LOG_COLUMNS = ('hostname', 'ip_address', 'model', 'serial_number', 'ios_version',
-               'comment', 'outcome', 'session', 'timestamp')
+# it will recognise. model is blank on those rows for the honest reason -
+# nothing read it, because nothing answered - and comment says which of the two
+# ways it failed.
+LOG_COLUMNS = ('hostname', 'ip_address', 'model', 'comment',
+               'outcome', 'session', 'timestamp')
 
 
 class RunLog:
@@ -364,10 +370,9 @@ class RunLog:
         with open(self.path, 'w', encoding='utf-8') as handle:
             handle.write(','.join(LOG_COLUMNS) + '\n')
 
-    def record(self, session_path, host, outcome, comment='',
-               hostname='', model='', ios_version='', serial=''):
+    def record(self, session_path, host, outcome, comment='', hostname='', model=''):
         self.counts[outcome] = self.counts.get(outcome, 0) + 1
-        row = (hostname or session_path, host, model, serial, ios_version, comment,
+        row = (hostname or session_path, host, model, comment,
                outcome, session_path, time.strftime('%Y-%m-%d %H:%M:%S'))
         with open(self.path, 'a', encoding='utf-8') as handle:
             handle.write(','.join('"{0}"'.format(str(f).replace('"', "'")) for f in row) + '\n')
@@ -557,18 +562,14 @@ def main():
         # Read once, here, and handed to every row this switch produces: the
         # log says what hardware and software were found whatever happens to
         # the checklist afterwards.
-        version = outputs.get('show version', '')
-        model = capture_l2s.show_version_model(version)
-        release = capture_l2s.show_version_release(version)
-        serial = capture_l2s.show_version_serial(version)
+        model = capture_l2s.show_version_model(outputs.get('show version', ''))
         # The config's hostname rather than the prompt's, so a row and the
         # checklist it produced name the same switch - the audit reads this one.
         named = capture_l2s.running_config_hostname(
             outputs.get('show running-config', '')) or hostname
 
         def record(outcome, comment=''):
-            log.record(session_path, host, outcome, comment, hostname=named,
-                       model=model, ios_version=release, serial=serial)
+            log.record(session_path, host, outcome, comment, hostname=named, model=model)
 
         key = index_key(session_path, host)
         path = os.path.join(output_dir, key)

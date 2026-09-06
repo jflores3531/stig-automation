@@ -428,18 +428,21 @@ def test_log_columns(tmpdir):
     check('every session in the list has a row', len(rows) == 3, sorted(rows))
 
     check('the columns are the ones a person reads, in order',
-          bulk.LOG_COLUMNS[:6] == ('hostname', 'ip_address', 'model', 'serial_number',
-                                   'ios_version', 'comment'),
+          bulk.LOG_COLUMNS[:4] == ('hostname', 'ip_address', 'model', 'comment'),
+          bulk.LOG_COLUMNS)
+    # Serial and release belong to inventory_l2s.py, which answers that
+    # question in minutes. Two files carrying them would disagree the day one
+    # of them is a week old.
+    check('and it does not duplicate the inventory script\'s columns',
+          not any(name in bulk.LOG_COLUMNS for name in ('serial_number', 'ios_version')),
           bulk.LOG_COLUMNS)
 
     reached = rows.get('site-a\\sw-1', {})
     check('a switch that answered is named by its own hostname',
           reached.get('hostname') == 'TESTSW01', reached)
-    check('with its address, model, serial and release from `show version`',
+    check('with its address and the model it was audited on',
           (reached.get('ip_address') == '10.0.11.1'
-           and reached.get('model') == 'C9300-48P'
-           and reached.get('serial_number') == 'FOC0000X0XX'
-           and reached.get('ios_version') == '17.12.4'), reached)
+           and reached.get('model') == 'C9300-48P'), reached)
 
     # The rows the morning after works from.
     timed_out = rows.get('site-a\\sw-2', {})
@@ -454,9 +457,8 @@ def test_log_columns(tmpdir):
     check('an unreached switch is still identifiable by its session and address',
           (timed_out.get('hostname') == 'site-a\\sw-2'
            and timed_out.get('ip_address') == '10.0.11.2'), timed_out)
-    check('and its model, serial and release are blank rather than guessed',
-          not any(timed_out.get(field) for field in ('model', 'serial_number', 'ios_version')),
-          timed_out)
+    check('and its model is blank rather than guessed',
+          not timed_out.get('model'), timed_out)
 
 
 def test_no_audit_here_falls_back_to_captures(tmpdir):

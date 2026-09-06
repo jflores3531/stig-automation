@@ -264,6 +264,19 @@ def show_version_model(output):
     return ''
 
 
+def show_version_hostname(output):
+    """The switch's own name from `show version`'s `<name> uptime is ...` line,
+    or ''.
+
+    The inventory walk asks for `show version` and nothing else, so this is
+    where the name comes from there. It agrees with the config's `hostname` on
+    every switch that has one - IOS builds the line from it - and unlike the
+    prompt it cannot carry a suffix somebody added to the terminal."""
+    import re
+    match = re.search(r'^(\S+) uptime is ', output or '', re.M)
+    return match.group(1) if match else ''
+
+
 def show_version_serial(output):
     """The switch's serial, or '' - `System Serial Number` on Catalyst, the
     `Processor board ID` line elsewhere. The active member's on a stack."""

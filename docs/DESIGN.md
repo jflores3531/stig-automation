@@ -235,3 +235,28 @@ The work switches are reachable only through PowerShell or SecureCRT, and both o
 A capture is refused if any command came back with nothing: a command that returned nothing and a feature that is switched off look identical, and a check handed empty text reports a verdict as confidently as one handed real config.
 
 `show snmp user` is the exception. It prints nothing at all when no SNMPv3 users are defined — a legal switch state, and a non-compliant one that V-220604/605 exist to catch. Refusing the capture there abandons the entire collection over the very finding it was sent to collect, and it fails at collection time, before there is a report to explain it. The section must still be present, so a command that was never run is still caught; it is only allowed to be empty. `_snmpv3_user_live_check` reads empty output as "no SNMPv3 user with an authentication protocol found" and FAILs, which is the right verdict. The exemption list is duplicated in `securecrt/capture_l2s.py` (standalone by design) and `tests/test_securecrt_script.py` asserts the two cannot drift.
+
+## Inventory is a different question from compliance
+
+`securecrt/inventory_l2s.py` walks the same saved sessions the STIG collector
+does and asks one command, `show version`, where that one asks seven. The split
+is not tidiness. `show running-config` is much the slowest of the seven on a
+large switch, so an audit of six hundred devices is an evening and an inventory
+of the same six hundred is a coffee break — and something you can re-run on a
+Tuesday because you want to know what is out there is a different tool from
+something you schedule.
+
+Keeping them apart cost one thing and bought another. The cost is a third file
+in `securecrt/`, which must be copied with the other two: it reuses their
+session discovery, connect handling and `show version` readers rather than
+carrying copies that could drift, because an inventory disagreeing with a
+checklist about which release a switch runs would be worse than no inventory.
+What it bought is that neither has to compromise — the audit is free to be slow
+and thorough, and the inventory is free to be fast and shallow.
+
+The STIG walk's own log keeps the model and drops the serial and release. It
+keeps the model because a verdict means something different on a C9300 than on
+a WS-C3850 whose hardware is past support, and that log is the file listing
+both. It drops the other two because the inventory answers them better and more
+often, and two files carrying the same fact disagree the day one of them is a
+week old.
