@@ -92,6 +92,37 @@ def load_user_vlan_names(path=INVENTORY_PATH):
     return inventory.get('user_vlan_names', [])
 
 
+def load_management_vlan_names(path=INVENTORY_PATH):
+    """Load the management_vlan_names list from the YAML inventory - VLAN
+    *names* carrying the switch's own management address, matched against the
+    name column of `show vlan brief` (exactly, case-insensitively, or as a glob
+    when the entry has a wildcard).
+
+    Used only to fill the exported checklist's IP address field: `show ip
+    interface brief` says Vlan10 has an address and nothing about what VLAN 10
+    is for, and the number varies per site while the name does not. Returns an
+    empty list if nothing is defined, in which case stig_common's default
+    patterns (*mgt, *mgmt) apply. Affects no verdict."""
+    with open(path) as f:
+        inventory = yaml.safe_load(f)
+    return inventory.get('management_vlan_names', [])
+
+
+def load_approved_ca_hosts(path=INVENTORY_PATH):
+    """Load the approved_ca_hosts list from the YAML inventory - the hosts a
+    `crypto pki trustpoint`'s `enrollment url` may name for V-220567/V-215711,
+    matched against the URL's host exactly, case-insensitively, or as a glob.
+
+    "DOD or DOD-approved" is a policy fact about your PKI, not a property of
+    the switch, so it is declared rather than inferred. Returns an empty list
+    if nothing is defined, in which case stig_common's default (*.mil) applies
+    - every DOD PKI CA this has met is under .mil, and an enrollment URL
+    outside it is exactly the case the rule asks a reviewer to look at."""
+    with open(path) as f:
+        inventory = yaml.safe_load(f)
+    return inventory.get('approved_ca_hosts', [])
+
+
 def load_management_subnet(path=INVENTORY_PATH):
     """Load the management_subnet string (e.g. '10.10.50.0/24') from the YAML
     inventory, used to verify vty access-class ACLs are actually scoped to the

@@ -5,15 +5,19 @@
 
 Run this from SecureCRT (Script > Run...) with no session connected, or with
 any session connected - it opens and closes its own. For each saved session it
-connects using the credentials SecureCRT already holds, sends the six
-read-only show commands, writes a capture file, and disconnects. Nothing is
+connects using the credentials SecureCRT already holds, sends the read-only
+show commands, writes a capture file, and disconnects. Nothing is
 configured on any device. The only non-show command sent is `terminal length 0`,
 which is session-scoped.
 
 Afterwards, audit everything collected in one pass:
 
     for %f in (C:\\Documents\\netauto_captures\\*.capture) do ^
-        python l2_stig_audit.py %~nf --from-capture "%f" > "%~dpnf_report.txt"
+        python l2_stig_audit.py %~nf --from-capture "%f" --to-cklb C:\\Documents\\checklists
+
+Given a directory, the audit names each checklist for the switch it audited, the
+date its capture was taken, and the STIG versions in the checklist - so one
+output folder holds the whole fleet without any of them writing over another.
 
 Collection and audit stay separate on purpose. Auditing inside the loop would
 launch a Python subprocess per switch, and a failed audit would be

@@ -34,8 +34,8 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 
 ### Audit & hardening
 - **`stig_common.py`** — Shared audit engine: loads a DISA `.cklb` checklist, checks the device against it, reports PASS/FAIL/NOT AUTOMATED by severity.
-- **`securecrt/capture_l2s.py`** — Runs *inside* SecureCRT (Script → Run) against an already-open session, sending the six read-only show commands — plus one per interface template the config turns out to source — and writing a capture file — then, when it finds the repo next to itself, runs the audit and opens the report, making the whole flow one action: connect, run script, read report. Collection is standalone by design (no netmiko, no repo imports), and the offline audit itself needs only Python — `yaml.py` stands in for PyYAML and netmiko is imported lazily, only when a live connection is actually opened.
-- **`securecrt/capture_l2s_bulk.py`** — The same collection unattended, across every saved SecureCRT session: connect, send the six commands, write a capture, disconnect. It never aborts — a switch that is offline, in a login quiet period or refusing credentials is logged and skipped, because on a fleet of hundreds not all of them answer on a given night. Deliberately separate from `capture_l2s.py`, which cannot connect to anything and so cannot be pointed at the wrong device; this one logs into every switch on its own authority, which is a materially different thing to put in front of whoever approved the tooling. Copy both files together — it imports the guards, command list and capture format from `capture_l2s.py` rather than duplicating them.
+- **`securecrt/capture_l2s.py`** — Runs *inside* SecureCRT (Script → Run) against an already-open session, sending the read-only show commands — plus one per interface template the config turns out to source — then, when it finds the repo next to itself, audits them and writes **one** file: the filled-in `.cklb`, named `<hostname>_<DDMMMYYYY>_L2S_V3R2_NDM_V3R6.cklb`. The capture it read is a working file and is deleted once the checklist exists; no report `.txt` is written. The whole flow is one action: connect, run script, open the checklist in STIG Viewer. Where the audit cannot run on that machine, the capture is kept instead and the dialog says where to audit it. Collection is standalone by design (no netmiko, no repo imports), and the offline audit itself needs only Python — `yaml.py` stands in for PyYAML and netmiko is imported lazily, only when a live connection is actually opened.
+- **`securecrt/capture_l2s_bulk.py`** — The same collection unattended, across every saved SecureCRT session: connect, send the commands, write a capture, disconnect. Captures rather than checklists, because a re-run skips the switches whose capture already exists — which is what makes a five-hour job resumable after it dies at switch 400 — and the audit of the lot is one loop afterwards. It never aborts — a switch that is offline, in a login quiet period or refusing credentials is logged and skipped, because on a fleet of hundreds not all of them answer on a given night. Deliberately separate from `capture_l2s.py`, which cannot connect to anything and so cannot be pointed at the wrong device; this one logs into every switch on its own authority, which is a materially different thing to put in front of whoever approved the tooling. Copy both files together — it imports the guards, command list and capture format from `capture_l2s.py` rather than duplicating them.
 - **`capture.py`** — Offline auditing. Every check is a pure function of command output, so an audit can read a capture file instead of a switch — for networks where the tooling can't be pointed at the devices directly. A malformed, truncated or partial capture is refused rather than audited, since a check handed empty text returns a verdict just as confidently as one handed real config. Which commands a capture must cover is partly a fact about the capture: a config whose interfaces say `source template <name>` must also carry that template, or the per-port rules would be answered against configuration nobody read.
 - **`sanitize_capture.py`** — Redact a capture so it can leave the network it came from: addressing, hostnames, VLAN names and IDs, ACL names, descriptions, credentials, certificates and serials, overwritten with placeholders rather than swapped for consistent fakes. It scans its own output before writing and refuses the file if anything still looks sensitive, because a partially redacted capture is more dangerous than none — it gets treated as safe. The redacted copy is for reading, not for re-auditing: the placeholders change verdicts.
 - **`l2_stig_audit.py`** — Audit against the IOS XE Switch L2S/NDM STIG (the default) or the IOS Switch one (`--checklist ios` — what the lab's vios_l2 switches are). Full interface-scoped coverage, live discovery for root ports/VTP/user VLANs. `--from-capture` audits collected output; `--capture-to` records a live run so the two can be compared; `--to-cklb` writes the verdicts into a STIG Viewer 3 checklist instead of leaving them to be retyped. Interface templates are read and expanded into the ports that source them, so a templated port is audited on what it is actually configured with — see [`docs/DESIGN.md`](docs/DESIGN.md).
@@ -125,7 +125,7 @@ python3 l2_stig_audit.py S1 --checklist ios
 python3 nxos_stig_audit.py NXCore1
 python3 ios_router_audit.py R1
 
-# Audit without connecting. Collect the six read-only show commands into a
+# Audit without connecting. Collect the read-only show commands into a
 # file - a logged terminal session works - then audit it from anywhere. A
 # switch whose ports are configured from interface templates needs one more
 # command per template; the audit names any that are missing and refuses the
@@ -146,6 +146,14 @@ python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture
 python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
     --to-cklb checklists/out/SW01.cklb
 
+# Give --to-cklb a directory instead and the audit names the file itself:
+# <hostname>_<DDMMMYYYY>_<the checklist's own STIG versions>.cklb, e.g.
+# SW01_06AUG2026_L2S_V3R2_NDM_V3R6.cklb. The hostname is the switch's own and
+# the date is the capture's, so re-running on the same day writes the same
+# file - which is what keeps a reviewer's comments.
+python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
+    --to-cklb checklists/out
+
 # Redact a capture so it can be shown to someone off the network. Writes
 # <name>.redacted.capture beside it, and refuses to write anything at all if a
 # value it recognises as sensitive survives the pass.
@@ -164,7 +172,7 @@ python3 pdf_ips.py diagram.pdf --all-text   # what it saw, when an answer looks 
 # pass. Collection and audit stay separate so a failed audit can't be
 # mistaken for a failed capture. The loop below is Windows cmd, not bash.
 for %f in (C:\captures\*.capture) do ^
-    python l2_stig_audit.py %~nf --from-capture "%f" > "%~dpnf_report.txt"
+    python l2_stig_audit.py %~nf --from-capture "%f" --to-cklb C:\Documents\checklists
 
 # STIG hardening for an L2 switch - run in this order:
 python3 l2_stig_harden_global.py S1 # bulk fixes, run first
@@ -205,6 +213,7 @@ python3 tests/test_interface_templates.py
 python3 tests/test_false_fails.py
 python3 tests/test_manual_review_rules.py
 python3 tests/test_cklb_export.py
+python3 tests/test_checklist_target.py
 python3 tests/test_sanitize_capture.py
 python3 tests/test_arp_inventory.py
 python3 tests/test_pdf_ips.py
@@ -222,15 +231,45 @@ printed report and the file.
 python l2_stig_audit.py SW01 --capture-to captures\SW01.capture
 ```
 
+Or collect it from SecureCRT, on a machine where nothing else may touch the network:
+`securecrt\capture_l2s.py`, run from an already-connected session (Script > Run...). That one
+writes the finished checklist and nothing else - no capture, no report - so if that is the whole
+of what you need, skip to step 4.
+
 **2. Audit, writing the checklist in the same pass.**
 
 ```powershell
-python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out\SW01.cklb
+python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
 ```
 
-The name you pass (`SW01`) is only a label when auditing a capture, and it becomes the
-checklist's **Host Name** in STIG Viewer - use whatever you want to see there. The output
-directory is created if it does not exist.
+Given a **directory**, the audit names the file itself:
+
+```
+SW01_06AUG2026_L2S_V3R2_NDM_V3R6.cklb
+```
+
+The switch, the date the capture was taken, and the version and release of each STIG in the
+checklist it was audited against - read out of that checklist, so pointing the audit at next
+quarter's `.cklb` moves the versions in the name with it. The date carries no time of day: two
+exports of one switch on one day are the same audit re-run, and writing to the same file is what
+keeps a reviewer's comments (step 5). Pass a path ending in `.cklb` instead and that exact path is
+used, as before. Either way the output directory is created if it does not exist.
+
+The name you pass on the command line (`SW01`) is only a label when auditing a capture. The
+switch's own `hostname` is what names the file and fills the checklist's **Host Name** - along with
+three more fields on STIG Viewer's Asset tab that would otherwise be typed in by hand per switch:
+
+| Field | Read from |
+|---|---|
+| Host Name | `hostname` in the running-config |
+| IP Address | the SVI of the VLAN whose name ends in `mgt`/`mgmt`, via `show vlan brief` + `show ip interface brief` |
+| MAC Address | `Base Ethernet MAC Address` in `show version` |
+| FQDN | `<hostname>.<domain name>`, from `hostname` + `ip domain name` |
+
+The report prints what it put in each one, and why any of them is empty - a blank field in STIG
+Viewer looks the same whether nothing was found or nothing was looked for. If your management VLAN
+is named something else, `--management-vlan-names` (or `management_vlan_names` in `inventory.yaml`)
+takes the names or globs that identify it; none of this affects a verdict.
 
 **3. Read what it says.** The usual report, then one line at the end:
 
@@ -240,10 +279,19 @@ directory is created if it does not exist.
 [HIGH  ] PASS           V-220569  must be running an IOS release that is currently supported by Cisco Systems.
            running 17.12.4 on C9300-48P - Cisco suggested release for Catalyst 9000 IOS XE, supported as of 2026-09-05
 ...
-Wrote checklists\out\SW01.cklb for STIG Viewer 3: 26 not_a_finding, 33 open, 4 not_applicable, 1 not_reviewed.
+Wrote checklists\out\SW01_06AUG2026_L2S_V3R2_NDM_V3R6.cklb for STIG Viewer 3: 26 not_a_finding, 33 open, 4 not_applicable, 1 not_reviewed.
 ```
 
-**4. Open it.** STIG Viewer 3 → **File → Open Checklist** → `checklists\out\SW01.cklb`. Every
+Above the report, before any verdict, it also prints the asset fields it read:
+
+```
+Checklist asset fields:
+  IP address:  x.x.x.5 (from Vlan10 (army-xxx-abc-mgt))
+  MAC address: 00:1A:2B:3C:4D:5E
+  FQDN:        SW01.example.mil
+```
+
+**4. Open it.** STIG Viewer 3 → **File → Open Checklist** → the `.cklb` the run just named. Every
 rule arrives with its status set, and each one's **Finding Details** carries the reason line from
 the report plus where the evidence came from and when.
 
@@ -253,7 +301,7 @@ person - the configuration-backup server, a CA's issuer. Put your answer in that
 at the same path:
 
 ```powershell
-python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out\SW01.cklb
+python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
 ```
 
 Statuses and finding details are re-derived from the new capture; your comments stay. The audit
@@ -262,7 +310,7 @@ owns the verdict, you own the commentary.
 A live run is the same flag, and prompts for credentials:
 
 ```powershell
-python l2_stig_audit.py SW01 --to-cklb checklists\out\SW01.cklb
+python l2_stig_audit.py SW01 --to-cklb checklists\out
 ```
 
 So are the other two platforms:
@@ -272,8 +320,9 @@ python nxos_stig_audit.py NXCore1 --to-cklb checklists\out\NXCore1.cklb
 python ios_router_audit.py R1 --to-cklb checklists\out\R1.cklb
 ```
 
-Give each device its own output file. Two switches pointed at one `.cklb` leaves the second one's
-verdicts over the first one's, under whichever host name was written last.
+Give each device its own output file - which a directory does for you, since the name carries the
+hostname. Two switches pointed at one explicit `.cklb` path leaves the second one's verdicts over
+the first one's, under whichever host name was written last.
 
 Filled-in checklists are gitignored (`checklists/out/`) - the blank ones in `checklists/` are the
 templates every audit reads its rules from, and a completed one names a device and its findings.

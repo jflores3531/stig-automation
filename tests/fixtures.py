@@ -198,13 +198,29 @@ Processor board ID FOC0000X0XX
 52 Gigabit Ethernet interfaces
 2048K bytes of non-volatile configuration memory.
 
+Base Ethernet MAC Address            : 00:1A:2B:3C:4D:5E
 Model Number                         : C9300-48P
 System Serial Number                 : FOC0000X0XX
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+*    1 52    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL
 
 Configuration register is 0x102"""
 
 
 VTP_PASSWORD = 'The VTP password is not configured.'
+
+# Only two interfaces here carry an address, and only one of them is an SVI -
+# the management VLAN's. Gi0/0 is the out-of-band port, which is a plausible
+# wrong answer for the asset block and is deliberately present so the tests
+# would catch it being picked.
+IP_INTERFACE_BRIEF = """Interface              IP-Address      OK? Method Status                Protocol
+Vlan10                 192.0.2.5       YES NVRAM  up                    up
+GigabitEthernet0/0     198.51.100.5    YES manual up                    up
+GigabitEthernet1/0/1   unassigned      YES unset  up                    up
+GigabitEthernet1/0/2   unassigned      YES unset  administratively down down
+TwentyFiveGigE1/1/1    unassigned      YES unset  up                    up"""
 
 SNMP_USER = """User name: stigadmin
 Engine ID: 800000090300AABBCCDDEEFF
@@ -220,4 +236,5 @@ OUTPUTS = {
     'show vtp password': VTP_PASSWORD,
     'show snmp user': SNMP_USER,
     'show version': SHOW_VERSION,
+    'show ip interface brief': IP_INTERFACE_BRIEF,
 }

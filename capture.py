@@ -47,6 +47,22 @@ AUDIT_COMMANDS_L2S = (
     'show version',
 )
 
+# Read when present, never required. `show ip interface brief` answers no rule
+# at all: it carries the switch's management address for the exported
+# checklist's asset block (stig_common.find_management_ip), which
+# running-config gives only as one SVI among others and `show vlan brief` names
+# but cannot address.
+#
+# So it is not in the tuple above, and the reason is the reason that tuple
+# exists. A missing command there means a rule would be answered against empty
+# output - a verdict nobody can see is wrong - and the capture is refused. A
+# missing command here costs an empty field in STIG Viewer's asset block, which
+# is visibly empty. Refusing a whole audit over it would be the worse trade,
+# and would invalidate every capture collected before this existed.
+OPTIONAL_COMMANDS_L2S = (
+    'show ip interface brief',
+)
+
 # Commands whose empty output is an answer rather than a failed read. Refusing
 # a capture because a command returned nothing is right in general - nothing
 # read and nothing configured look identical - but `show snmp user` prints
@@ -314,19 +330,26 @@ def _read_text(path, source):
     return text
 
 
-def load(path, required_commands=AUDIT_COMMANDS_L2S):
+def load(path, required_commands=AUDIT_COMMANDS_L2S,
+         optional_commands=OPTIONAL_COMMANDS_L2S):
     """Read a capture file and return a CaptureSession.
 
     Every command in required_commands must be present, and non-empty unless
     it is in EMPTY_IS_AN_ANSWER. Validating up front means a capture missing
     'show vtp password' is rejected before the audit prints its first verdict,
-    rather than 50 rules in."""
+    rather than 50 rules in.
+
+    optional_commands are parsed if the file carries them and ignored if it
+    does not. They still have to be named here rather than simply left out:
+    a plain session log is split on the commands being looked for, so one
+    that is not in the list is not a section that goes missing - it is text
+    appended to the end of the section before it."""
     if not os.path.exists(path):
         raise CaptureError(f'No such capture file: {path}')
     source = os.path.basename(path)
     text = _read_text(path, source)
 
-    sections = parse(text, required_commands, source=source)
+    sections = parse(text, tuple(required_commands) + tuple(optional_commands), source=source)
     if not sections:
         raise CaptureError(
             f'{source} has no recognisable command output.\n'
@@ -396,3 +419,15 @@ def load_l2s(path):
     if not names:
         return session
     return load(path, AUDIT_COMMANDS_L2S + tuple(template_command(name) for name in names))
+
+
+def optional_output(session, command):
+    """A command's output, or '' where the session has none.
+
+    Only for the commands in OPTIONAL_COMMANDS_L2S, and only for the callers
+    that treat absence as a fact rather than a failure - the asset block, not a
+    verdict. Everything else asks send_command() and takes the refusal."""
+    try:
+        return str(session.send_command(command))
+    except CaptureError:
+        return ''

@@ -16,7 +16,7 @@ SEVERITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
 
 def run_stig_audit(device_name, device_info, checklist_path, checks, title, username, password,
                     not_automated_note='need manual review or external infrastructure',
-                    session=None, to_cklb=None):
+                    session=None, to_cklb=None, target_data=None, captured_on=None):
     """Connect to a device, check its running-config against a DISA STIG checklist's
     rules using `checks` (group_id -> predicate(running_config) -> bool, or
     -> (bool, reason) to show why a rule passed/failed, or -> (None, reason)
@@ -33,7 +33,13 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
     is a pure function of command output, so the verdicts are identical either
     way - the only thing that changes is where the output came from. The
     stand-in implements send_command() and a no-op disconnect(), which is why
-    the flow below needs no second branch."""
+    the flow below needs no second branch.
+
+    `target_data` is what the checklist says the device IS - host name, IP, MAC,
+    FQDN - as collect_target_data() reads them off the same output the verdicts
+    came from. `captured_on` is the date the output was collected, which names
+    the file when `to_cklb` is a directory; both are passed straight through to
+    the export and neither affects a verdict."""
     with open(checklist_path, encoding='utf-8') as f:
         checklist = json.load(f)
     rules = [rule for stig in checklist['stigs'] for rule in stig['rules']]
@@ -85,8 +91,10 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
         source = (f'capture {net_connect.source}' if getattr(net_connect, 'source', None)
                   else f'device {device_name}')
         try:
-            print(write_cklb(checklist_path, to_cklb, findings, device_name, source, title,
-                             device_info=device_info))
+            output_path = resolve_cklb_path(to_cklb, checklist_path, device_name,
+                                            captured_on=captured_on, target_data=target_data)
+            print(write_cklb(checklist_path, output_path, findings, device_name, source, title,
+                             device_info=device_info, target_data=target_data))
         except (ChecklistError, OSError) as checklist_error:
             # The report above is complete and correct; only the file failed.
             # Said plainly, and with a non-zero exit so a script that asked for
@@ -134,6 +142,246 @@ class ChecklistError(Exception):
     verdicts is worse than none, because nothing about it looks wrong."""
 
 
+# --- What the checklist says the device IS -----------------------------------
+#
+# STIG Viewer 3's asset fields - host name, IP address, MAC address, FQDN - are
+# the four a reviewer would otherwise fill in by hand, per switch, from the
+# switch. All four are already in output the audit collects, so leaving them
+# blank asks someone to re-derive what the capture in front of them carries.
+# Worse, an unfilled checklist is one nobody can tell apart from another
+# switch's a month later: the verdicts are the same shape on every device, and
+# the asset block is the only thing in the file that says which one it was.
+#
+# Every reader below returns None rather than a guess when the output does not
+# carry the fact. An asset field is metadata, not a verdict, so a wrong value
+# cannot turn a finding into a pass - but it can attach one switch's findings
+# to another switch's name, which is the one failure mode worth refusing.
+
+# The management SVI's name, as a glob against `show vlan brief`'s name column
+# (see _name_pattern_match). `show ip interface brief` gives Vlan10 an address
+# without ever saying what VLAN 10 is for, and the number moves per site while
+# the name does not - the same asymmetry user_vlan_names exists for. Both
+# spellings are here because both are in the wild: a fleet naming its
+# management VLAN <site>-mgt and one naming it MGMT are equally common, and
+# neither should have to configure anything to get an IP into its checklist.
+MANAGEMENT_VLAN_NAMES = ('*mgt', '*mgmt')
+
+
+def parse_hostname(cfg):
+    """The configured hostname, which is not always the name the audit was
+    invoked under - `--from-capture` takes any label. The switch's own answer
+    is the one that belongs in the checklist."""
+    match = re.search(r'^hostname (\S+)', cfg, re.M)
+    return match.group(1) if match else None
+
+
+def parse_domain_name(cfg):
+    """The domain from `ip domain name <name>` (IOS XE) or `ip domain-name
+    <name>` (classic IOS). A `vrf <name>` variant carries the VRF between the
+    command and the domain, and is skipped over rather than read as one."""
+    match = re.search(r'^ip domain[- ]name (?:vrf \S+ )?(\S+)', cfg, re.M)
+    return match.group(1) if match else None
+
+
+def parse_fqdn(cfg, device_name=None):
+    """`<hostname>.<domain name>`, or None if the config carries only one half.
+    A hostname with no domain is not an FQDN and is not written as though it
+    were - a half-qualified name in that field is worse than an empty one,
+    because it looks answered."""
+    host = parse_hostname(cfg) or device_name
+    domain = parse_domain_name(cfg)
+    if not host or not domain:
+        return None
+    return f'{host}.{domain}'
+
+
+def parse_base_mac(version_output):
+    """The switch's `Base Ethernet MAC Address` from `show version`, normalised
+    to the colon-separated form STIG Viewer shows. Platforms print it either
+    way - 00:1A:2B:3C:4D:5E on IOS XE, 001a.2b3c.4d5e elsewhere - and the field
+    should not record which platform it was read off. Anything that is not
+    twelve hex digits is handed back untouched rather than reshaped into
+    something that looks canonical without being right."""
+    match = re.search(r'Base [Ee]thernet MAC [Aa]ddress\s*:\s*(\S+)', str(version_output))
+    if not match:
+        return None
+    raw = match.group(1)
+    digits = re.sub(r'[^0-9A-Fa-f]', '', raw)
+    if len(digits) != 12:
+        return raw
+    return ':'.join(digits[i:i + 2] for i in range(0, 12, 2)).upper()
+
+
+def parse_interface_addresses(ip_interface_brief):
+    """{interface: address} for every line of `show ip interface brief` that
+    carries one. Interfaces reading `unassigned` are absent rather than
+    present-and-empty, so a caller cannot mistake one for an address."""
+    addresses = {}
+    for line in str(ip_interface_brief).splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name, address = parts[0], parts[1]
+        if not re.match(r'^\d{1,3}(\.\d{1,3}){3}$', address):
+            continue
+        addresses.setdefault(name, address)
+    return addresses
+
+
+def find_management_ip(vlan_brief, ip_interface_brief, names=MANAGEMENT_VLAN_NAMES):
+    """(address, why) for the switch's management address, or (None, why not).
+
+    `show ip interface brief` knows which SVI has which address and nothing
+    about what any of them are for; `show vlan brief` knows the names and no
+    addresses. Neither answers this alone, so the VLAN whose name matches is
+    found in the first and its number looked up in the second.
+
+    Ambiguity is reported, never resolved by picking one: two management-named
+    VLANs with addresses means the pattern is wrong for this fleet, and
+    silently taking the lower-numbered one would put a plausible address in a
+    signed artifact."""
+    named = {}
+    for vid, name in re.findall(r'^(\d+)\s+(\S+)', str(vlan_brief), re.M):
+        if _name_pattern_match(name, names):
+            named[vid] = name
+    if not named:
+        return None, (f'no VLAN in `show vlan brief` has a name matching {", ".join(names)}')
+
+    addresses = parse_interface_addresses(ip_interface_brief)
+    found = [(vid, name, addresses[f'Vlan{vid}']) for vid, name in sorted(named.items())
+             if f'Vlan{vid}' in addresses]
+    if not found:
+        return None, (
+            f'VLAN {", ".join(f"{vid} {name}" for vid, name in sorted(named.items()))} '
+            'matches, but `show ip interface brief` shows no address on its SVI')
+    if len(found) > 1:
+        return None, (
+            'more than one management-named VLAN carries an address ('
+            + ', '.join(f'Vlan{vid} {name} {ip}' for vid, name, ip in found)
+            + ') - name only the management SVI so there is one answer')
+    vid, name, address = found[0]
+    return address, f'Vlan{vid} ({name})'
+
+
+def collect_target_data(running_config, version_output, vlan_brief, ip_interface_brief,
+                        device_name=None, device_info=None,
+                        management_vlan_names=MANAGEMENT_VLAN_NAMES):
+    """The checklist's asset block, read off the output the verdicts came from.
+
+    Returns {'host_name', 'ip_address', 'mac_address', 'fqdn'} with None for
+    anything the output did not carry, plus 'notes': one line per field
+    explaining where it came from or why it is empty. The notes are printed
+    above the report rather than kept, because a blank field in STIG Viewer
+    says nothing about whether the audit looked."""
+    host_name = parse_hostname(running_config) or device_name
+    fqdn = parse_fqdn(running_config, device_name)
+    mac = parse_base_mac(version_output)
+    address, why = find_management_ip(vlan_brief, ip_interface_brief, management_vlan_names)
+
+    notes = []
+    if address:
+        notes.append(f'  IP address:  {address} (from {why})')
+    else:
+        # The inventory's host is where the audit connects, which on a
+        # jump-hosted or NATed fleet is not always the switch's own management
+        # address - so it is a fallback, and the report says it was used.
+        fallback = (device_info or {}).get('host')
+        if fallback:
+            address = fallback
+            notes.append(f'  IP address:  {address} (from inventory.yaml - {why})')
+        else:
+            notes.append(f'  IP address:  not set - {why}')
+    notes.append(f'  MAC address: {mac}' if mac else
+                 '  MAC address: not set - no `Base Ethernet MAC Address` in `show version`')
+    notes.append(f'  FQDN:        {fqdn}' if fqdn else
+                 '  FQDN:        not set - no `ip domain name` in the running-config')
+
+    return {
+        'host_name': host_name,
+        'ip_address': address,
+        'mac_address': mac,
+        'fqdn': fqdn,
+        'notes': 'Checklist asset fields:\n' + '\n'.join(notes),
+    }
+
+
+# --- Naming the exported checklist -------------------------------------------
+#
+# A directory of exports is only navigable if the name says which switch, when,
+# and against which benchmark - a reviewer holding two files for the same
+# switch needs to know which one is the current STIG revision without opening
+# either. The versions are read out of the checklist rather than written down
+# here, so they cannot claim a release the rules did not come from: point the
+# audit at next quarter's .cklb and the exported name follows it.
+def _filesystem_safe(name):
+    """A name safe on Windows and POSIX both. Path separators are the reason
+    this exists: a device label with a slash in it would otherwise write the
+    export into a directory nobody asked for, or fail."""
+    return re.sub(r'[^A-Za-z0-9._-]', '-', str(name).strip()) or 'switch'
+
+
+def checklist_stig_label(checklist_path):
+    """`L2S_V3R2_NDM_V3R6` - each STIG in the checklist, with its version and
+    release. The short name is the last word of the display name, which is what
+    distinguishes the books DISA ships as a pair (Cisco IOS XE Switch L2S and
+    ... NDM). Returns '' if the file names nothing readable, so a caller can
+    fall back to a name without it rather than to a name with a hole in it."""
+    try:
+        with open(checklist_path, encoding='utf-8') as checklist_file:
+            checklist = json.load(checklist_file)
+    except (OSError, ValueError):
+        return ''
+    parts = []
+    for stig in checklist.get('stigs', []):
+        name = str(stig.get('display_name') or stig.get('stig_name') or '').strip()
+        if not name:
+            continue
+        short = re.sub(r'[^A-Za-z0-9]', '', name.split()[-1]).upper()
+        version = re.sub(r'[^0-9]', '', str(stig.get('version') or ''))
+        release = re.search(r'Release:\s*([0-9]+)', str(stig.get('release_info') or ''))
+        if short and version and release:
+            parts.append(f'{short}_V{version}R{release.group(1)}')
+        elif short:
+            parts.append(short)
+    return '_'.join(parts)
+
+
+def checklist_filename(checklist_path, device_name, captured_on=None):
+    """`SW01_06AUG2026_L2S_V3R2_NDM_V3R6.cklb`.
+
+    Date, not timestamp: two exports of the same switch on the same day are the
+    same audit re-run, and a second file differing only in its minute is
+    clutter rather than history. Re-running over the first one is also what
+    keeps a reviewer's comments (see _existing_annotations), which a
+    timestamped name would silently lose."""
+    captured_on = captured_on or datetime.date.today()
+    label = checklist_stig_label(checklist_path)
+    stamp = captured_on.strftime('%d%b%Y').upper()
+    name = f'{_filesystem_safe(device_name)}_{stamp}'
+    return f'{name}_{label}.cklb' if label else f'{name}.cklb'
+
+
+def resolve_cklb_path(to_cklb, checklist_path, device_name, captured_on=None, target_data=None):
+    """Where --to-cklb actually writes.
+
+    A path with a file extension is taken as given - that is the flag as it has
+    always worked. A path that is an existing directory, ends in a separator,
+    or carries no extension at all names a directory instead, and the file
+    inside it is named by checklist_filename(). That is what lets a capture
+    script hand over an output folder without having to know which benchmark
+    revision the checklist it is auditing against happens to be.
+
+    The host name in the name is the switch's own, when the target data found
+    one: `--from-capture` takes any label, and a file named after a label
+    rather than the switch is the thing this naming exists to prevent."""
+    host = (target_data or {}).get('host_name') or device_name
+    directory = (os.path.isdir(to_cklb) or to_cklb.endswith(('/', os.sep))
+                 or not os.path.splitext(to_cklb)[1])
+    if not directory:
+        return to_cklb
+    return os.path.join(to_cklb, checklist_filename(checklist_path, host, captured_on))
+
+
 def _existing_annotations(output_path):
     """Per-rule `comments` and `overrides` already in the file being replaced.
 
@@ -164,13 +412,18 @@ def _existing_annotations(output_path):
 
 
 def write_cklb(checklist_path, output_path, findings, device_name, source, title,
-               device_info=None, run_at=None):
+               device_info=None, run_at=None, target_data=None):
     """Write `findings` into a copy of the checklist as a STIG Viewer 3 .cklb.
 
     findings is run_stig_audit's list of (status, rule, group_id, reason).
     `source` says where the output came from - a device or a capture file - and
     is recorded per rule, because a verdict without its evidence's provenance
-    is not evidence."""
+    is not evidence.
+
+    `target_data` fills STIG Viewer's asset fields from collect_target_data();
+    anything it did not find is left as the checklist already had it rather
+    than blanked, so a value a reviewer typed in survives a re-run the same way
+    their comments do."""
     if os.path.abspath(checklist_path) == os.path.abspath(output_path):
         raise ChecklistError(
             f'Refusing to write over the blank checklist at {checklist_path}.\n'
@@ -181,8 +434,13 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
     with open(checklist_path, encoding='utf-8') as checklist_file:
         checklist = json.load(checklist_file)
 
+    # Date, no time. A verdict is evidence of what the switch looked like that
+    # day; the minute it was read adds nothing a reviewer can act on, and it
+    # made every re-run's finding_details differ from the last one on all 64
+    # rules, so a diff of two exports showed 64 changes and no way to see which
+    # verdicts had actually moved.
     run_at = run_at or datetime.datetime.now()
-    stamp = run_at.strftime('%Y-%m-%d %H:%M')
+    stamp = run_at.strftime('%Y-%m-%d')
     kept = _existing_annotations(output_path)
     answered = {group_id: (status, reason) for status, _rule, group_id, reason in findings}
 
@@ -207,9 +465,16 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
             counts[rule['status']] = counts.get(rule['status'], 0) + 1
 
     target = checklist.setdefault('target_data', {})
-    target['host_name'] = device_name
-    if device_info and device_info.get('host'):
-        target['ip_address'] = device_info['host']
+    asset = dict(target_data or {})
+    target['host_name'] = asset.get('host_name') or device_name
+    # The inventory's host is the address the audit connected to, so it stands
+    # in only where the switch's own management SVI could not be read.
+    address = asset.get('ip_address') or (device_info or {}).get('host')
+    for field, value in (('ip_address', address),
+                         ('mac_address', asset.get('mac_address')),
+                         ('fqdn', asset.get('fqdn'))):
+        if value:
+            target[field] = value
     target['comments'] = f'{title} against {source}, {stamp}.'
 
     parent = os.path.dirname(os.path.abspath(output_path))
@@ -282,6 +547,14 @@ def _name_pattern_match(name, patterns):
         elif lowered == folded:
             return candidate
     return None
+
+
+def matching_pattern(name, patterns):
+    """The entry in `patterns` that matches `name`, or None - the same exact-or-
+    glob matching the VLAN name lists use, for the callers outside this module
+    that need it (an enrollment URL's host against approved_ca_hosts, a
+    management SVI's VLAN name)."""
+    return _name_pattern_match(name, patterns)
 
 
 def classify_vlans(net_connect, exclude=(), exclude_names=(), include_names=()):

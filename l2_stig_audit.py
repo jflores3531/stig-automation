@@ -1069,11 +1069,12 @@ def _ntp_auth_cryptographic_check(cfg):
 # So the enrollment method, not the existence of a trustpoint, is what decides
 # this rule, and it is in running-config:
 #
-#   `enrollment url http://ca.example.mil`  - enrolled with a CA; whether that
-#       CA is DOD-approved is a CN/O/OU judgement, still NOT AUTOMATED, but the
-#       URL to check is now printed in the report instead of requiring a login.
+#   `enrollment url http://ca.example.mil`  - enrolled with a CA, and the URL
+#       names it. PASS or FAIL on whether its host is one of the approved ones
+#       (see APPROVED_CA_HOSTS below), which is the rule's own review step.
 #   `enrollment terminal`                   - enrolled with a CA by cut and
-#       paste. Same review, no URL to show for it.
+#       paste. Nothing in the config names the CA: NOT AUTOMATED, with the
+#       command to answer it printed.
 #   `enrollment selfsigned` / no enrollment - self-signed. Certificates exist
 #       but none of them came from a provider: NOT APPLICABLE.
 #
@@ -1095,9 +1096,35 @@ def _trustpoint_blocks(cfg):
             yield m.group(1), _block_body(chunk, m.end())
 
 
-def _pki_trustpoint_check(cfg):
-    enrolled = []
-    self_signed = []
+# Which CA an `enrollment url` names, and whether it is an approved one, is the
+# whole of this rule's Check Content: "The CA trust point will contain the URL
+# of the CA in which the switch has enrolled with. Verify this is a DOD or
+# DOD-approved CA." That is a question about a string in running-config, so it
+# is answered here rather than handed back with "verify the issuer via `show
+# crypto pki certificates`" - which was the previous verdict, and which asked a
+# reviewer to log into the switch to read a URL the audit had already read.
+#
+# What cannot be inferred is which hosts count as approved: that is a fact
+# about your PKI, so it is declared in inventory.yaml's approved_ca_hosts. The
+# default is every host under .mil, which is where the DOD PKI lives - and an
+# enrollment URL outside it is precisely the case the rule wants looked at, so
+# defaulting this way fails toward the finding rather than away from it.
+APPROVED_CA_HOSTS = ('*.mil',)
+
+
+def _enrollment_url_host(url):
+    """The host part of an enrollment URL, without scheme, credentials, port or
+    path. `http://user:pw@ca.example.mil:80/cgi-bin` is ca.example.mil."""
+    without_scheme = re.sub(r'^[A-Za-z][A-Za-z0-9+.-]*://', '', url.strip())
+    authority = without_scheme.split('/', 1)[0]
+    host = authority.rsplit('@', 1)[-1]
+    if host.startswith('['):  # a bracketed IPv6 literal keeps its brackets
+        return host.split(']', 1)[0] + ']'
+    return host.split(':', 1)[0]
+
+
+def _pki_trustpoint_check(cfg, approved_hosts=APPROVED_CA_HOSTS):
+    approved, unapproved, unreadable, self_signed = [], [], [], []
     for name, body in _trustpoint_blocks(cfg):
         # Anything that is not `enrollment selfsigned` counts as enrollment with
         # a CA, including forms this has never seen (`enrollment profile`,
@@ -1107,23 +1134,50 @@ def _pki_trustpoint_check(cfg):
         methods = [line.strip() for line in
                    re.findall(r'^\s*enrollment\s+(.+?)\s*$', body, re.M)
                    if line.split()[0] != 'selfsigned']
-        if methods:
-            enrolled.append(f'{name} (enrollment {"; enrollment ".join(methods)})')
-        else:
+        if not methods:
             self_signed.append(name)
+            continue
+        for method in methods:
+            url = re.match(r'url\s+(\S+)$', method)
+            if not url:
+                # `enrollment terminal` (cut and paste), `enrollment profile X`
+                # (the URL is in a separate profile block), `enrollment mode ra`.
+                # A CA is involved and running-config does not name it here.
+                unreadable.append(f'{name} (enrollment {method})')
+                continue
+            host = _enrollment_url_host(url.group(1))
+            matched = stig_common.matching_pattern(host, approved_hosts)
+            if matched:
+                approved.append(f'{name} -> {url.group(1)} (host {host} matches `{matched}`)')
+            else:
+                unapproved.append(f'{name} -> {url.group(1)} (host {host})')
 
-    if not enrolled and not self_signed:
+    if not (approved or unapproved or unreadable or self_signed):
         return None, 'not applicable - no CA trustpoint configured'
-    if not enrolled:
+    if not (approved or unapproved or unreadable):
         return None, (
             f'not applicable - trustpoint(s) {", ".join(sorted(self_signed))} are self-signed '
             '(`enrollment selfsigned`, or no enrollment at all), so the switch holds no certificate '
             'obtained from a service provider for this rule to review'
         )
-    return 'NOT AUTOMATED', (
-        f'CA-enrolled trustpoint(s) {", ".join(sorted(enrolled))} - verify the issuer is a '
-        'DOD/DOD-approved provider via `show crypto pki certificates` (CN/O/OU review), '
-        'which running-config text cannot answer'
+    # A single unapproved enrollment is the finding, whatever else is alongside
+    # it: the switch holds a certificate from a CA nobody approved.
+    if unapproved:
+        return False, (
+            f'enrolled with CA(s) outside approved_ca_hosts ({", ".join(approved_hosts)}): '
+            f'{", ".join(sorted(unapproved))} - either the CA is not DOD/DOD-approved, or it is '
+            "and inventory.yaml's approved_ca_hosts does not say so yet"
+        )
+    if unreadable:
+        return 'NOT AUTOMATED', (
+            f'CA-enrolled trustpoint(s) {", ".join(sorted(unreadable))} name no URL in '
+            'running-config, so the CA cannot be read from config text - check the issuer with '
+            '`show crypto pki certificates` (CN/O/OU review)'
+            + (f'. Approved by URL: {", ".join(sorted(approved))}' if approved else '')
+        )
+    return True, (
+        f'enrolled with approved CA(s): {", ".join(sorted(approved))}'
+        + (f'. Self-signed alongside: {", ".join(sorted(self_signed))}' if self_signed else '')
     )
 
 
@@ -1382,29 +1436,93 @@ SUPPORTED_RELEASES = {
 CISCO_SUPPORT_URL = 'www.cisco.com/c/en/us/support/ios-nx-os-software'
 
 
+# The table `show version` ends with on a stackable Catalyst, and the only
+# place either fact appears on some of them:
+#
+#   Switch Ports Model              SW Version        SW Image              Mode
+#   ------ ----- -----              ----------        ----------            ----
+#   *    1 52    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL
+#
+# Reading it matters because the header lines above it are not guaranteed. A
+# switch whose banner says only "Cisco IOS Software [Amsterdam] ... Version
+# 16.12.5b" but prints no `Model Number :` line has a model here and nowhere
+# else, and V-220569/V-220621 then reported NOT AUTOMATED - "could not read a
+# model from `show version`" - on a switch whose model was on screen the whole
+# time. A stack shows one row per member; the active one is marked `*` and is
+# the one the rule is about, so it wins where the rows disagree.
+#
+# Anchored to the header rather than matched line by line across the whole
+# output: `show version` is full of lines that begin with numbers (interface
+# counts, memory sizes), and a loose row pattern would eventually read one of
+# them as a switch.
+_SWITCH_TABLE_HEADER = re.compile(r'^\s*Switch\s+Ports\s+Model\s+SW\s+Version', re.M | re.I)
+_SWITCH_TABLE_ROW = re.compile(
+    r'^\s*(?P<active>\*?)\s*\d+\s+\d+\s+(?P<model>\S+)\s+(?P<release>\d\S*)')
+
+
+def _show_version_switch_table(output):
+    """(model, release) from the switch table's active row, or (None, None).
+
+    The row marked `*` is the active switch in a stack; where nothing is
+    marked - a standalone switch prints one unmarked row on some images - the
+    first row is the only row."""
+    header = _SWITCH_TABLE_HEADER.search(output)
+    if not header:
+        return None, None
+    # The match ends mid-line - the header carries SW Image and Mode after the
+    # column this anchors on - so the rest of that line is stepped over before
+    # the rows begin.
+    rest = output.find('\n', header.end())
+    if rest == -1:
+        return None, None
+    rows = []
+    for line in output[rest + 1:].splitlines():
+        if set(line.strip()) <= set('- ') or not line.strip():
+            continue  # the rule under the header, and the blank line after the table
+        match = _SWITCH_TABLE_ROW.match(line)
+        if not match:
+            break  # past the end of the table
+        rows.append((bool(match.group('active')), match.group('model'), match.group('release')))
+    if not rows:
+        return None, None
+    active = next((row for row in rows if row[0]), rows[0])
+    return active[1], active[2]
+
+
+def _normalise_release(release):
+    """17.12.04 and 17.12.4 are one release printed two ways, and only one of
+    them can be the key in a table."""
+    return re.sub(r'(^|\.)0+(\d)', r'\1\2', release.strip().rstrip(','))
+
+
 def _show_version_release(output):
     """The release string from `show version`, normalized so the two lines
     IOS XE prints for one release agree: the banner says 17.12.04 and the
-    IOS Software line says 17.12.4, and only one of those can be in a table."""
+    IOS Software line says 17.12.4, and only one of those can be in a table.
+    Falls back to the switch table's SW Version column, which is where the
+    release is on an image that prints no version banner this recognises."""
     for pattern in (r'Cisco IOS XE Software, Version (\S+)',
                     r'Cisco IOS Software.*?,\s*(?:Experimental )?Version ([^\s,]+)',
                     r'^Version (\S+)'):
         m = re.search(pattern, output, re.M)
         if m:
-            return re.sub(r'(^|\.)0+(\d)', r'\1\2', m.group(1).strip().rstrip(','))
-    return None
+            return _normalise_release(m.group(1))
+    _model, release = _show_version_switch_table(output)
+    return _normalise_release(release) if release else None
 
 
 def _show_version_model(output):
     """The switch model from `show version`. 'Model Number' is the Catalyst
     form; the 'cisco <model> (<cpu>) processor' line is what everything else,
-    including the lab's vios_l2 image, prints."""
+    including the lab's vios_l2 image, prints; the switch table's Model column
+    is the third place it appears and the only one on some stack images."""
     for pattern in (r'^Model [Nn]umber\s*:\s*(\S+)',
                     r'^\s*[Cc]isco (\S+) \(.*\) processor'):
         m = re.search(pattern, output, re.M)
         if m:
             return m.group(1)
-    return None
+    model, _release = _show_version_switch_table(output)
+    return model
 
 
 def _ios_release_supported_check(version_output, today=None):
@@ -1608,12 +1726,29 @@ parser.add_argument('--capture-to', metavar='PATH', dest='capture_to',
                          'capture file. Re-running with --from-capture against that file must '
                          'produce an identical report, which is how the offline path is verified '
                          'against a switch. Read-only; nothing is pushed.')
+parser.add_argument('--approved-ca-hosts', metavar='HOSTS', dest='approved_ca_hosts',
+                    help='Comma-separated hosts a `crypto pki trustpoint`\'s `enrollment url` may '
+                         "name, overriding inventory.yaml's approved_ca_hosts. V-220567 passes "
+                         'when every enrollment URL names one of these and fails otherwise; '
+                         'matched exactly and case-insensitively against the URL\'s host, or as a '
+                         'glob if the entry has a wildcard. Default: *.mil.')
+parser.add_argument('--management-vlan-names', metavar='NAMES', dest='management_vlan_names',
+                    help="Comma-separated VLAN names carrying the switch's management address, "
+                         "overriding inventory.yaml's management_vlan_names. Matched against the "
+                         'name column of `show vlan brief` exactly and case-insensitively, or as '
+                         'a glob if the entry has a wildcard. `show ip interface brief` gives the '
+                         'SVI an address but never says what the VLAN is for, so this is what '
+                         "names the one whose address goes into the checklist's asset block. "
+                         'Default: *mgt, *mgmt. Affects no verdict.')
 parser.add_argument('--to-cklb', metavar='PATH', dest='to_cklb',
                     help='Also write the verdicts into a STIG Viewer 3 checklist at PATH, so '
                          'the report does not have to be retyped rule by rule. PASS/FAIL/NOT '
                          'APPLICABLE become not_a_finding/open/not_applicable; NOT AUTOMATED '
                          'becomes not_reviewed, never not_a_finding. Re-running over an existing '
-                         'export refreshes the verdicts and keeps any comments a reviewer added.')
+                         'export refreshes the verdicts and keeps any comments a reviewer added. '
+                         'PATH names a file when it has an extension; a directory otherwise, in '
+                         'which case the file is named <hostname>_<DDMMMYYYY>_<the checklist\'s '
+                         'own STIG versions>.cklb - e.g. SW01_06AUG2026_L2S_V3R2_NDM_V3R6.cklb.')
 args = parser.parse_args()
 
 if args.capture_to and args.from_capture:
@@ -1701,6 +1836,11 @@ try:
     vtp_password_output = str(discovery_connect.send_command('show vtp password'))
     snmp_user_output = str(discovery_connect.send_command('show snmp user'))
     version_output = str(discovery_connect.send_command('show version'))
+    # Asset data for the exported checklist, not a verdict - so a capture
+    # collected before this command joined the list is audited without it and
+    # says so, rather than being refused. See capture.OPTIONAL_COMMANDS_L2S.
+    ip_interface_output = capture.optional_output(discovery_connect, 'show ip interface brief')
+    vlan_brief_output = str(discovery_connect.send_command('show vlan brief'))
     # Read here rather than left to run_stig_audit's own read because the
     # template names are in it: which `show template interface source user`
     # commands this switch needs is a fact about its config, so the config has
@@ -1723,11 +1863,12 @@ try:
     if args.capture_to:
         recorded = {
             'show running-config': discovery_config,
-            'show vlan brief': str(discovery_connect.send_command('show vlan brief')),
+            'show vlan brief': vlan_brief_output,
             'show spanning-tree': str(discovery_connect.send_command('show spanning-tree')),
             'show vtp password': vtp_password_output,
             'show snmp user': snmp_user_output,
             'show version': version_output,
+            'show ip interface brief': ip_interface_output,
         }
         # The template sections go in the capture too, or an offline re-run of
         # this same audit would be refused for missing exactly what the live
@@ -1755,6 +1896,31 @@ if template_summary:
     print(template_summary)
     print()
 
+# What the exported checklist will say the device IS. Printed here for the same
+# reason the VLAN classification above is: an asset field that could not be
+# read is blank in STIG Viewer, and a blank field looks identical whether the
+# audit failed to find the value or never went looking.
+if args.management_vlan_names:
+    management_vlan_names = [name.strip() for name in args.management_vlan_names.split(',')
+                             if name.strip()]
+else:
+    management_vlan_names = (netauto.load_management_vlan_names()
+                             or list(stig_common.MANAGEMENT_VLAN_NAMES))
+target_data = stig_common.collect_target_data(
+    discovery_config, version_output, vlan_brief_output, ip_interface_output,
+    device_name=device_name, device_info=device_info,
+    management_vlan_names=management_vlan_names)
+print(target_data['notes'])
+print()
+
+# The date the output was collected, which names the exported file. A capture's
+# own mtime is when it was written, which is when its switch was read; a live
+# run is being read now.
+if args.from_capture and os.path.exists(args.from_capture):
+    captured_on = datetime.date.fromtimestamp(os.path.getmtime(args.from_capture))
+else:
+    captured_on = datetime.date.today()
+
 if args.management_subnet:
     CHECKS['V-220575'] = lambda cfg: _vty_management_acl_check(cfg, args.management_subnet)
 
@@ -1780,9 +1946,14 @@ CHECKS['V-220621'] = lambda cfg: _ios_release_supported_check(version_output)
 # they cannot be served by re-keying an IOS one. Applied after translate(),
 # which is also why they are not in ios_xe_rule_map's RULE_MAP - there is no
 # IOS rule to map them to.
+if args.approved_ca_hosts:
+    approved_ca_hosts = [host.strip() for host in args.approved_ca_hosts.split(',') if host.strip()]
+else:
+    approved_ca_hosts = netauto.load_approved_ca_hosts() or list(APPROVED_CA_HOSTS)
+
 IOS_XE_ONLY_CHECKS = {
     'V-220554': _ntp_auth_cryptographic_check,  # weaker than IOS V-220606, see the check
-    'V-220567': _pki_trustpoint_check,          # no IOS L2S counterpart at all
+    'V-220567': lambda cfg: _pki_trustpoint_check(cfg, approved_ca_hosts),  # no IOS L2S counterpart
     'V-220651': _qos_bandwidth_check,           # MQC; the IOS rule's `mls qos` cannot answer it
 }
 
@@ -1808,4 +1979,6 @@ stig_common.run_stig_audit(
     username=username, password=password,
     session=audit_session,
     to_cklb=args.to_cklb,
+    target_data=target_data,
+    captured_on=captured_on,
 )

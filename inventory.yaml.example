@@ -16,6 +16,10 @@
 
     "non_user_vlan_names": "VLAN NAMES to exclude when discovering user VLANs, matched against the name column of `show vlan brief` exactly and case-insensitively, or as a glob when the entry carries a wildcard - same syntax as user_vlan_names. Keep patterns tighter here than there: this direction REMOVES VLANs from the audited set, so an over-broad pattern costs a silent PASS on coverage nobody verified, while an over-broad user_vlan_names pattern only costs a spurious finding. Use this where the same VLAN carries a different ID on each switch but the same name everywhere - excluding only by ID then leaves a real user VLAN out of the DHCP snooping and DAI coverage checks, and the audit reports PASS for coverage it never verified. Combines with non_user_vlans rather than replacing it: a VLAN is non-user if its ID or its name matches. An entry that matches nothing leaves the VLAN in, so a typo costs a spurious finding rather than a silent pass. Consumed by l2_stig_audit.py, nxos_stig_audit.py, l2_stig_harden_global.py, l2_stig_harden_dai.py, nxos_stig_harden_global.py, nxos_stig_harden_interfaces.py.",
 
+    "management_vlan_names": "VLAN NAMES carrying the switch's own management address, matched against the name column of `show vlan brief` exactly and case-insensitively, or as a glob when the entry has a wildcard - same syntax as user_vlan_names. Fills the IP address field of the exported STIG Viewer checklist and nothing else: `show ip interface brief` says Vlan10 has an address and never what VLAN 10 is for, and the number moves per site while the name does not. Affects NO verdict, so a wrong value here costs a wrong or empty asset field rather than a wrong finding - but an asset field is what says which switch a checklist's 64 verdicts belong to, so it is worth getting right. Defaults to *mgt and *mgmt when absent, which covers both common spellings; name only the management SVI, since two matching VLANs that both carry an address are reported as ambiguous rather than resolved by picking one. Read by l2_stig_audit.py, and overridable per run with --management-vlan-names.",
+
+    "approved_ca_hosts": "Hosts a `crypto pki trustpoint`'s `enrollment url` may name, for V-220567 (IOS XE L2S) and V-215711 (router). The rule asks whether the switch enrolled with a DOD or DOD-approved CA, and the URL naming that CA is in running-config - so the audit answers it, and this list is what 'approved' means at your site. Matched against the URL's HOST (scheme, port and path stripped) exactly and case-insensitively, or as a glob when the entry has a wildcard. Defaults to *.mil when absent, which is where the DOD PKI lives. Every enrollment URL matching the list is a PASS; one that does not is a FAIL, since an unrecognised CA is precisely what the rule exists to surface - so add your CA here rather than leaving a real finding standing on a switch that is compliant. A trustpoint with no URL at all (`enrollment terminal`, `enrollment profile`) is NOT AUTOMATED whatever this says, because nothing in the config names its CA. Read by l2_stig_audit.py, and overridable per run with --approved-ca-hosts.",
+
     "management_subnet": "The management network in CIDR form, e.g. 'x.x.x.0/24' - replace the x's with your real management network. Used to verify that vty access-class ACLs are actually scoped to the management network rather than permitting any source (V-220575). If this is absent, V-220575 reports FAIL with reason 'no management_subnet configured in inventory.yaml' on every device audited - not NOT AUTOMATED, so a fleet-wide run shows a finding on every switch. Read by ios_router_audit.py and l2_stig_audit.py.",
 
     "automation_host": "IP address of the host that runs these scripts. It is the sole permitted source in the vty ACL that ios_router_stig_harden_acl.py and l2_stig_harden_acl.py build for V-220575. Set this before running either harden script - getting it wrong locks you out of the device.",
@@ -50,6 +54,10 @@
   "user_vlan_names": ["USERS", "VOICE", "*user", "*user[0-9]*", "*tel", "*tel[0-9]*"],
 
   "non_user_vlan_names": [],
+
+  "management_vlan_names": ["*mgt", "*mgmt"],
+
+  "approved_ca_hosts": ["*.mil"],
 
   "management_subnet": "x.x.x.0/24",
   "automation_host": "x.x.x.x",

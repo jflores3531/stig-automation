@@ -104,8 +104,8 @@ def test_session_log():
     print('\nplain terminal session log, no delimiters')
     log = ''.join(f'TESTSW01#{command}\n{output}\nTESTSW01#\n'
                   for command, output in OUTPUTS.items())
-    parsed = capture.parse(log)
-    check('all six commands recovered', set(parsed) == set(OUTPUTS), f'got {sorted(parsed)}')
+    parsed = capture.parse(log, capture.AUDIT_COMMANDS_L2S + capture.OPTIONAL_COMMANDS_L2S)
+    check('every command recovered', set(parsed) == set(OUTPUTS), f'got {sorted(parsed)}')
     for command, original in OUTPUTS.items():
         check(f'{command!r} matches the delimited form', parsed.get(command) == original.strip('\n'))
     check('trailing prompt stripped', not parsed['show vtp password'].endswith('#'))
@@ -207,8 +207,20 @@ def test_refusals(tmpdir):
 
     good = capture.write(os.path.join(tmpdir, 'good.capture'), OUTPUTS)
     expect_error('unrequested command raises rather than returning empty',
-                 lambda: capture.load(good).send_command('show ip interface brief'),
+                 lambda: capture.load(good).send_command('show crypto pki certificates'),
                  'no output for')
+
+    # `show ip interface brief` answers no rule - it fills the exported
+    # checklist's asset block - so a capture taken before it was collected is
+    # audited without it rather than refused. Every capture in captures/ from
+    # before this existed is one of those, and refusing them would make an
+    # older capture unauditable over a field STIG Viewer shows as blank.
+    older = capture.write(os.path.join(tmpdir, 'older.capture'),
+                          {k: v for k, v in OUTPUTS.items() if k != 'show ip interface brief'})
+    session = capture.load(older)
+    check('a capture without the optional command still loads', session is not None)
+    check('and asking for it yields nothing rather than raising',
+          capture.optional_output(session, 'show ip interface brief') == '')
 
 
 def test_equivalence(tmpdir):

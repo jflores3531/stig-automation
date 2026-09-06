@@ -1,18 +1,25 @@
 # $language = "Python3"
 # $interface = "1.0"
 
-"""Collect an L2 switch STIG capture from inside SecureCRT.
+"""Collect an L2 switch STIG capture from inside SecureCRT and leave a filled-in
+STIG Viewer 3 checklist behind.
 
 Run this from an already-connected, already-authenticated SecureCRT session
 (Script > Run...). It types the read-only show commands an audit needs into that
-session and writes their output to a capture file, which l2_stig_audit.py then
-audits offline:
+session, audits their output, and writes ONE file:
 
-    python3 l2_stig_audit.py SW01 --from-capture <file>
+    <hostname>_<DDMMMYYYY>_L2S_V3R2_NDM_V3R6.cklb
 
-Nothing is configured and nothing is saved. The only command sent that is not a
-show is `terminal length 0`, which disables paging for this session only - it is
-session-scoped, so it neither persists nor affects anyone else logged in.
+Open it with STIG Viewer 3 (File > Open Checklist). The capture the audit read
+is a working file and is deleted once the checklist exists; no report .txt is
+written, because the checklist carries every verdict and its reason. The one
+exception is an audit that could not run on this machine - see run_audit() -
+where the capture is kept rather than thrown away, since it is then the only
+record of a trip to the switch.
+
+Nothing is configured and nothing else is saved. The only command sent that is
+not a show is `terminal length 0`, which disables paging for this session only -
+it is session-scoped, so it neither persists nor affects anyone else logged in.
 
 This file is deliberately standalone. It imports nothing from the rest of the
 project, because it runs inside SecureCRT's own embedded Python on a machine
@@ -26,15 +33,15 @@ capture.py rather than imported. tests/test_securecrt_script.py asserts the two
 stay identical, so the duplication cannot drift silently.
 """
 
-# After a successful capture, the script tries to run the audit right here on
-# this machine and open the report - one linear flow: connect, Script > Run,
-# read the report. That works when this file still lives inside its repo
+# After a successful capture, the script runs the audit right here on this
+# machine and leaves the checklist - one linear flow: connect, Script > Run,
+# open the .cklb. That works when this file still lives inside its repo
 # (audit script in the parent directory) and a Python that can run it exists.
 # When either is missing - e.g. only this one file was copied to a locked-down
-# work machine - the capture is still saved and the dialog says where to run
-# the audit instead. The audit needs Python only - neither pyyaml nor netmiko
-# is required offline: yaml.py in the repo root stands in for pyyaml, and
-# netauto imports netmiko lazily, only on connect.
+# work machine - the capture is kept and the dialog says where to run the audit
+# instead. The audit needs Python only - neither pyyaml nor netmiko is required
+# offline: yaml.py in the repo root stands in for pyyaml, and netauto imports
+# netmiko lazily, only on connect.
 #
 # No checklist setting: this runs against IOS XE devices, which is
 # l2_stig_audit.py's own default, so the audit is invoked without --checklist
@@ -45,20 +52,26 @@ stay identical, so the duplication cannot drift silently.
 # (the lab's vios_l2 switches) is still possible, just not from here: run
 # `l2_stig_audit.py <name> --checklist ios --from-capture <file>` by hand.
 
-# Pop the finished report in the default .txt viewer. Tests turn this off.
-OPEN_REPORT = True
+# Open the folder the checklist landed in when the run finishes, so the file is
+# in front of whoever ran it rather than at a path they have to go find. The
+# folder rather than the file itself: .cklb is only associated with an
+# application on a machine where STIG Viewer 3 is installed, and startfile() on
+# an unassociated extension raises rather than doing nothing. Tests turn it off.
+OPEN_OUTPUT_FOLDER = True
 
-# Where captures and their reports are written. Created if missing; if it
-# cannot be created (making a folder at a drive root can need admin rights)
-# the script falls back to the user's home directory rather than failing a
-# capture that already succeeded. Whatever it lands on is shown in the save
-# dialog, so the actual path is never a guess.
-CAPTURE_DIR = r'C:\Documents'
+# Where the finished checklist is written. Created if missing; if it cannot be
+# created (making a folder at a drive root can need admin rights) the script
+# falls back to the user's home directory rather than failing a capture that
+# already succeeded. Whatever it lands on is shown in the save dialog, so the
+# actual path is never a guess.
+OUTPUT_DIR = r'C:\Documents'
 
-# The six commands every L2S audit reads. Five of these exist because the state
+# The seven commands every L2S audit reads. Five of them exist because the state
 # is not in running-config: user VLANs, the STP root port, the VTP password,
-# the SNMPv3 users, and the model and release the switch is running. Keep in
-# step with capture.AUDIT_COMMANDS_L2S.
+# the SNMPv3 users, and the model and release the switch is running. The last,
+# `show ip interface brief`, answers no rule - it carries the management
+# address for the checklist's asset block. Keep in step with
+# capture.AUDIT_COMMANDS_L2S + capture.OPTIONAL_COMMANDS_L2S.
 COMMANDS = (
     'show running-config',
     'show vlan brief',
@@ -66,6 +79,7 @@ COMMANDS = (
     'show vtp password',
     'show snmp user',
     'show version',
+    'show ip interface brief',
 )
 
 # And then one more per interface template the config turns out to use. An
@@ -360,48 +374,67 @@ def main():
         # captured and then thrown away).
         import os
         import os.path
-        capture_dir = CAPTURE_DIR
+        output_dir = OUTPUT_DIR
         try:
-            if not os.path.isdir(capture_dir):
-                os.makedirs(capture_dir)
+            if not os.path.isdir(output_dir):
+                os.makedirs(output_dir)
         except OSError:
-            capture_dir = os.path.expanduser('~')
-        default_path = os.path.join(
-            capture_dir, '{0}_{1}.capture'.format(hostname, _timestamp()))
-        path = crt.Dialog.Prompt('Write the capture to:', 'Save capture', default_path)
-        if not path:
+            output_dir = os.path.expanduser('~')
+        default_dir = output_dir
+        output_dir = crt.Dialog.Prompt(
+            'Write the STIG Viewer checklist into:', 'Save checklist', default_dir)
+        if not output_dir:
             return
-        if not os.path.isabs(path):
-            path = os.path.join(capture_dir, path)
-
+        # A relative path resolves against SecureCRT's working directory - its
+        # own install folder under Program Files - where the write dies with
+        # Permission denied after a perfectly good capture.
+        if not os.path.isabs(output_dir):
+            output_dir = os.path.join(default_dir, output_dir)
         try:
-            with open(path, 'w', encoding='utf-8') as capture_file:
+            if not os.path.isdir(output_dir):
+                os.makedirs(output_dir)
+        except OSError as error:
+            crt.Dialog.MessageBox(
+                'Could not create {0}:\n{1}\n\nNothing was written. Run the script '
+                'again and give a folder you can write to.'.format(output_dir, error),
+                'Capture failed')
+            return
+
+        # The capture is the audit's input, not an output anyone asked for, so
+        # it is written where the checklist is going and removed once the
+        # checklist exists. It is only kept when the audit could not run here,
+        # where it is the sole record of having been to the switch.
+        capture_path = os.path.join(
+            output_dir, '{0}_{1}.capture'.format(hostname, _timestamp()))
+        try:
+            with open(capture_path, 'w', encoding='utf-8') as capture_file:
                 capture_file.write(render(outputs))
         except OSError as error:
             crt.Dialog.MessageBox(
                 'Could not write {0}:\n{1}\n\nThe capture is intact in memory but '
                 'was not saved. Run the script again and give a full path to a '
-                'folder you can write to.'.format(path, error), 'Capture failed')
+                'folder you can write to.'.format(capture_path, error), 'Capture failed')
             return
 
-        import os
-
-        report_path, detail = run_audit(path, hostname)
-        if report_path:
+        checklist_path, detail = run_audit(capture_path, hostname, output_dir)
+        if checklist_path:
+            _remove(capture_path)
             crt.Dialog.MessageBox(
-                'Captured {0} commands from {1} and audited the capture.\n\n'
-                '{2}\n\nCapture: {3}\nReport:  {4}'
-                .format(len(outputs), hostname, detail, path, report_path),
-                'Capture and audit complete')
-            if OPEN_REPORT and hasattr(os, 'startfile'):
-                os.startfile(report_path)
+                'Captured {0} commands from {1} and audited them.\n\n{2}\n\n'
+                'Checklist: {3}\n\nOpen it with STIG Viewer 3: '
+                'File > Open Checklist.'
+                .format(len(outputs), hostname, detail, checklist_path),
+                'Checklist written')
+            if OPEN_OUTPUT_FOLDER and hasattr(os, 'startfile'):
+                os.startfile(output_dir)
         else:
             crt.Dialog.MessageBox(
-                'Captured {0} commands from {1}.\n\nWritten to:\n{2}\n\n'
-                'The audit did not run here - {3}'
-                .format(len(outputs), hostname, path, detail), 'Capture complete')
+                'Captured {0} commands from {1}, but no checklist was written.\n\n'
+                'The audit did not run here - {2}\n\nThe capture is kept so the trip '
+                'to the switch is not wasted:\n{3}'
+                .format(len(outputs), hostname, detail, capture_path), 'Capture complete')
     except Exception as error:  # surfaced in a dialog; SecureCRT hides tracebacks
-        crt.Dialog.MessageBox('{0}\n\nNo capture was written.'.format(error), 'Capture failed')
+        crt.Dialog.MessageBox('{0}\n\nNothing was written.'.format(error), 'Capture failed')
     finally:
         crt.Screen.Synchronous = False
 
@@ -411,12 +444,29 @@ def _timestamp():
     return time.strftime('%Y%m%d_%H%M%S')
 
 
-def run_audit(capture_path, hostname):
+def _remove(path):
+    """Delete a file, ignoring a failure. Used only on the working capture once
+    the checklist it produced exists: a file left behind is untidy, and raising
+    over it would report a successful run as a failed one."""
+    import os
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def run_audit(capture_path, hostname, output_dir):
     """Run l2_stig_audit.py --from-capture against the just-saved capture,
-    writing the report next to it. Returns (report_path, summary_line) on
-    success, (None, why_not) when the audit cannot run here - which is not a
-    capture failure, just a machine without the repo."""
+    writing a STIG Viewer 3 checklist into output_dir. Returns
+    (checklist_path, summary_line) on success, (None, why_not) when the audit
+    cannot run here - which is not a capture failure, just a machine without
+    the repo.
+
+    The audit names the file itself (hostname, capture date, and the STIG
+    versions out of the checklist it audited against), which is why it is
+    handed a directory rather than a path."""
     import os.path
+    import re
     import subprocess
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -437,7 +487,8 @@ def run_audit(capture_path, hostname):
             # No --checklist: the audit defaults to IOS XE, which is what this
             # script captures from. See the note at the top of the file.
             result = subprocess.run(
-                [python, audit, hostname, '--from-capture', capture_path],
+                [python, audit, hostname, '--from-capture', capture_path,
+                 '--to-cklb', output_dir],
                 capture_output=True, text=True, cwd=repo, timeout=180)
         except (OSError, subprocess.TimeoutExpired) as error:
             last_error = '{0}: {1}'.format(python, error)
@@ -445,16 +496,18 @@ def run_audit(capture_path, hostname):
         if result.returncode != 0:
             return None, ('the audit itself failed:\n'
                           + (result.stdout + result.stderr).strip()[-500:])
-        # Strip the .capture extension before appending, so the report is a
-        # clean .txt (S1_<stamp>_report.txt) rather than a double-extensioned
-        # .capture_report.txt that Windows file associations mishandle.
-        base = capture_path[:-len('.capture')] if capture_path.endswith('.capture') else capture_path
-        report_path = base + '_report.txt'
-        with open(report_path, 'w', encoding='utf-8') as report_file:
-            report_file.write(result.stdout)
+        # The audit prints "Wrote <path> for STIG Viewer 3: ..." as its last
+        # line, and that path is the one it derived - read it back rather than
+        # rebuilding the name here, where a second copy of the naming rule
+        # would eventually disagree with the first.
+        written = re.search(r'^Wrote (.+?) for STIG Viewer 3: (.*)$',
+                            result.stdout, re.M)
+        if not written:
+            return None, ('the audit ran but wrote no checklist:\n'
+                          + result.stdout.strip()[-500:])
         summary = next((line for line in result.stdout.splitlines() if 'out of' in line),
-                       'report written')
-        return report_path, summary
+                       written.group(2))
+        return written.group(1), summary
     return None, 'no runnable python found (tried the repo venv and PATH): ' + last_error
 
 
