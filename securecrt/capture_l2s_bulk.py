@@ -477,74 +477,87 @@ def main():
     stop_path = os.path.join(output_dir, STOP_FILE)
     stopped = False
 
+    def visit_one(index, session_path, host):
+        """Everything one switch gets: connect, collect, audit, record.
+
+        A closure rather than a top-level function because it needs the whole
+        run's state - the log, the output folder, the audit runner, the names
+        already claimed - and threading six arguments through would make the
+        loop harder to read rather than easier."""
+        # Progress goes to the status bar, never a dialog: a modal box inside
+        # the loop would halt an overnight run until someone clicked.
+        crt.Session.SetStatusText('Capturing {0}/{1}: {2}'
+                                  .format(index, len(pending), session_path))
+
+        failure = connect_session(session_path)
+        if failure:
+            log.record(session_path, host, failure.split(':')[0], failure)
+            return
+
+        try:
+            hostname, outputs = capture_l2s.collect()
+        except capture_l2s.CollectionError as refused:
+            log.record(session_path, host, 'refused', refused.reason)
+            return
+
+        key = index_key(session_path, host)
+        path = os.path.join(output_dir, key)
+        try:
+            with open(path, 'w', encoding='utf-8') as capture_file:
+                capture_file.write(capture_l2s.render(outputs))
+        except OSError as error:
+            log.record(session_path, host, 'write failed', str(error)[:120])
+            return
+
+        # The switch has been visited by this point, so an audit that fails
+        # keeps its capture: the connection is the expensive half and it is
+        # already spent. `audit failed` is its own outcome in the log, which is
+        # what keeps it distinguishable from a switch never reached.
+        if not runner:
+            log.record(session_path, host, 'captured', hostname)
+            return
+
+        checklist, detail = capture_l2s.run_audit(path, hostname, work_dir, runner=runner)
+        if not checklist:
+            log.record(session_path, host, 'audit failed', first_line(detail))
+            return
+
+        try:
+            name, collided = place_checklist(output_dir, checklist, key, claimed)
+        except OSError as error:
+            log.record(session_path, host, 'write failed', str(error)[:120])
+            return
+
+        capture_l2s.remove_file(path)
+        claimed[name] = key
+        append_index(output_dir, key, name, hostname)
+        log.record(session_path, host, 'checklisted',
+                   name + (' (hostname already used by another switch)' if collided else ''))
+
     crt.Screen.Synchronous = True
     try:
         for index, (session_path, host) in enumerate(pending, 1):
             if os.path.exists(stop_path):
                 stopped = True
                 break
-
-            # Progress goes to the status bar, never a dialog: a modal box
-            # inside the loop would halt an overnight run until someone clicked.
-            crt.Session.SetStatusText('Capturing {0}/{1}: {2}'
-                                      .format(index, len(pending), session_path))
-
-            failure = connect_session(session_path)
-            if failure:
-                log.record(session_path, host, failure.split(':')[0], failure)
-                disconnect()
-                continue
-
+            # Nothing that happens to one switch may end the walk. The failures
+            # visit_one names are handled where they happen; this is for the
+            # ones it does not - a log or index write failing because the share
+            # dropped, a SecureCRT call raising something undocumented, a
+            # switch whose output breaks an assumption nobody has met yet. Six
+            # hundred devices is enough to make the unhandled case a certainty
+            # rather than a worry, and the cost of meeting it at switch 12 used
+            # to be the other 588.
             try:
-                hostname, outputs = capture_l2s.collect()
-            except capture_l2s.CollectionError as refused:
-                log.record(session_path, host, 'refused', refused.reason)
-                disconnect()
-                continue
+                visit_one(index, session_path, host)
             except Exception as error:
-                log.record(session_path, host, 'error', str(error)[:120])
-                disconnect()
-                continue
-
-            key = index_key(session_path, host)
-            path = os.path.join(output_dir, key)
-            try:
-                with open(path, 'w', encoding='utf-8') as capture_file:
-                    capture_file.write(capture_l2s.render(outputs))
-            except OSError as error:
-                log.record(session_path, host, 'write failed', str(error)[:120])
-                disconnect()
-                continue
-
-            # The switch has been visited by this point, so an audit that fails
-            # keeps its capture: the connection is the expensive half and it is
-            # already spent. `audit failed` is its own outcome in the log, which
-            # is what keeps it distinguishable from a switch never reached.
-            if not runner:
-                log.record(session_path, host, 'captured', hostname)
-                disconnect()
-                continue
-
-            checklist, detail = capture_l2s.run_audit(path, hostname, work_dir,
-                                                      runner=runner)
-            if not checklist:
-                log.record(session_path, host, 'audit failed', first_line(detail))
-                disconnect()
-                continue
-
-            try:
-                name, collided = place_checklist(output_dir, checklist, key, claimed)
-            except OSError as error:
-                log.record(session_path, host, 'write failed', str(error)[:120])
-                disconnect()
-                continue
-
-            capture_l2s.remove_file(path)
-            claimed[name] = key
-            append_index(output_dir, key, name, hostname)
-            log.record(session_path, host, 'checklisted',
-                       name + (' (hostname already used by another switch)'
-                               if collided else ''))
+                # The logger is inside this handler because it is one of the
+                # things that can fail. If it does the walk still continues: a
+                # lost log line is worth less than the rest of the night.
+                try:
+                    log.record(session_path, host, 'error', first_line(str(error)))
+                except Exception:
+                    pass
             disconnect()
     finally:
         crt.Screen.Synchronous = False

@@ -293,11 +293,22 @@ Checklist asset fields:
 ```
 
 **4. Open it.** STIG Viewer 3 → **File → Open Checklist** → the `.cklb` the run just named. Every
-rule arrives with its status set, and each one's **Finding Details** carries the reason line from
-the report plus where the evidence came from and when.
+rule arrives with its status set and its reason written into whichever box that verdict belongs in:
+
+| Verdict | Where the reason goes | Why |
+|---|---|---|
+| `open` (FAIL) | **Finding Details** | It is the evidence for a finding, which is what an assessor reads first |
+| `not_a_finding` (PASS) | **Comments** | Nothing to evidence; the note explains what was checked |
+| `not_applicable` | **Comments** | Where a not-applicable justification is expected |
+| `not_reviewed` (NOT AUTOMATED) | **Finding Details** | Comments is the box you are about to type your own answer into |
+
+The note the audit writes into **Comments** starts with a `[Automated audit <date>]` marker line.
+Anything you write *above* that line is yours and survives a re-run untouched; everything from the
+marker down is replaced each time. So a passing rule can carry both your note and the audit's
+without either overwriting the other.
 
 **5. Answer what the tool could not, then re-run.** The `not_reviewed` rules are the ones needing a
-person - the configuration-backup server, a CA's issuer. Put your answer in that rule's
+person - the configuration-backup server, for instance. Put your answer in that rule's
 **Comments** box in STIG Viewer and save. After the next fix and re-capture, run the same command
 at the same path:
 
@@ -305,8 +316,8 @@ at the same path:
 python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
 ```
 
-Statuses and finding details are re-derived from the new capture; your comments stay. The audit
-owns the verdict, you own the commentary.
+Statuses and the audit's own notes are re-derived from the new capture; what you wrote stays. The
+audit owns the verdict, you own the commentary.
 
 A live run is the same flag, and prompts for credentials:
 

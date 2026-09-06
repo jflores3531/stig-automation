@@ -96,11 +96,34 @@ def test_export(tmpdir, capture_path):
     check('and it still carries what the audit did determine, so the reviewer starts somewhere',
           all(rules[group_id]['finding_details'].strip() for group_id in not_automated))
 
-    detail = rules['V-220567']['finding_details']
-    check('finding_details carries the reason the report printed',
-          'self-signed' in detail, detail)
-    check('and where the evidence came from',
-          'capture' in detail and 'x.capture' in detail, detail)
+    # Which box the audit's note lands in follows the verdict: a finding is
+    # evidenced in Finding Details, a pass or a not-applicable is justified in
+    # Comments, where a reviewer would otherwise have typed the justification
+    # themselves. V-220567 is NOT APPLICABLE on this fixture; V-220604 is a
+    # FAIL (no SNMPv3 privacy) - one of each.
+    na = rules['V-220567']
+    check('a NOT APPLICABLE rule is justified in Comments',
+          'Not Applicable' in na['comments'], na['comments'])
+    check('and leaves Finding Details empty, since there is nothing to evidence',
+          not na['finding_details'].strip(), na['finding_details'])
+    check('the Comments justification still says where the evidence came from',
+          'capture' in na['comments'] and 'x.capture' in na['comments'], na['comments'])
+
+    failing = [group_id for group_id, status in printed.items() if status == 'FAIL']
+    check('there is a FAIL to test the other direction on', failing)
+    if failing:
+        finding = rules[failing[0]]
+        check('a finding is evidenced in Finding Details, not Comments',
+              finding['finding_details'].strip() and 'Reported FAIL' in finding['finding_details'],
+              finding['finding_details'])
+        check('and Comments is left to the reviewer',
+              stig_common.AUDIT_NOTE_MARKER not in finding['comments'], finding['comments'])
+
+    passing = [group_id for group_id, status in printed.items() if status == 'PASS']
+    check('a PASS is justified in Comments too',
+          passing and all(stig_common.AUDIT_NOTE_MARKER in rules[g]['comments']
+                          and not rules[g]['finding_details'].strip() for g in passing),
+          [(g, rules[g]['finding_details'], rules[g]['comments'][:60]) for g in passing[:2]])
 
     check('the target is named', checklist['target_data']['host_name'] == 'TESTSW01',
           checklist['target_data'])
@@ -118,9 +141,12 @@ def test_rerun_keeps_reviewer_comments(tmpdir, capture_path, out):
             if rule['group_id'] == 'V-220651':
                 # A verdict a reviewer disagreed with and edited by hand. The
                 # audit owns this field, so the re-run is expected to take it
-                # back - the comment beside it is what must survive.
+                # back - the comment beside it is what must survive. V-220651
+                # passes, so the audit writes its own note into this same box:
+                # the reviewer's words go above the marker and have to come
+                # back out from under it unchanged.
                 rule['status'] = 'open'
-                rule['comments'] = 'Reviewed by hand.'
+                rule['comments'] = 'Reviewed by hand.\n\n' + rule['comments']
     with open(out, 'w', encoding='utf-8') as checklist_file:
         json.dump(checklist, checklist_file, indent=2)
 
@@ -131,10 +157,17 @@ def test_rerun_keeps_reviewer_comments(tmpdir, capture_path, out):
           result.stdout.splitlines()[-1] if result.stdout else '')
 
     _, rules = rules_of(out)
+    # V-220566 is NOT AUTOMATED - the audit writes to Finding Details there and
+    # leaves Comments entirely alone, so the note comes back exactly as typed.
     check('the reviewer\'s comment survives', rules['V-220566']['comments'] == note,
           rules['V-220566']['comments'])
-    check('so does one on a rule the audit answered itself',
-          rules['V-220651']['comments'] == 'Reviewed by hand.', rules['V-220651']['comments'])
+    # V-220651 passes, so the audit shares the Comments box with them. Its own
+    # note is replaced; theirs is not, and does not accumulate a second copy.
+    kept_comment = rules['V-220651']['comments']
+    check('so does one on a rule the audit writes its own note into',
+          kept_comment.startswith('Reviewed by hand.'), kept_comment)
+    check('and the audit\'s note is replaced rather than stacked up',
+          kept_comment.count(stig_common.AUDIT_NOTE_MARKER) == 1, kept_comment)
     check('but the status is re-derived, not inherited',
           rules['V-220651']['status'] == 'not_a_finding', rules['V-220651']['status'])
 

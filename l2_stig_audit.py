@@ -1072,11 +1072,22 @@ def _ntp_auth_cryptographic_check(cfg):
 #   `enrollment url http://ca.example.mil`  - enrolled with a CA, and the URL
 #       names it. PASS or FAIL on whether its host is one of the approved ones
 #       (see APPROVED_CA_HOSTS below), which is the rule's own review step.
-#   `enrollment terminal`                   - enrolled with a CA by cut and
-#       paste. Nothing in the config names the CA: NOT AUTOMATED, with the
-#       command to answer it printed.
-#   `enrollment selfsigned` / no enrollment - self-signed. Certificates exist
-#       but none of them came from a provider: NOT APPLICABLE.
+#   anything else, or nothing at all              - NOT APPLICABLE.
+#
+# That last line is the whole rest of the rule, and it is deliberate. An
+# `enrollment url` is the only thing this rule is about: it is what the Check
+# Content says the trustpoint "will contain", and it is what a switch doing
+# dynamic certificate enrolment from a CA over HTTP/S has. A switch with none -
+# whether it carries a self-signed trustpoint, `enrollment terminal`, or no
+# trustpoint at all - is not obtaining public key certificates from a service
+# provider, so there is no provider for the rule to find fault with.
+#
+# `enrollment terminal` reported NOT AUTOMATED before this, on the grounds that
+# a certificate could have been pasted in from a CA the config does not name.
+# That is true and it is still visible - the reason line names any trustpoint
+# enrolling by a method other than a URL, so a reviewer who wants to check one
+# by hand can see it is there - but it is not a finding and not a rule this
+# tool can leave unanswered on a fleet that does none of this.
 #
 # Ported from ios_router_audit.py's V-215711, itself ported from NX-OS -
 # IOS/IOS XE use `crypto pki trustpoint`, NX-OS uses `crypto ca trustpoint`.
@@ -1152,14 +1163,6 @@ def _pki_trustpoint_check(cfg, approved_hosts=APPROVED_CA_HOSTS):
             else:
                 unapproved.append(f'{name} -> {url.group(1)} (host {host})')
 
-    if not (approved or unapproved or unreadable or self_signed):
-        return None, 'not applicable - no CA trustpoint configured'
-    if not (approved or unapproved or unreadable):
-        return None, (
-            f'not applicable - trustpoint(s) {", ".join(sorted(self_signed))} are self-signed '
-            '(`enrollment selfsigned`, or no enrollment at all), so the switch holds no certificate '
-            'obtained from a service provider for this rule to review'
-        )
     # A single unapproved enrollment is the finding, whatever else is alongside
     # it: the switch holds a certificate from a CA nobody approved.
     if unapproved:
@@ -1168,17 +1171,36 @@ def _pki_trustpoint_check(cfg, approved_hosts=APPROVED_CA_HOSTS):
             f'{", ".join(sorted(unapproved))} - either the CA is not DOD/DOD-approved, or it is '
             "and inventory.yaml's approved_ca_hosts does not say so yet"
         )
-    if unreadable:
-        return 'NOT AUTOMATED', (
-            f'CA-enrolled trustpoint(s) {", ".join(sorted(unreadable))} name no URL in '
-            'running-config, so the CA cannot be read from config text - check the issuer with '
-            '`show crypto pki certificates` (CN/O/OU review)'
-            + (f'. Approved by URL: {", ".join(sorted(approved))}' if approved else '')
+    if approved:
+        return True, (
+            f'enrolled with approved CA(s): {", ".join(sorted(approved))}'
+            + (f'. Self-signed alongside: {", ".join(sorted(self_signed))}' if self_signed else '')
         )
-    return True, (
-        f'enrolled with approved CA(s): {", ".join(sorted(approved))}'
-        + (f'. Self-signed alongside: {", ".join(sorted(self_signed))}' if self_signed else '')
+
+    # No `enrollment url` anywhere. The wording is the justification a reviewer
+    # would otherwise type into Comments on every switch in the fleet, and it
+    # goes there (see stig_common.NOTE_IN_COMMENTS) rather than into Finding
+    # Details, since there is no finding to evidence.
+    reason = (
+        'Verified via `show running-config | section crypto pki trustpoint` that no PKI '
+        'enrollment URLs (`enrollment url`) are configured on the switch. The device does not '
+        'utilize HTTP/S for dynamic certificate enrollment from a Certificate Authority. '
+        'Therefore, this requirement is Not Applicable.'
     )
+    if self_signed:
+        # Named rather than dismissed: these are the self-signed trustpoints
+        # IOS XE generates for its own HTTPS server, and saying so is what
+        # tells a reviewer the audit saw them and did not mistake them for
+        # enrolment.
+        reason += (f' Self-signed trustpoint(s) present and not enrolled with any CA: '
+                   f'{", ".join(sorted(self_signed))}.')
+    if unreadable:
+        # A CA may be involved here and running-config does not name it, so the
+        # justification above cannot be left to stand on its own.
+        reason += (f' Note: {", ".join(sorted(unreadable))} enrol by a method that names no URL '
+                   'in the configuration - if a certificate was loaded from a CA that way, '
+                   'confirm the issuer with `show crypto pki certificates`.')
+    return None, reason
 
 
 def _ssh_algorithm_fips_check(cfg, algo_type, required_substring, algo_desc, unavailable_note=''):

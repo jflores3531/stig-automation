@@ -386,13 +386,13 @@ def _existing_annotations(output_path):
     """Per-rule `comments` and `overrides` already in the file being replaced.
 
     A checklist that has been opened once is not just this tool's output any
-    more. The division of labour is: the audit owns `status` and
-    `finding_details` (it re-derives both on every run), the reviewer owns
-    `comments` and any severity `overrides` (nothing here can re-derive
-    those). Re-running the audit over yesterday's export therefore updates the
-    verdicts and keeps the notes - without this, the second run silently
-    deletes the reviewer's work on exactly the rules they had to answer by
-    hand."""
+    more. The division of labour is: the audit owns `status`, and writes its
+    own note into `finding_details` or `comments` depending on the verdict (see
+    NOTE_IN_COMMENTS); the reviewer owns everything else they typed and any
+    severity `overrides`, none of which this can re-derive. Re-running the
+    audit over yesterday's export therefore updates the verdicts and keeps the
+    notes - without this, the second run silently deletes the reviewer's work
+    on exactly the rules they had to answer by hand."""
     if not os.path.exists(output_path):
         return {}
     try:
@@ -409,6 +409,46 @@ def _existing_annotations(output_path):
         # truncated by a crash. There is nothing to preserve, and refusing to
         # write over it would strand the run.
         return {}
+
+
+# Which box a verdict's explanation belongs in.
+#
+# Finding Details is where a reviewer writes why a rule is Open - it is the
+# evidence for a finding, and on an Open rule it is what an assessor reads
+# first. On a rule that is not a finding there is nothing to evidence, and the
+# justification for it belongs in Comments, which is where a not_applicable
+# rule's reason is expected to be.
+#
+# not_reviewed is the one that stays in Finding Details, and deliberately: the
+# audit's note there is what it *could* determine, and Comments is the box the
+# reviewer is about to type their own answer into. Putting the audit's text
+# where their answer goes would be arguing with them in their own notebook.
+NOTE_IN_COMMENTS = ('PASS', 'NOT APPLICABLE')
+
+# The audit's own note, wherever it lands in Comments, is marked so a re-run
+# can replace it without touching whatever the reviewer wrote around it.
+# Everything from this marker to the end of the box is the audit's; everything
+# above it is theirs and is kept verbatim.
+#
+# The alternative - the audit simply owning Comments on the rules it writes to -
+# would silently delete a reviewer's note on any rule that passes, which is the
+# exact failure _existing_annotations exists to prevent. A visible marker line
+# costs one line in STIG Viewer and makes the ownership legible to the person
+# reading it, rather than only to this file.
+AUDIT_NOTE_MARKER = '[Automated audit'
+
+
+def _reviewer_part(comment):
+    """What a reviewer wrote in a Comments box, with any note a previous run of
+    this audit left behind removed."""
+    index = (comment or '').find(AUDIT_NOTE_MARKER)
+    return (comment if index == -1 else comment[:index]).rstrip()
+
+
+def _audit_note(reason, title, source, stamp, status):
+    """The audit's explanation of one verdict: why, then what read it and when."""
+    return ((f'{reason}\n\n' if reason else '')
+            + f'{title} against {source}, {stamp}. Reported {status}.')
 
 
 def write_cklb(checklist_path, output_path, findings, device_name, source, title,
@@ -445,6 +485,7 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
     answered = {group_id: (status, reason) for status, _rule, group_id, reason in findings}
 
     counts = {}
+    kept_reviewer = set()
     for stig in checklist.get('stigs', []):
         for rule in stig.get('rules', []):
             group_id = rule.get('group_id')
@@ -456,11 +497,28 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
                 continue
             status, reason = answered[group_id]
             rule['status'] = CKLB_STATUS[status]
-            rule['finding_details'] = (
-                f'{reason}\n\n' if reason else ''
-            ) + f'{title} against {source}, {stamp}. Reported {status}.'
+            note = _audit_note(reason, title, source, stamp, status)
+            reviewer = _reviewer_part(kept.get(group_id, {}).get('comments', ''))
+            if reviewer or kept.get(group_id, {}).get('overrides'):
+                # Counted here rather than from `kept`, which also holds this
+                # audit's own notes from the last run. Reporting those back as
+                # reviewer comments would claim a file full of human work on
+                # the second run of a switch nobody has opened yet.
+                kept_reviewer.add(group_id)
+
+            if status in NOTE_IN_COMMENTS:
+                # Not a finding: nothing to evidence, so Finding Details is
+                # left empty and the reason for the verdict goes to Comments,
+                # under whatever the reviewer has written there. Only here does
+                # the note carry the marker, because only here is it sharing a
+                # box with someone else's writing.
+                marked = f'{AUDIT_NOTE_MARKER} {stamp}]\n{note}'
+                rule['finding_details'] = ''
+                rule['comments'] = f'{reviewer}\n\n{marked}' if reviewer else marked
+            else:
+                rule['finding_details'] = note
+                rule['comments'] = reviewer
             if group_id in kept:
-                rule['comments'] = kept[group_id]['comments']
                 rule['overrides'] = kept[group_id]['overrides']
             counts[rule['status']] = counts.get(rule['status'], 0) + 1
 
@@ -485,7 +543,8 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
 
     summary = ', '.join(f'{counts.get(status, 0)} {status}'
                         for status in ('not_a_finding', 'open', 'not_applicable', 'not_reviewed'))
-    kept_note = f', keeping reviewer comments on {len(kept)} rule(s)' if kept else ''
+    kept_note = (f', keeping reviewer comments on {len(kept_reviewer)} rule(s)'
+                 if kept_reviewer else '')
     return f'Wrote {output_path} for STIG Viewer 3: {summary}{kept_note}.'
 
 def exec_timeout_ok(cfg, max_minutes=5):

@@ -367,6 +367,39 @@ def test_audit_failure_keeps_its_capture(tmpdir):
           not os.path.exists(os.path.join(tmpdir, bulk.INDEX_FILE)))
 
 
+def test_an_unhandled_error_does_not_end_the_walk(tmpdir):
+    """The named failures - offline, rejected, refused, write failed, audit
+    failed - are each handled where they happen. This is the one that is not:
+    something inside a single switch's turn raising what nobody planned for.
+    On six hundred devices that is a certainty rather than a worry, and it used
+    to cost every switch after it."""
+    print('\nan unexpected error costs one switch, not the rest of the list')
+    original = bulk.append_index
+    hit = []
+
+    def explode(output_dir, key, checklist, host):
+        # Stands in for the writes that are not individually guarded: the index
+        # and the run log, both of which touch a network share that can drop.
+        if key == '10.0.10.2.capture':
+            hit.append(key)
+            raise OSError('the network share went away')
+        return original(output_dir, key, checklist, host)
+
+    bulk.append_index = explode
+    try:
+        sessions = [('sw-a', '10.0.10.1'), ('sw-b', '10.0.10.2'), ('sw-c', '10.0.10.3')]
+        run_walker(tmpdir, sessions, {})
+    finally:
+        bulk.append_index = original
+
+    check('the failing switch really did fail', hit == ['10.0.10.2.capture'], hit)
+    result = outcomes(tmpdir)
+    check('it is logged as an error rather than lost', result.get('sw-b') == 'error', result)
+    check('and the walk carried on to the switch after it',
+          result.get('sw-c') == 'checklisted', result)
+    check('every session in the list is still accounted for', len(result) == 3, result)
+
+
 def test_no_audit_here_falls_back_to_captures(tmpdir):
     """Only these two files copied to a locked-down machine: nothing there can
     audit anything. Settled once, before the walk, and answered by collecting
@@ -421,6 +454,7 @@ if __name__ == '__main__':
                  test_checklist_is_what_it_should_be,
                  test_same_hostname_does_not_overwrite,
                  test_audit_failure_keeps_its_capture,
+                 test_an_unhandled_error_does_not_end_the_walk,
                  test_no_audit_here_falls_back_to_captures,
                  test_stop_file_halts_cleanly):
         with tempfile.TemporaryDirectory() as tmpdir:
