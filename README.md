@@ -302,25 +302,27 @@ rule arrives with its status set and its reason written into whichever box that 
 | `not_applicable` | **Comments** | Where a not-applicable justification is expected |
 | `not_reviewed` (NOT AUTOMATED) | **Comments** | How far the audit got on a rule you now have to finish |
 
-**A re-run replaces both boxes.** The checklist states what one capture said, so the new capture
-wins outright: status, Finding Details and Comments are all re-derived, and the box a verdict does
-not use is cleared rather than left holding the previous run's sentence. Anything typed into
-Comments in STIG Viewer is therefore gone on the next run over the same path — including answers on
-`not_reviewed` rules. Keep those somewhere the audit does not write, or export to a new path when
-you want to keep an annotated copy. The one thing carried over is a **severity override**, which is
-a decision about how much a finding matters at your site rather than a reading of the switch.
+**A re-run replaces the whole file.** The checklist states what one capture said, so the new
+capture wins outright: an export is the blank checklist plus that capture's findings and nothing
+else. Nothing is read back out of the file being replaced — not Finding Details, not Comments, not
+a severity override. The box a verdict does not use is cleared rather than left holding the
+previous run's sentence.
+
+So **nothing you type in STIG Viewer survives the next run to the same path**: an answer on a
+`not_reviewed` rule, an override and its justification, all of it. Annotate a copy the audit does
+not write to, or export the next run to a different folder.
 
 **5. Answer what the tool could not.** The `not_reviewed` rules are the ones needing a person - the
 configuration-backup server, for instance. Put your answer in that rule's **Comments** box in STIG
-Viewer and save. Note the rule above: re-running the audit at the same path overwrites it, so do
-your answering on the copy you are going to keep, or re-run to a different folder first:
+Viewer and save. Per the rule above, re-running the audit to the same path will overwrite it, so
+annotate the copy you intend to keep - and send the next run somewhere else:
 
 ```powershell
 python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
 ```
 
-Everything but a severity override is re-derived from the new capture. The audit owns the verdict
-and both text boxes; what it says about a switch is always what the latest capture said about it.
+Every field is re-derived from the new capture. What the file says about a switch is always what
+the latest capture said about it, and only that.
 
 A live run is the same flag, and prompts for credentials:
 

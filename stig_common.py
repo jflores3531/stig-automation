@@ -381,39 +381,6 @@ def resolve_cklb_path(to_cklb, checklist_path, device_name, captured_on=None, ta
     return os.path.join(to_cklb, checklist_filename(checklist_path, host, captured_on))
 
 
-def _existing_overrides(output_path):
-    """Per-rule severity `overrides` already in the file being replaced.
-
-    The only thing carried over from an earlier export. A checklist is a
-    statement about what a capture said, and every part of that statement is
-    re-derived from the new capture on every run: status, finding_details and
-    comments are all overwritten, so a rule cannot keep a note describing a
-    switch as it was two captures ago.
-
-    A severity override is not such a statement. It is a decision about how
-    much a finding matters at this site, it applies to the rule rather than to
-    the reading, and nothing here can re-derive it - so it survives.
-
-    The cost of the rest being overwritten is real and worth knowing: an answer
-    typed into Comments in STIG Viewer is gone on the next run over the same
-    path. Answers that have to last belong somewhere the audit does not write."""
-    if not os.path.exists(output_path):
-        return {}
-    try:
-        with open(output_path, encoding='utf-8') as existing_file:
-            existing = json.load(existing_file)
-        return {
-            rule['group_id']: rule.get('overrides', {})
-            for stig in existing.get('stigs', []) for rule in stig.get('rules', [])
-            if rule.get('overrides')
-        }
-    except (ValueError, KeyError, OSError):
-        # Not a readable .cklb - a stray file with the same name, or one
-        # truncated by a crash. There is nothing to preserve, and refusing to
-        # write over it would strand the run.
-        return {}
-
-
 # Which box a verdict's explanation belongs in.
 #
 # Finding Details is the evidence for a finding: on an Open rule it is what an
@@ -423,10 +390,17 @@ def _existing_overrides(output_path):
 # and a not_reviewed rule's note is the audit saying how far it got on a rule
 # somebody now has to finish.
 #
-# Both boxes are the audit's, and both are rewritten from the new capture every
-# run - see _existing_overrides for what that costs and why it is the trade
-# being made. Nothing is merged with what was there before, so no rule can end
-# up carrying one sentence about this capture and another about the last one.
+# Both boxes are the audit's, and both are rewritten every run. So is every
+# other per-rule field: an export is built from the blank checklist and this
+# capture's findings and nothing else, so a file at a path that already has one
+# is replaced rather than updated. Re-running is how you get the current
+# answer, and the current answer is all the file contains.
+#
+# The cost is worth stating plainly because it is silent when it bites: nothing
+# a person types into STIG Viewer - a Comments answer on a not_reviewed rule, a
+# severity override and its justification - survives the next run over the same
+# path. Annotations that have to last belong on a copy the audit does not write
+# to, which means exporting to a different folder before annotating.
 NOTE_IN_FINDING_DETAILS = ('FAIL',)
 
 
@@ -446,9 +420,11 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
     is not evidence.
 
     `target_data` fills STIG Viewer's asset fields from collect_target_data();
-    anything it did not find is left as the checklist already had it rather
-    than blanked, so a value a reviewer typed in survives a re-run the same way
-    their comments do."""
+    anything it did not find is left as the blank checklist had it.
+
+    An existing file at output_path is replaced, not updated - nothing is read
+    back out of it. See NOTE_IN_FINDING_DETAILS for what that means for
+    anything typed into STIG Viewer."""
     if os.path.abspath(checklist_path) == os.path.abspath(output_path):
         raise ChecklistError(
             f'Refusing to write over the blank checklist at {checklist_path}.\n'
@@ -466,7 +442,6 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
     # verdicts had actually moved.
     run_at = run_at or datetime.datetime.now()
     stamp = run_at.strftime('%Y-%m-%d')
-    kept_overrides = _existing_overrides(output_path)
     answered = {group_id: (status, reason) for status, _rule, group_id, reason in findings}
 
     counts = {}
@@ -483,18 +458,17 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
             rule['status'] = CKLB_STATUS[status]
             note = _audit_note(reason, title, source, stamp, status)
 
-            # Both boxes are written every run, and the one this verdict does
-            # not use is cleared rather than left alone: a rule that fails today
-            # and passes tomorrow would otherwise keep yesterday's finding in
-            # Finding Details underneath a Comments note saying it passes.
+            # The box this verdict does not use is cleared rather than left
+            # alone: a rule that fails today and passes tomorrow would otherwise
+            # keep yesterday's finding in Finding Details underneath a Comments
+            # note saying it passes. Every other per-rule field is already the
+            # blank checklist's, since that is what this run is building from.
             if status in NOTE_IN_FINDING_DETAILS:
                 rule['finding_details'] = note
                 rule['comments'] = ''
             else:
                 rule['finding_details'] = ''
                 rule['comments'] = note
-            if group_id in kept_overrides:
-                rule['overrides'] = kept_overrides[group_id]
             counts[rule['status']] = counts.get(rule['status'], 0) + 1
 
     target = checklist.setdefault('target_data', {})
@@ -518,9 +492,7 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
 
     summary = ', '.join(f'{counts.get(status, 0)} {status}'
                         for status in ('not_a_finding', 'open', 'not_applicable', 'not_reviewed'))
-    kept_note = (f', keeping severity overrides on {len(kept_overrides)} rule(s)'
-                 if kept_overrides else '')
-    return f'Wrote {output_path} for STIG Viewer 3: {summary}{kept_note}.'
+    return f'Wrote {output_path} for STIG Viewer 3: {summary}.'
 
 def exec_timeout_ok(cfg, max_minutes=5):
     """True if every exec-timeout line sets a nonzero value no longer than

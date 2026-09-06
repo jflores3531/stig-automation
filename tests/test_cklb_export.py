@@ -15,12 +15,13 @@ this" becoming "a reviewer confirmed it complies".
 The other half is what a second run does. A checklist is a statement about what
 one capture said, so the new capture wins outright: status, finding_details and
 comments are all re-derived, and the box a verdict does not use is cleared
-rather than left holding the previous run's sentence. The one thing carried
-over is a severity override - a decision about how much a finding matters here,
-not a reading of the switch, and nothing in this repository can re-derive it.
+rather than left holding the previous run's sentence. Nothing is read back out
+of the file being replaced at all, so an export is the blank checklist plus one
+capture's findings and nothing else.
 
-That means an answer typed into Comments in STIG Viewer does not survive the
-next run over the same path. It is the intended trade, and it is asserted below
+That means nothing typed into STIG Viewer survives the next run over the same
+path - a Comments answer on a not_reviewed rule, a severity override and its
+justification, all of it. It is the intended trade, and it is asserted below
 rather than left to be discovered.
 """
 
@@ -137,14 +138,10 @@ def test_export(tmpdir, capture_path):
 
 
 def test_rerun_overwrites_what_was_there(tmpdir, capture_path, out):
-    """A checklist is a statement about what a capture said, so the new capture
-    wins outright: status, finding_details and comments are all re-derived, and
-    the box a verdict does not use is cleared rather than left holding the last
-    run's sentence.
-
-    The one thing carried over is a severity override, which is a decision
-    about how much a finding matters at this site rather than a reading of the
-    switch - nothing here can re-derive it."""
+    """A checklist is a statement about what one capture said, so the new
+    capture wins outright and nothing is read back out of the file being
+    replaced - not the two text boxes, not a severity override. An export is
+    the blank checklist plus this capture's findings, and nothing else."""
     print('\na second run re-derives everything from the new capture')
     checklist, rules = rules_of(out)
     typed = 'Confirmed with the backup admins 2026-09-06: SCP to the config server, weekly.'
@@ -179,11 +176,25 @@ def test_rerun_overwrites_what_was_there(tmpdir, capture_path, out):
     check('and the box this verdict does not use is cleared',
           not passing['finding_details'].strip(), passing['finding_details'])
 
-    # The exception, and the only one.
-    check('a severity override survives, since nothing here can re-derive it',
-          rules['V-220566']['overrides'] == override, rules['V-220566']['overrides'])
-    check('and the run says so', 'keeping severity overrides on 1 rule(s)' in result.stdout,
-          result.stdout.splitlines()[-1] if result.stdout else '')
+    # Including the fields the audit never writes to. There is no exception:
+    # an export is the blank checklist plus this capture, so a severity
+    # override set in STIG Viewer goes the same way as a typed comment.
+    check('a severity override does not survive either',
+          rules['V-220566']['overrides'] == {}, rules['V-220566']['overrides'])
+    check('and the run claims to keep nothing',
+          'keeping' not in result.stdout,
+          [l for l in result.stdout.splitlines() if 'keeping' in l])
+
+    # The whole property in one line, and the one worth keeping if the checks
+    # above ever get in the way: re-running over a file somebody has marked up
+    # every way STIG Viewer allows produces the same bytes as exporting the
+    # same capture to a path that never existed. Nothing carries over because
+    # nothing is read.
+    fresh = os.path.join(tmpdir, 'never-existed.cklb')
+    run_audit(tmpdir, capture_path, '--to-cklb', fresh)
+    with open(out, encoding='utf-8') as a, open(fresh, encoding='utf-8') as b:
+        check('a re-run over an annotated file is byte-for-byte a fresh export',
+              a.read() == b.read())
 
 
 def test_refuses_the_template(tmpdir, capture_path):
