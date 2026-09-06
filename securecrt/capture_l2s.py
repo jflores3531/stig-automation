@@ -418,7 +418,7 @@ def main():
 
         checklist_path, detail = run_audit(capture_path, hostname, output_dir)
         if checklist_path:
-            _remove(capture_path)
+            remove_file(capture_path)
             crt.Dialog.MessageBox(
                 'Captured {0} commands from {1} and audited them.\n\n{2}\n\n'
                 'Checklist: {3}\n\nOpen it with STIG Viewer 3: '
@@ -444,7 +444,7 @@ def _timestamp():
     return time.strftime('%Y%m%d_%H%M%S')
 
 
-def _remove(path):
+def remove_file(path):
     """Delete a file, ignoring a failure. Used only on the working capture once
     the checklist it produced exists: a file left behind is untidy, and raising
     over it would report a successful run as a failed one."""
@@ -455,27 +455,29 @@ def _remove(path):
         pass
 
 
-def run_audit(capture_path, hostname, output_dir):
-    """Run l2_stig_audit.py --from-capture against the just-saved capture,
-    writing a STIG Viewer 3 checklist into output_dir. Returns
-    (checklist_path, summary_line) on success, (None, why_not) when the audit
-    cannot run here - which is not a capture failure, just a machine without
-    the repo.
+def find_audit():
+    """(repo, python, audit_path) for running the audit here, or (None, None,
+    why_not) when this machine cannot - no repo beside this file, or no Python
+    that will run it.
 
-    The audit names the file itself (hostname, capture date, and the STIG
-    versions out of the checklist it audited against), which is why it is
-    handed a directory rather than a path."""
+    Answered by asking the audit for its own --help, which parses argv and
+    exits before it reads a capture, opens a file or touches the network. That
+    is a real check rather than "does an executable named python exist": a
+    Microsoft Store stub answers to the name and runs nothing.
+
+    Separate from run_audit() so a bulk walker can ask this once, before
+    connecting to six hundred switches, rather than discovering per switch that
+    nothing here can audit what it just collected."""
     import os.path
-    import re
     import subprocess
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo = os.path.dirname(script_dir)
     audit = os.path.join(repo, 'l2_stig_audit.py')
     if not os.path.exists(audit):
-        return None, ('l2_stig_audit.py not found next to this script - run the audit '
-                      'on a machine with the repo:\n'
-                      'python l2_stig_audit.py {0} --from-capture <capture>'.format(hostname))
+        return None, None, ('l2_stig_audit.py not found next to this script - run the '
+                            'audit on a machine with the repo:\n'
+                            'python l2_stig_audit.py <name> --from-capture <capture>')
 
     # Prefer the repo's own venv; fall back to whatever python is on PATH.
     candidates = [os.path.join(repo, '.venv', 'Scripts', 'python.exe'),
@@ -484,31 +486,65 @@ def run_audit(capture_path, hostname, output_dir):
     last_error = ''
     for python in candidates:
         try:
-            # No --checklist: the audit defaults to IOS XE, which is what this
-            # script captures from. See the note at the top of the file.
-            result = subprocess.run(
-                [python, audit, hostname, '--from-capture', capture_path,
-                 '--to-cklb', output_dir],
-                capture_output=True, text=True, cwd=repo, timeout=180)
+            probe = subprocess.run([python, audit, '--help'],
+                                   capture_output=True, text=True, cwd=repo, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as error:
             last_error = '{0}: {1}'.format(python, error)
             continue
-        if result.returncode != 0:
-            return None, ('the audit itself failed:\n'
-                          + (result.stdout + result.stderr).strip()[-500:])
-        # The audit prints "Wrote <path> for STIG Viewer 3: ..." as its last
-        # line, and that path is the one it derived - read it back rather than
-        # rebuilding the name here, where a second copy of the naming rule
-        # would eventually disagree with the first.
-        written = re.search(r'^Wrote (.+?) for STIG Viewer 3: (.*)$',
-                            result.stdout, re.M)
-        if not written:
-            return None, ('the audit ran but wrote no checklist:\n'
-                          + result.stdout.strip()[-500:])
-        summary = next((line for line in result.stdout.splitlines() if 'out of' in line),
-                       written.group(2))
-        return written.group(1), summary
-    return None, 'no runnable python found (tried the repo venv and PATH): ' + last_error
+        if probe.returncode == 0:
+            return repo, python, ''
+        last_error = '{0}: {1}'.format(python, (probe.stderr or probe.stdout).strip()[:200])
+    return None, None, ('no runnable python found (tried the repo venv and PATH): '
+                        + last_error)
+
+
+def run_audit(capture_path, hostname, output_dir, runner=None):
+    """Run l2_stig_audit.py --from-capture against the just-saved capture,
+    writing a STIG Viewer 3 checklist into output_dir. Returns
+    (checklist_path, summary_line) on success, (None, why_not) when the audit
+    cannot run here - which is not a capture failure, just a machine without
+    the repo.
+
+    The audit names the file itself (hostname, capture date, and the STIG
+    versions out of the checklist it audited against), which is why it is
+    handed a directory rather than a path.
+
+    `runner` is a (repo, python) pair from find_audit(), for a caller that has
+    already established one; without it, this finds one per call."""
+    import os.path
+    import re
+    import subprocess
+
+    if runner:
+        repo, python = runner
+    else:
+        repo, python, why_not = find_audit()
+        if repo is None:
+            return None, why_not
+
+    try:
+        # No --checklist: the audit defaults to IOS XE, which is what this
+        # script captures from. See the note at the top of the file.
+        result = subprocess.run(
+            [python, os.path.join(repo, 'l2_stig_audit.py'), hostname,
+             '--from-capture', capture_path, '--to-cklb', output_dir],
+            capture_output=True, text=True, cwd=repo, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, 'the audit could not be run: {0}'.format(error)
+    if result.returncode != 0:
+        return None, ('the audit itself failed:\n'
+                      + (result.stdout + result.stderr).strip()[-500:])
+    # The audit prints "Wrote <path> for STIG Viewer 3: ..." as its last line,
+    # and that path is the one it derived - read it back rather than rebuilding
+    # the name here, where a second copy of the naming rule would eventually
+    # disagree with the first.
+    written = re.search(r'^Wrote (.+?) for STIG Viewer 3: (.*)$', result.stdout, re.M)
+    if not written:
+        return None, ('the audit ran but wrote no checklist:\n'
+                      + result.stdout.strip()[-500:])
+    summary = next((line for line in result.stdout.splitlines() if 'out of' in line),
+                   written.group(2))
+    return written.group(1), summary
 
 
 # `crt` is supplied by SecureCRT at runtime, not imported. Declared here only so

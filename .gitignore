@@ -24,6 +24,11 @@ captures/
 checklists/out/
 *.cklb.filled
 
+# What a bulk walk leaves beside its checklists: one run log per run, and the
+# index of which session produced which checklist. Both name real devices.
+run_log_*.csv
+collected.csv
+
 # The CSVs arp_inventory.py and pdf_ips.py write. Both are lists of real
 # addressing off a real network, which is the thing this repo most carefully
 # does not commit. Nothing tracked here is a .csv.

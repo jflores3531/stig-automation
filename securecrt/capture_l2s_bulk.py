@@ -1,27 +1,33 @@
 # $language = "Python3"
 # $interface = "1.0"
 
-"""Collect L2 switch STIG captures from every saved SecureCRT session, unattended.
+"""Fill in a STIG Viewer 3 checklist for every saved SecureCRT session, unattended.
 
 Run this from SecureCRT (Script > Run...) with no session connected, or with
 any session connected - it opens and closes its own. For each saved session it
 connects using the credentials SecureCRT already holds, sends the read-only
-show commands, writes a capture file, and disconnects. Nothing is
-configured on any device. The only non-show command sent is `terminal length 0`,
-which is session-scoped.
+show commands, audits them, writes
 
-Afterwards, audit everything collected in one pass:
+    <hostname>_<DDMMMYYYY>_L2S_V3R2_NDM_V3R6.cklb
 
-    for %f in (C:\\Documents\\netauto_captures\\*.capture) do ^
-        python l2_stig_audit.py %~nf --from-capture "%f" --to-cklb C:\\Documents\\checklists
+and disconnects. Nothing is configured on any device. The only non-show command
+sent is `terminal length 0`, which is session-scoped. One output folder holds
+the whole fleet: each name carries the switch that produced it, so nothing
+writes over anything else.
 
-Given a directory, the audit names each checklist for the switch it audited, the
-date its capture was taken, and the STIG versions in the checklist - so one
-output folder holds the whole fleet without any of them writing over another.
+The capture each audit read is a working file and is deleted once its checklist
+exists. It is kept in exactly one case - an audit that failed on that capture -
+because the switch has already been visited by then and the collection is the
+part that cannot be repeated cheaply. Those show in the log as `audit failed`
+with the reason, and can be audited by hand afterwards:
 
-Collection and audit stay separate on purpose. Auditing inside the loop would
-launch a Python subprocess per switch, and a failed audit would be
-indistinguishable from a failed capture in the log.
+    python l2_stig_audit.py <name> --from-capture <file> --to-cklb <folder>
+
+Whether the audit can run on this machine at all is settled once, before the
+walk starts, rather than discovered six hundred connections later. Where it
+cannot - only these two files were copied to a locked-down machine, say - the
+run offers to collect captures alone, which is what this script did before it
+audited anything, and the command above turns them into checklists elsewhere.
 
 WHY THIS IS A SEPARATE SCRIPT FROM capture_l2s.py
 capture_l2s.py cannot connect to anything. It attaches to the session in front
@@ -56,10 +62,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import capture_l2s
 
 
-# Where captures and the run log are written. Deliberately a stable path rather
-# than a timestamped one: a re-run skips sessions whose capture already exists,
-# which is what makes a five-hour job resumable after it dies at switch 400.
-OUTPUT_DIR = r'C:\Documents\netauto_captures'
+# Where the checklists and the run log are written. Deliberately a stable path
+# rather than a timestamped one: a re-run skips the sessions already done in
+# this folder, which is what makes a five-hour job resumable after it dies at
+# switch 400. Point a new round at a new folder.
+OUTPUT_DIR = r'C:\Documents\netauto_checklists'
+
+# What "already done" is read from. The checklist is named for the switch's own
+# hostname, which is not knowable until it has been connected to and asked - so
+# unlike a capture named for the session's address, its existence cannot be
+# tested in advance. This file is that test: one row per session that produced
+# a checklist, written as each one lands.
+#
+# It is a plain index of what happened, not a database. A row whose checklist
+# has since been deleted from the folder is treated as not done, so removing a
+# checklist is still how you ask for that switch again - the same gesture that
+# used to mean deleting its capture.
+INDEX_FILE = 'collected.csv'
 
 # Drop a file with this name in OUTPUT_DIR to stop a run cleanly at the end of
 # the current switch. There is no other way to interrupt a script inside
@@ -173,11 +192,102 @@ def dedupe_by_host(sessions):
 def capture_name(session_path, hostname):
     """Capture filename for a session. Prefers the address; falls back to the
     session name with path separators flattened when a session has no Hostname
-    field (a serial or local-shell session, say)."""
+    field (a serial or local-shell session, say).
+
+    Still the switch's identity to this script, even though the capture is now
+    a working file: it is the only name available before connecting, and it is
+    what the index below is keyed on."""
     stem = hostname or session_path
     for bad in '\\/:*?"<>| ':
         stem = stem.replace(bad, '_')
     return stem + '.capture'
+
+
+def session_stem(session_path, hostname):
+    """The session's address, flattened - unique across the list, and the only
+    identity available before connecting."""
+    stem = hostname or session_path
+    for bad in '\\/:*?"<>| ':
+        stem = stem.replace(bad, '_')
+    return stem
+
+
+def index_key(session_path, hostname):
+    """How a session is identified in the index, and in the folder if a capture
+    ends up kept. One name for both, so the two cannot disagree."""
+    return capture_name(session_path, hostname)
+
+
+# Two switches reporting the same hostname is not a hypothetical on a fleet
+# that names them per site rather than per device - and the checklist is named
+# for the hostname, so the second one would land on the first one's file. In a
+# run nobody is watching, that is silent: one file, one switch's verdicts,
+# under a name that says nothing is wrong.
+#
+# So the audit writes into a work folder and the result is moved into place
+# here, where the session's address is known and is unique. A name already
+# claimed by a DIFFERENT session gets that address folded in; a name claimed by
+# this same session is its own earlier checklist and is replaced, which is what
+# re-running one switch should do.
+WORK_DIR = '.work'
+
+
+def place_checklist(output_dir, produced, key, claimed):
+    """Move the audit's output into output_dir. Returns (final name, collided).
+
+    `claimed` maps checklist name -> the session key that produced it."""
+    name = os.path.basename(produced)
+    collided = claimed.get(name, key) != key
+    if collided:
+        stem, extension = os.path.splitext(name)
+        target = unused_path(output_dir, '{0}_{1}'.format(stem, key[:-len('.capture')]),
+                             extension)
+    else:
+        target = os.path.join(output_dir, name)
+    if os.path.exists(target):
+        os.remove(target)
+    os.rename(produced, target)
+    return os.path.basename(target), collided
+
+
+def read_index(output_dir):
+    """{session key: checklist filename} for the sessions this folder already
+    has a checklist for.
+
+    A row naming a file that is no longer there is dropped rather than trusted:
+    deleting a checklist is how a switch is asked for again, and an index that
+    outvoted the folder would make that gesture do nothing."""
+    done = {}
+    path = os.path.join(output_dir, INDEX_FILE)
+    if not os.path.exists(path):
+        return done
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as handle:
+            for line in handle.read().splitlines()[1:]:
+                fields = [field.strip().strip('"') for field in line.split(',')]
+                if len(fields) < 2 or not fields[0]:
+                    continue
+                key, checklist = fields[0], fields[1]
+                if checklist and os.path.exists(os.path.join(output_dir, checklist)):
+                    done[key] = checklist
+    except OSError:
+        # An unreadable index costs a re-collection, not a failed run. Every
+        # command sent is read-only, so the cost is connection time.
+        return {}
+    return done
+
+
+def append_index(output_dir, key, checklist, host):
+    """Record one finished switch. Appended as it lands rather than written at
+    the end, so a run killed at switch 400 leaves 399 rows behind - which is
+    the whole point of the file."""
+    path = os.path.join(output_dir, INDEX_FILE)
+    new = not os.path.exists(path)
+    with open(path, 'a', encoding='utf-8') as handle:
+        if new:
+            handle.write('session_key,checklist,host,written\n')
+        handle.write(','.join('"{0}"'.format(str(field).replace('"', "'")) for field in
+                              (key, checklist, host, time.strftime('%Y-%m-%d %H:%M:%S'))) + '\n')
 
 
 def looks_rejected(error_text):
@@ -285,7 +395,7 @@ def main():
             'Nothing to do')
         return
 
-    output_dir = crt.Dialog.Prompt('Write captures and the run log to:',
+    output_dir = crt.Dialog.Prompt('Write checklists and the run log to:',
                                    'Bulk capture - output folder', OUTPUT_DIR)
     if not output_dir:
         return
@@ -297,15 +407,38 @@ def main():
                               'Cannot write there')
         return
 
+    # Settled once, here, and not per switch. A walk that cannot audit anything
+    # it collects should say so before it connects to six hundred devices, not
+    # after - and the answer is the same for all of them, since it is a fact
+    # about this machine.
+    repo, python, why_not = capture_l2s.find_audit()
+    runner = (repo, python) if repo else None
+    if not runner:
+        if crt.Dialog.MessageBox(
+                'The audit cannot run on this machine, so no checklists can be '
+                'written here:\n\n{0}\n\nCollect captures instead? They can be '
+                'audited on a machine with the repo:\n\n'
+                '  python l2_stig_audit.py <name> --from-capture <file> '
+                '--to-cklb <folder>\n\nCollect captures only?'.format(why_not),
+                'No audit available here', 4 | 48) != 6:  # MB_YESNO | MB_ICONWARNING
+            return
+
+    done = read_index(output_dir) if runner else {}
     pending, already = [], []
     for session_path, host in sessions:
-        target = os.path.join(output_dir, capture_name(session_path, host))
-        (already if os.path.exists(target) else pending).append((session_path, host))
+        key = index_key(session_path, host)
+        if runner:
+            finished = key in done
+        else:
+            # Capture-only mode resumes the way this script always did.
+            finished = os.path.exists(os.path.join(output_dir, key))
+        (already if finished else pending).append((session_path, host))
     done_already = len(already)
 
+    product = 'checklist' if runner else 'capture'
     if crt.Dialog.MessageBox(
             '{0} device(s) to visit{1}.\n'
-            '{2} already have a capture in this folder and will be skipped.\n'
+            '{2} already have a {6} in this folder and will be skipped.\n'
             '{3} to collect.\n\n'
             'This connects to each one in turn using its saved credentials. '
             'Nothing is configured. Expect roughly {4} minutes.\n\n'
@@ -314,9 +447,22 @@ def main():
                             ' ({0} duplicate session(s) collapsed)'.format(len(duplicates))
                             if duplicates else '',
                             done_already, len(pending),
-                            max(1, len(pending) // 2), STOP_FILE),
+                            max(1, len(pending) // 2), STOP_FILE, product),
             'Bulk capture', 4 | 32) != 6:  # MB_YESNO | MB_ICONQUESTION; 6 = IDYES
         return
+
+    # Which checklist name belongs to which session, so a second switch with
+    # the same hostname is kept apart from the first rather than landing on it.
+    claimed = dict((checklist, key) for key, checklist in done.items())
+    work_dir = os.path.join(output_dir, WORK_DIR)
+    if runner:
+        try:
+            if not os.path.isdir(work_dir):
+                os.makedirs(work_dir)
+        except OSError as error:
+            crt.Dialog.MessageBox('Could not create {0}:\n{1}'.format(work_dir, error),
+                                  'Cannot write there')
+            return
 
     log = RunLog(output_dir)
     # Both of these are recorded rather than silently dropped, so that one run's
@@ -326,8 +472,8 @@ def main():
     for session_path, host, kept in duplicates:
         log.record(session_path, host, 'duplicate', 'same host as ' + kept)
     for session_path, host in already:
-        log.record(session_path, host, 'already captured',
-                   capture_name(session_path, host))
+        key = index_key(session_path, host)
+        log.record(session_path, host, 'already done', done.get(key, key))
     stop_path = os.path.join(output_dir, STOP_FILE)
     stopped = False
 
@@ -360,7 +506,8 @@ def main():
                 disconnect()
                 continue
 
-            path = os.path.join(output_dir, capture_name(session_path, host))
+            key = index_key(session_path, host)
+            path = os.path.join(output_dir, key)
             try:
                 with open(path, 'w', encoding='utf-8') as capture_file:
                     capture_file.write(capture_l2s.render(outputs))
@@ -369,7 +516,35 @@ def main():
                 disconnect()
                 continue
 
-            log.record(session_path, host, 'captured', hostname)
+            # The switch has been visited by this point, so an audit that fails
+            # keeps its capture: the connection is the expensive half and it is
+            # already spent. `audit failed` is its own outcome in the log, which
+            # is what keeps it distinguishable from a switch never reached.
+            if not runner:
+                log.record(session_path, host, 'captured', hostname)
+                disconnect()
+                continue
+
+            checklist, detail = capture_l2s.run_audit(path, hostname, work_dir,
+                                                      runner=runner)
+            if not checklist:
+                log.record(session_path, host, 'audit failed', first_line(detail))
+                disconnect()
+                continue
+
+            try:
+                name, collided = place_checklist(output_dir, checklist, key, claimed)
+            except OSError as error:
+                log.record(session_path, host, 'write failed', str(error)[:120])
+                disconnect()
+                continue
+
+            capture_l2s.remove_file(path)
+            claimed[name] = key
+            append_index(output_dir, key, name, hostname)
+            log.record(session_path, host, 'checklisted',
+                       name + (' (hostname already used by another switch)'
+                               if collided else ''))
             disconnect()
     finally:
         crt.Screen.Synchronous = False
@@ -377,14 +552,24 @@ def main():
             crt.Session.SetStatusText('')
         except Exception:
             pass
+        # Empty unless an audit died between writing and being moved, in which
+        # case what is in it is a checklist nobody indexed - left where the log
+        # can point at it rather than deleted.
+        try:
+            os.rmdir(work_dir)
+        except OSError:
+            pass
 
     crt.Dialog.MessageBox(
-        '{0}\n\n{1}\n\nCaptures are in:\n{2}\n\nThis run\'s log:\n{3}\n\n'
+        '{0}\n\n{1}\n\n{2} are in:\n{3}\n\nThis run\'s log:\n{4}\n\n'
         'That log accounts for every session in the list, including the ones '
-        'already captured - so it can be counted in a spreadsheet as it stands. '
-        'Re-running this script visits only the switches with no capture yet.'
+        'already done - so it can be counted in a spreadsheet as it stands. '
+        'Re-running this script visits only the switches not yet done; any '
+        'switch logged as `audit failed` kept its capture beside the '
+        'checklists.'
         .format('Run stopped early by the STOP file.' if stopped else 'Run complete.',
-                log.summary() or 'nothing collected', output_dir, log.path),
+                log.summary() or 'nothing collected',
+                'Checklists' if runner else 'Captures', output_dir, log.path),
         'Bulk capture finished')
 
 

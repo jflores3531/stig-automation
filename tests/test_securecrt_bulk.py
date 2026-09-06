@@ -13,10 +13,18 @@ run log being a truthful account of what happened to every session in the list:
 offline ones skipped rather than fatal, rejected logins tried twice and no more,
 duplicates collapsed on purpose rather than by accident, and a resumed run
 picking up exactly what the first one missed.
+
+Since it audits what it collects, two more failures belong here. A switch whose
+hostname another switch already used would land on that one's checklist -
+silently, one file where there should be two. And a machine that cannot run the
+audit at all has to be found out before the walk, not six hundred connections
+into it.
 """
 
 import io
+import json
 import os
+import re
 import sys
 import tempfile
 
@@ -154,6 +162,17 @@ def outcomes(tmpdir):
     return {row[1].strip('"'): row[3].strip('"') for row in log_rows(tmpdir)}
 
 
+def checklists(tmpdir):
+    """Every checklist in the output folder, sorted."""
+    return sorted(name for name in os.listdir(tmpdir) if name.endswith('.cklb'))
+
+
+def captures(tmpdir):
+    """Every capture left in the output folder. Should be empty except where an
+    audit failed on one."""
+    return sorted(name for name in os.listdir(tmpdir) if name.endswith('.capture'))
+
+
 def test_offline_switches_do_not_stop_the_run(tmpdir):
     """The reason there is no abort. On any given night a good fraction of six
     hundred switches will be unreachable, and a collector that stops at the
@@ -164,12 +183,10 @@ def test_offline_switches_do_not_stop_the_run(tmpdir):
     result = outcomes(tmpdir)
     check('the offline switch is logged unreachable',
           result.get('sw-b') == 'unreachable', result)
-    check('the run continues past it', result.get('sw-c') == 'captured', result)
-    check('reachable switches are captured',
-          os.path.exists(os.path.join(tmpdir, '10.0.0.1.capture'))
-          and os.path.exists(os.path.join(tmpdir, '10.0.0.3.capture')))
-    check('an offline switch leaves no capture behind',
-          not os.path.exists(os.path.join(tmpdir, '10.0.0.2.capture')))
+    check('the run continues past it', result.get('sw-c') == 'checklisted', result)
+    check('reachable switches produce checklists', len(checklists(tmpdir)) == 2,
+          checklists(tmpdir))
+    check('and no captures are left behind', not captures(tmpdir), captures(tmpdir))
     check('offline is not retried', fake.attempts.count('sw-b') == 1, fake.attempts)
 
 
@@ -185,7 +202,7 @@ def test_rejected_login_is_tried_twice(tmpdir):
           bulk.LOGIN_ATTEMPTS < 3, bulk.LOGIN_ATTEMPTS)
     check('logged as a rejected login',
           outcomes(tmpdir).get('sw-a') == 'login rejected', outcomes(tmpdir))
-    check('the run continues', outcomes(tmpdir).get('sw-b') == 'captured')
+    check('the run continues', outcomes(tmpdir).get('sw-b') == 'checklisted')
 
 
 def test_duplicates_collapsed_and_recorded(tmpdir):
@@ -207,29 +224,37 @@ def test_duplicates_collapsed_and_recorded(tmpdir):
 def test_not_a_switch_is_refused(tmpdir):
     """A session list will eventually contain a jump host. bash answers every
     command with an error, so nothing is empty and nothing is truncated."""
-    print('\na session that is not a Cisco switch writes no capture')
+    print('\na session that is not a Cisco switch writes nothing')
     bash = {command: f'bash: {command.split()[0]}: command not found'
             for command in capture_l2s.COMMANDS}
     run_walker(tmpdir, [('jumphost', '10.0.3.1')], {}, host_outputs=bash)
     check('logged as refused', outcomes(tmpdir).get('jumphost') == 'refused', outcomes(tmpdir))
-    check('no capture written', not os.path.exists(os.path.join(tmpdir, '10.0.3.1.capture')))
+    check('no checklist and no capture written',
+          not checklists(tmpdir) and not captures(tmpdir),
+          checklists(tmpdir) + captures(tmpdir))
 
 
 def test_resume_skips_what_is_done(tmpdir):
     """What makes a five-hour run survivable: a second pass visits only the
-    switches that have no capture yet."""
+    switches not done yet.
+
+    A checklist is named for the switch's own hostname, which is not knowable
+    before connecting - so unlike a capture named for the session's address,
+    its existence cannot be tested in advance. bulk.INDEX_FILE is what makes
+    that testable, and this is what asserts it works."""
     print('\na re-run picks up only what is missing')
     sessions = [('sw-a', '10.0.4.1'), ('sw-b', '10.0.4.2')]
     run_walker(tmpdir, sessions, {'sw-b': 'offline'})
-    check('first pass captured one, missed one',
-          os.path.exists(os.path.join(tmpdir, '10.0.4.1.capture'))
-          and not os.path.exists(os.path.join(tmpdir, '10.0.4.2.capture')))
+    check('first pass finished one, missed one', len(checklists(tmpdir)) == 1,
+          checklists(tmpdir))
+    check('and recorded the finished one in the index',
+          os.path.exists(os.path.join(tmpdir, bulk.INDEX_FILE)))
 
     second = run_walker(tmpdir, sessions, {})  # sw-b now reachable
     check('the completed switch is not revisited', 'sw-a' not in second.attempts, second.attempts)
     check('the missed switch is', 'sw-b' in second.attempts, second.attempts)
-    check('and is captured on the second pass',
-          os.path.exists(os.path.join(tmpdir, '10.0.4.2.capture')))
+    check('and is finished on the second pass', len(checklists(tmpdir)) == 2,
+          checklists(tmpdir))
 
     # Per-run files, so a log can be counted in a spreadsheet as it stands
     # rather than by picking the newest row per switch out of a history.
@@ -239,26 +264,140 @@ def test_resume_skips_what_is_done(tmpdir):
     second_run = outcomes(tmpdir)
     check("the second run's log still accounts for both switches",
           len(second_run) == 2, second_run)
-    check('the one it skipped is logged as already captured',
-          second_run.get('sw-a') == 'already captured', second_run)
-    check('the one it collected is logged as captured',
-          second_run.get('sw-b') == 'captured', second_run)
+    check('the one it skipped is logged as already done',
+          second_run.get('sw-a') == 'already done', second_run)
+    check('the one it collected is logged as checklisted',
+          second_run.get('sw-b') == 'checklisted', second_run)
+
+    # Deleting a checklist is how a switch is asked for again - the same
+    # gesture that used to mean deleting its capture. An index that outvoted
+    # the folder would make it do nothing.
+    os.remove(os.path.join(tmpdir, checklists(tmpdir)[0]))
+    third = run_walker(tmpdir, sessions, {})
+    check('deleting a checklist puts its switch back in the queue',
+          len(third.attempts) == 1, third.attempts)
 
 
-def test_capture_is_auditable(tmpdir):
-    """The whole point. A file the walker wrote has to load through the same
-    path a hand-collected capture does."""
-    print('\nwhat the walker writes is what the audit reads')
-    run_walker(tmpdir, [('sw-a', '10.0.5.1')], {})
-    path = os.path.join(tmpdir, '10.0.5.1.capture')
+def test_checklist_is_what_it_should_be(tmpdir):
+    """The whole point. The walker runs the real audit, so what lands in the
+    folder is a checklist STIG Viewer opens, named for the switch that produced
+    it - not for the session or the address the walker knew it by."""
+    print('\nwhat the walker leaves behind is a finished checklist')
+    run_walker(tmpdir, [('site-a\\sw-1', '10.0.5.1')], {})
+    written = checklists(tmpdir)
+    check('one checklist written', len(written) == 1, os.listdir(tmpdir))
+    if not written:
+        return
+    check("named for the switch's own hostname, the date, and the STIG revisions",
+          re.match(r'^TESTSW01_\d{2}[A-Z]{3}\d{4}_L2S_V\d+R\d+_NDM_V\d+R\d+\.cklb$',
+                   written[0]), written[0])
+    check('no capture kept', not captures(tmpdir), captures(tmpdir))
+
+    with io.open(os.path.join(tmpdir, written[0]), encoding='utf-8') as handle:
+        checklist = json.load(handle)
+    rules = [rule for stig in checklist['stigs'] for rule in stig['rules']]
+    check('every rule carries a verdict',
+          all(rule['status'] != 'not_reviewed' for rule in rules)
+          or any(rule['status'] == 'not_a_finding' for rule in rules), len(rules))
+    check("the asset block names the switch, not the session's address",
+          checklist['target_data']['host_name'] == 'TESTSW01'
+          and checklist['target_data']['fqdn'] == 'TESTSW01.example.test',
+          checklist['target_data'])
+
+    # The index is keyed by what the walker knew before connecting, and points
+    # at what the audit produced after. That mapping is the only thing that can
+    # answer "has this session been done" on a later run.
+    with io.open(os.path.join(tmpdir, bulk.INDEX_FILE), encoding='utf-8') as handle:
+        rows = [line.split(',') for line in handle.read().splitlines()[1:]]
+    check('the index maps the session key to the checklist it produced',
+          len(rows) == 1 and rows[0][0].strip('"') == '10.0.5.1.capture'
+          and rows[0][1].strip('"') == written[0], rows)
+
+
+def test_same_hostname_does_not_overwrite(tmpdir):
+    """A fleet named per site rather than per device has two switches called
+    the same thing, and the checklist is named for the hostname. Landing the
+    second on the first would be silent: one file, one switch's verdicts, under
+    a name that says nothing is wrong. The session's address is unique and is
+    what keeps them apart."""
+    print('\ntwo switches with one hostname keep two checklists')
+    sessions = [('sw-a', '10.0.8.1'), ('sw-b', '10.0.8.2'), ('sw-c', '10.0.8.3')]
+    run_walker(tmpdir, sessions, {})  # the stub gives all three the same config
+    written = checklists(tmpdir)
+    check('one checklist per switch, not one between them',
+          len(written) == 3, written)
+    check('the addresses are what tells them apart',
+          any('10.0.8.2' in name for name in written)
+          and any('10.0.8.3' in name for name in written), written)
+    check('the first keeps the plain name', any(
+        re.match(r'^TESTSW01_\d{2}[A-Z]{3}\d{4}_L2S[^/]*\.cklb$', name)
+        and '10.0.8.' not in name for name in written), written)
+    check('and the collision is said out loud in the log',
+          sum('another switch' in row[4] for row in log_rows(tmpdir)) == 2,
+          [row[4] for row in log_rows(tmpdir)])
+
+    # Each one is a real checklist, not a truncated or shared file.
+    for name in written:
+        with io.open(os.path.join(tmpdir, name), encoding='utf-8') as handle:
+            rules = [rule for stig in json.load(handle)['stigs'] for rule in stig['rules']]
+        check('{0} carries a full checklist'.format(name), len(rules) == 64, len(rules))
+
+    check('nothing is left in the work folder',
+          not os.path.isdir(os.path.join(tmpdir, bulk.WORK_DIR)),
+          os.listdir(tmpdir))
+
+
+def test_audit_failure_keeps_its_capture(tmpdir):
+    """The switch has been visited by the time the audit runs, and the
+    connection is the expensive half. An audit that fails therefore keeps the
+    capture rather than throwing away the trip - and says so under its own
+    outcome, so it is never mistaken for a switch that was never reached."""
+    print('\na failed audit keeps its capture and says so')
+    original = capture_l2s.run_audit
+    capture_l2s.run_audit = lambda *_args, **_kwargs: (None, 'the audit itself failed:\nboom')
     try:
-        session = capture.load(path)
+        run_walker(tmpdir, [('sw-a', '10.0.7.1')], {})
+    finally:
+        capture_l2s.run_audit = original
+    check('logged under its own outcome, not as a capture failure',
+          outcomes(tmpdir).get('sw-a') == 'audit failed', outcomes(tmpdir))
+    check('the capture is kept, so the trip is not wasted',
+          captures(tmpdir) == ['10.0.7.1.capture'], captures(tmpdir))
+    check('and it is not recorded as done, so a re-run retries it',
+          not os.path.exists(os.path.join(tmpdir, bulk.INDEX_FILE)))
+
+
+def test_no_audit_here_falls_back_to_captures(tmpdir):
+    """Only these two files copied to a locked-down machine: nothing there can
+    audit anything. Settled once, before the walk, and answered by collecting
+    captures - which is what this script did before it audited at all. A run
+    that discovered this per switch would visit six hundred devices and produce
+    nothing."""
+    print('\nwithout an audit here, the walk still collects')
+    original = capture_l2s.find_audit
+    capture_l2s.find_audit = lambda: (None, None, 'l2_stig_audit.py not found')
+    try:
+        fake = run_walker(tmpdir, [('sw-a', '10.0.9.1'), ('sw-b', '10.0.9.2')], {})
+    finally:
+        capture_l2s.find_audit = original
+
+    check('it says so before connecting to anything',
+          any('audit' in title.lower() for title, _ in fake.messages), fake.messages)
+    check('and collects captures instead of nothing at all',
+          captures(tmpdir) == ['10.0.9.1.capture', '10.0.9.2.capture'], captures(tmpdir))
+    check('logged as captured, not as checklisted',
+          set(outcomes(tmpdir).values()) == {'captured'}, outcomes(tmpdir))
+
+    # Those captures are the input to an audit run elsewhere, so they have to
+    # load through exactly the path a hand-collected one does.
+    try:
+        session = capture.load(os.path.join(tmpdir, '10.0.9.1.capture'))
         ok, detail = True, ''
     except capture.CaptureError as error:
         ok, detail = False, str(error)
-    check('capture.load accepts it', ok, detail)
+    check('and what it wrote is what the audit reads', ok, detail)
     if ok:
-        check('and serves the running-config back',
+        check('serving the running-config back verbatim',
               session.send_command('show running-config')
               == OUTPUTS['show running-config'].strip('\n'))
 
@@ -279,7 +418,10 @@ if __name__ == '__main__':
                  test_duplicates_collapsed_and_recorded,
                  test_not_a_switch_is_refused,
                  test_resume_skips_what_is_done,
-                 test_capture_is_auditable,
+                 test_checklist_is_what_it_should_be,
+                 test_same_hostname_does_not_overwrite,
+                 test_audit_failure_keeps_its_capture,
+                 test_no_audit_here_falls_back_to_captures,
                  test_stop_file_halts_cleanly):
         with tempfile.TemporaryDirectory() as tmpdir:
             test(tmpdir)
