@@ -300,12 +300,12 @@ rule arrives with its status set and its reason written into whichever box that 
 | `open` (FAIL) | **Finding Details** | It is the evidence for a finding, which is what an assessor reads first |
 | `not_a_finding` (PASS) | **Comments** | Nothing to evidence; the note explains what was checked |
 | `not_applicable` | **Comments** | Where a not-applicable justification is expected |
-| `not_reviewed` (NOT AUTOMATED) | **Finding Details** | Comments is the box you are about to type your own answer into |
+| `not_reviewed` (NOT AUTOMATED) | **Comments** | How far the audit got on a rule you now have to finish |
 
 The note the audit writes into **Comments** starts with a `[Automated audit <date>]` marker line.
 Anything you write *above* that line is yours and survives a re-run untouched; everything from the
-marker down is replaced each time. So a passing rule can carry both your note and the audit's
-without either overwriting the other.
+marker down is replaced each time. That matters most on the `not_reviewed` rules, where you are
+answering in the same box the audit wrote in: put your answer at the top and it stays there.
 
 **5. Answer what the tool could not, then re-run.** The `not_reviewed` rules are the ones needing a
 person - the configuration-backup server, for instance. Put your answer in that rule's

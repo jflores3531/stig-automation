@@ -126,8 +126,8 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
 # signed off under someone's name, on rules like the configuration backup one
 # that genuinely need a human. not_reviewed is what STIG Viewer shows an
 # unanswered rule as, which is exactly what it is - and the reason line still
-# goes into finding_details, so the reviewer starts from what the audit did
-# manage to determine rather than from nothing.
+# goes into the rule's Comments (see NOTE_IN_FINDING_DETAILS), so the reviewer
+# starts from what the audit did manage to determine rather than from nothing.
 CKLB_STATUS = {
     'PASS': 'not_a_finding',
     'FAIL': 'open',
@@ -413,17 +413,17 @@ def _existing_annotations(output_path):
 
 # Which box a verdict's explanation belongs in.
 #
-# Finding Details is where a reviewer writes why a rule is Open - it is the
-# evidence for a finding, and on an Open rule it is what an assessor reads
-# first. On a rule that is not a finding there is nothing to evidence, and the
-# justification for it belongs in Comments, which is where a not_applicable
-# rule's reason is expected to be.
+# Finding Details is the evidence for a finding: on an Open rule it is what an
+# assessor reads first, and it is the only status where the audit writes there.
+# Every other verdict puts its reason in Comments - a passing rule has nothing
+# to evidence, a not_applicable rule's justification is expected in Comments,
+# and a not_reviewed rule's note is the audit saying how far it got on a rule
+# somebody now has to finish.
 #
-# not_reviewed is the one that stays in Finding Details, and deliberately: the
-# audit's note there is what it *could* determine, and Comments is the box the
-# reviewer is about to type their own answer into. Putting the audit's text
-# where their answer goes would be arguing with them in their own notebook.
-NOTE_IN_COMMENTS = ('PASS', 'NOT APPLICABLE')
+# not_reviewed sharing Comments with the reviewer is exactly why the marker
+# below exists: those are the rules a person types their own answer into, and
+# their answer has to survive the next run intact.
+NOTE_IN_FINDING_DETAILS = ('FAIL',)
 
 # The audit's own note, wherever it lands in Comments, is marked so a re-run
 # can replace it without touching whatever the reviewer wrote around it.
@@ -506,7 +506,10 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
                 # the second run of a switch nobody has opened yet.
                 kept_reviewer.add(group_id)
 
-            if status in NOTE_IN_COMMENTS:
+            if status in NOTE_IN_FINDING_DETAILS:
+                rule['finding_details'] = note
+                rule['comments'] = reviewer
+            else:
                 # Not a finding: nothing to evidence, so Finding Details is
                 # left empty and the reason for the verdict goes to Comments,
                 # under whatever the reviewer has written there. Only here does
@@ -515,9 +518,6 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
                 marked = f'{AUDIT_NOTE_MARKER} {stamp}]\n{note}'
                 rule['finding_details'] = ''
                 rule['comments'] = f'{reviewer}\n\n{marked}' if reviewer else marked
-            else:
-                rule['finding_details'] = note
-                rule['comments'] = reviewer
             if group_id in kept:
                 rule['overrides'] = kept[group_id]['overrides']
             counts[rule['status']] = counts.get(rule['status'], 0) + 1

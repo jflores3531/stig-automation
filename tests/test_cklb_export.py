@@ -94,7 +94,8 @@ def test_export(tmpdir, capture_path):
           all(rules[group_id]['status'] == 'not_reviewed' for group_id in not_automated),
           [rules[g]['status'] for g in not_automated])
     check('and it still carries what the audit did determine, so the reviewer starts somewhere',
-          all(rules[group_id]['finding_details'].strip() for group_id in not_automated))
+          all(rules[group_id]['comments'].strip() for group_id in not_automated),
+          [rules[g]['comments'] for g in not_automated[:1]])
 
     # Which box the audit's note lands in follows the verdict: a finding is
     # evidenced in Finding Details, a pass or a not-applicable is justified in
@@ -157,10 +158,14 @@ def test_rerun_keeps_reviewer_comments(tmpdir, capture_path, out):
           result.stdout.splitlines()[-1] if result.stdout else '')
 
     _, rules = rules_of(out)
-    # V-220566 is NOT AUTOMATED - the audit writes to Finding Details there and
-    # leaves Comments entirely alone, so the note comes back exactly as typed.
-    check('the reviewer\'s comment survives', rules['V-220566']['comments'] == note,
-          rules['V-220566']['comments'])
+    # V-220566 is NOT AUTOMATED - the rule a person has to answer themselves,
+    # and the one where the audit shares their box. Their words stay at the top
+    # of it, untouched, with the audit's note below the marker.
+    unreviewed = rules['V-220566']['comments']
+    check('the reviewer\'s comment survives', unreviewed.startswith(note), unreviewed)
+    check('with the audit\'s note below it rather than instead of it',
+          unreviewed.count(stig_common.AUDIT_NOTE_MARKER) == 1
+          and 'Reported NOT AUTOMATED' in unreviewed, unreviewed)
     # V-220651 passes, so the audit shares the Comments box with them. Its own
     # note is replaced; theirs is not, and does not accumulate a second copy.
     kept_comment = rules['V-220651']['comments']
