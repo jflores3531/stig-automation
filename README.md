@@ -210,6 +210,74 @@ python3 tests/test_arp_inventory.py
 python3 tests/test_pdf_ips.py
 ```
 
+## Getting a report into STIG Viewer 3
+
+End to end, on Windows, from a switch to an open checklist. There is no separate
+conversion step - `--to-cklb` is a flag on the audit, and one run produces both the
+printed report and the file.
+
+**1. Collect, or use a capture you already have.**
+
+```powershell
+python l2_stig_audit.py SW01 --capture-to captures\SW01.capture
+```
+
+**2. Audit, writing the checklist in the same pass.**
+
+```powershell
+python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out\SW01.cklb
+```
+
+The name you pass (`SW01`) is only a label when auditing a capture, and it becomes the
+checklist's **Host Name** in STIG Viewer - use whatever you want to see there. The output
+directory is created if it does not exist.
+
+**3. Read what it says.** The usual report, then one line at the end:
+
+```
+26 passed, 33 failed, 4 not applicable, 1 not automated (need manual review or external infrastructure) out of 64 rules.
+
+[HIGH  ] PASS           V-220569  must be running an IOS release that is currently supported by Cisco Systems.
+           running 17.12.4 on C9300-48P - Cisco suggested release for Catalyst 9000 IOS XE, supported as of 2026-09-05
+...
+Wrote checklists\out\SW01.cklb for STIG Viewer 3: 26 not_a_finding, 33 open, 4 not_applicable, 1 not_reviewed.
+```
+
+**4. Open it.** STIG Viewer 3 → **File → Open Checklist** → `checklists\out\SW01.cklb`. Every
+rule arrives with its status set, and each one's **Finding Details** carries the reason line from
+the report plus where the evidence came from and when.
+
+**5. Answer what the tool could not, then re-run.** The `not_reviewed` rules are the ones needing a
+person - the configuration-backup server, a CA's issuer. Put your answer in that rule's
+**Comments** box in STIG Viewer and save. After the next fix and re-capture, run the same command
+at the same path:
+
+```powershell
+python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out\SW01.cklb
+```
+
+Statuses and finding details are re-derived from the new capture; your comments stay. The audit
+owns the verdict, you own the commentary.
+
+A live run is the same flag, and prompts for credentials:
+
+```powershell
+python l2_stig_audit.py SW01 --to-cklb checklists\out\SW01.cklb
+```
+
+So are the other two platforms:
+
+```powershell
+python nxos_stig_audit.py NXCore1 --to-cklb checklists\out\NXCore1.cklb
+python ios_router_audit.py R1 --to-cklb checklists\out\R1.cklb
+```
+
+Give each device its own output file. Two switches pointed at one `.cklb` leaves the second one's
+verdicts over the first one's, under whichever host name was written last.
+
+Filled-in checklists are gitignored (`checklists/out/`) - the blank ones in `checklists/` are the
+templates every audit reads its rules from, and a completed one names a device and its findings.
+
 ## Notes
 
 - Devices are defined in `inventory.yaml` by name, host, and Netmiko `device_type` (e.g. `cisco_ios`, `cisco_nxos`). Every address in `inventory.yaml.example` is written `x.x.x.x` so that no real addressing is committed, even as an example - replace them after copying. Until `management_subnet` is a real network, V-220575/523 reports `not a network` rather than a verdict; `--management-subnet 10.0.0.0/24` overrides it for a one-off run.
