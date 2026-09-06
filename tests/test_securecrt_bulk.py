@@ -85,6 +85,7 @@ class FakeSession:
         if outcome != 'ok':
             self.crt.last_error = {
                 'offline': 'The remote system refused the connection.',
+                'timeout': 'The connection attempt timed out. No response from host.',
                 'rejected': 'Password authentication failed.',
             }[outcome]
             raise Exception(self.crt.last_error)
@@ -150,16 +151,26 @@ def log_files(tmpdir):
 
 
 def log_rows(tmpdir, which=-1):
-    """Rows of one run's log; the newest by default."""
+    """Rows of one run's log as dicts keyed by column name; the newest run by
+    default. Keyed rather than indexed so a column added to the log does not
+    silently shift what every assertion here is reading."""
     paths = log_files(tmpdir)
     if not paths:
         return []
     with io.open(paths[which], encoding='utf-8') as handle:
-        return [line.strip().split(',') for line in handle.read().splitlines()[1:]]
+        lines = handle.read().splitlines()
+    if not lines:
+        return []
+    columns = [name.strip().strip('"') for name in lines[0].split(',')]
+    rows = []
+    for line in lines[1:]:
+        values = [field.strip().strip('"') for field in line.split(',')]
+        rows.append(dict(zip(columns, values)))
+    return rows
 
 
 def outcomes(tmpdir):
-    return {row[1].strip('"'): row[3].strip('"') for row in log_rows(tmpdir)}
+    return {row['session']: row['outcome'] for row in log_rows(tmpdir)}
 
 
 def checklists(tmpdir):
@@ -333,8 +344,8 @@ def test_same_hostname_does_not_overwrite(tmpdir):
         re.match(r'^TESTSW01_\d{2}[A-Z]{3}\d{4}_L2S[^/]*\.cklb$', name)
         and '10.0.8.' not in name for name in written), written)
     check('and the collision is said out loud in the log',
-          sum('another switch' in row[4] for row in log_rows(tmpdir)) == 2,
-          [row[4] for row in log_rows(tmpdir)])
+          sum('another switch' in row['comment'] for row in log_rows(tmpdir)) == 2,
+          [row['comment'] for row in log_rows(tmpdir)])
 
     # Each one is a real checklist, not a truncated or shared file.
     for name in written:
@@ -400,6 +411,51 @@ def test_an_unhandled_error_does_not_end_the_walk(tmpdir):
     check('every session in the list is still accounted for', len(result) == 3, result)
 
 
+def test_log_columns(tmpdir):
+    """The run log is the fleet's account of itself, so it has to carry what
+    the fleet is: what each switch is called, where it is, what hardware and
+    software are on it, and one sentence about what happened. A switch nobody
+    could reach is exactly the row that needs the sentence, and the two ways it
+    fails - nothing answering, or the host answering and saying no - are
+    different problems with different fixes, so they are not both "unreachable".
+    """
+    print('\nthe log says what each switch is, and what happened to it')
+    sessions = [('site-a\\sw-1', '10.0.11.1'), ('site-a\\sw-2', '10.0.11.2'),
+                ('site-b\\sw-3', '10.0.11.3')]
+    run_walker(tmpdir, sessions,
+               {'site-a\\sw-2': 'timeout', 'site-b\\sw-3': 'offline'})
+    rows = {row['session']: row for row in log_rows(tmpdir)}
+    check('every session in the list has a row', len(rows) == 3, sorted(rows))
+
+    check('the columns are the ones a person reads, in order',
+          bulk.LOG_COLUMNS[:5] == ('hostname', 'ip_address', 'model', 'ios_version', 'comment'),
+          bulk.LOG_COLUMNS)
+
+    reached = rows.get('site-a\\sw-1', {})
+    check('a switch that answered is named by its own hostname',
+          reached.get('hostname') == 'TESTSW01', reached)
+    check('with its address, model and release from `show version`',
+          (reached.get('ip_address') == '10.0.11.1'
+           and reached.get('model') == 'C9300-48P'
+           and reached.get('ios_version') == '17.12.4'), reached)
+
+    # The rows the morning after works from.
+    timed_out = rows.get('site-a\\sw-2', {})
+    check('a switch that never answered says so in plain words',
+          timed_out.get('comment') == 'Connection timed out', timed_out)
+    refused = rows.get('site-b\\sw-3', {})
+    check('and a host that answered and said no says that instead',
+          refused.get('comment') == 'System refused connection', refused)
+    check('the two are not collapsed into one sentence',
+          timed_out.get('comment') != refused.get('comment'))
+
+    check('an unreached switch is still identifiable by its session and address',
+          (timed_out.get('hostname') == 'site-a\\sw-2'
+           and timed_out.get('ip_address') == '10.0.11.2'), timed_out)
+    check('and its model and release are blank rather than guessed',
+          not timed_out.get('model') and not timed_out.get('ios_version'), timed_out)
+
+
 def test_no_audit_here_falls_back_to_captures(tmpdir):
     """Only these two files copied to a locked-down machine: nothing there can
     audit anything. Settled once, before the walk, and answered by collecting
@@ -454,6 +510,7 @@ if __name__ == '__main__':
                  test_checklist_is_what_it_should_be,
                  test_same_hostname_does_not_overwrite,
                  test_audit_failure_keeps_its_capture,
+                 test_log_columns,
                  test_an_unhandled_error_does_not_end_the_walk,
                  test_no_audit_here_falls_back_to_captures,
                  test_stop_file_halts_cleanly):

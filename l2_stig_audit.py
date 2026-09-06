@@ -1420,18 +1420,27 @@ def _qos_bandwidth_check(cfg):
 # and every report said "log into the switch and read its version" - a trip per
 # switch to collect a fact the audit was already connected to read.
 #
-# What `show version` answers is model and release. What it cannot answer is
-# whether Cisco still supports that pair, which is a date on a Cisco end-of-life
-# bulletin and not a property of the device. Both tables below therefore carry
-# their evidence: a hardware last-date-of-support is compared against today
-# rather than baked into a verdict, and the release list records when it was
-# last checked and stops being trusted once that reading goes stale. A silent
-# PASS from a table nobody has re-read since is the failure this rule would be
-# worst to have - a high-severity finding reported as compliant.
+# What decides it on IOS XE is not a lookup at all, it is the numbering. Cisco
+# publishes two tracks in the 16.x and 17.x trains:
 #
-# Anything the tables do not cover still reports NOT AUTOMATED, but now with
-# the model and release printed, so the manual step is one lookup rather than
-# one login.
+#   Extended Maintenance (EMR)  - every third minor: 17.3, 17.6, 17.9, 17.12,
+#       17.15 (and 16.3, 16.6, 16.9, 16.12). 36-48 months of support, with
+#       scheduled rebuilds carrying the security fixes.
+#   Standard Maintenance (SMR)  - everything between: 17.10, 17.11, 17.13,
+#       17.14. Twelve months in total, no extension.
+#
+# A switch on an SMR is therefore a finding: within a year of that release
+# shipping there are no more fixes for it, and there is no configuration that
+# makes it otherwise. A switch on an EMR passes. Both answers come from the
+# release number, so neither needs a table anyone has to re-read - which is
+# what the previous hand-maintained SUPPORTED_RELEASES list was, and why it
+# carried a staleness date and a warning about trusting it.
+#
+# Two things this deliberately does NOT claim. It does not say an EMR is
+# currently supported: 17.3 is an EMR whose window has closed, and the reason
+# line says which train it is so an old one is visible rather than implied. And
+# it says nothing about classic IOS (15.x, `15.2(4)E10`), which has no EMR/SMR
+# split - that reports NOT AUTOMATED with the release printed, as before.
 
 # Cisco's published last date of support, per hardware family. A switch past
 # this date fails regardless of the release it runs: no supported release
@@ -1444,16 +1453,13 @@ PLATFORM_LAST_DATE_OF_SUPPORT = {
     'WS-C3560': ('2021-10-31', 'Catalyst 3560/3560-X'),
 }
 
-# Releases confirmed supported on RELEASE_LIST_REVIEWED. Deliberately short:
-# every entry is a release someone read off cisco.com on that date, not a
-# guess at a train. A release that is not listed is not a finding - it is
-# NOT AUTOMATED, which is what "this list does not know" honestly reads as.
-RELEASE_LIST_REVIEWED = '2026-09-05'
-RELEASE_LIST_STALE_AFTER_DAYS = 180
-SUPPORTED_RELEASES = {
-    '17.12.4': 'Cisco suggested release for Catalyst 9000 IOS XE',
-    '17.12.3a': 'Cisco suggested release for Catalyst 9000 IOS XE',
-}
+# The trains the EMR rule applies to. IOS XE only; classic IOS numbering does
+# not carry the distinction.
+IOS_XE_TRAINS = (16, 17)
+
+# An EMR is every third minor release. Stated as arithmetic rather than a list
+# so 17.18 and 17.21 are covered the day they ship.
+EMR_MINOR_INTERVAL = 3
 
 CISCO_SUPPORT_URL = 'www.cisco.com/c/en/us/support/ios-nx-os-software'
 
@@ -1547,6 +1553,35 @@ def _show_version_model(output):
     return model
 
 
+def _ios_xe_train(release):
+    """(major, minor) for an IOS XE release, or None for anything else.
+
+    Classic IOS carries parentheses - `15.2(4)E10` - and has no EMR/SMR split,
+    so the shape is what tells the two apart rather than the major number
+    alone."""
+    match = re.match(r'^(\d+)\.(\d+)(?:\.\S*)?$', release)
+    if not match:
+        return None
+    major, minor = int(match.group(1)), int(match.group(2))
+    return (major, minor) if major in IOS_XE_TRAINS else None
+
+
+def _is_extended_maintenance(minor):
+    """True for an Extended Maintenance minor - every third one, 3, 6, 9, 12,
+    15, 18. Minor 0 is not a release Cisco ships, so it is excluded rather than
+    passed by the arithmetic."""
+    return minor > 0 and minor % EMR_MINOR_INTERVAL == 0
+
+
+def _nearest_extended_maintenance(minor):
+    """The EMR minors either side of an SMR, for the reason line: telling
+    someone 17.13 is short-lived is only half an answer without 17.12 and 17.15
+    beside it."""
+    below = (minor // EMR_MINOR_INTERVAL) * EMR_MINOR_INTERVAL
+    above = below + EMR_MINOR_INTERVAL
+    return below, above
+
+
 def _ios_release_supported_check(version_output, today=None):
     today = today or datetime.date.today()
     model = _show_version_model(version_output)
@@ -1569,24 +1604,34 @@ def _ios_release_supported_check(version_output, today=None):
             f'check the release by hand against {CISCO_SUPPORT_URL}'
         )
 
-    reviewed = datetime.date.fromisoformat(RELEASE_LIST_REVIEWED)
-    stale = (today - reviewed).days > RELEASE_LIST_STALE_AFTER_DAYS
-    if release in SUPPORTED_RELEASES and not stale:
-        return True, (
-            f'running {release} on {model} - {SUPPORTED_RELEASES[release]}, supported as of '
-            f'{RELEASE_LIST_REVIEWED}'
-        )
-    if release in SUPPORTED_RELEASES:
+    train = _ios_xe_train(release)
+    if train is None:
+        # Classic IOS. No EMR/SMR split to apply, and no table here pretending
+        # to know - the release and model are printed so the lookup is one
+        # search rather than one login.
         return 'NOT AUTOMATED', (
-            f'running {release} on {model}, which was supported as of {RELEASE_LIST_REVIEWED} - '
-            f'more than {RELEASE_LIST_STALE_AFTER_DAYS} days ago, so re-check it against '
-            f'{CISCO_SUPPORT_URL} and update SUPPORTED_RELEASES rather than trust this'
+            f'running {release} on {model} - not IOS XE numbering, so the Extended/Standard '
+            f'Maintenance rule does not apply; confirm support at {CISCO_SUPPORT_URL}'
         )
-    return 'NOT AUTOMATED', (
-        f'running {release} on {model} - not in the list of releases reviewed on '
-        f'{RELEASE_LIST_REVIEWED} ({", ".join(sorted(SUPPORTED_RELEASES))}), which means '
-        f'unknown, not unsupported: confirm at {CISCO_SUPPORT_URL}'
+
+    major, minor = train
+    if _is_extended_maintenance(minor):
+        return True, (
+            f'running {release} on {model} - {major}.{minor} is an Extended Maintenance release '
+            f'(every {EMR_MINOR_INTERVAL}rd minor: '
+            f'{major}.{EMR_MINOR_INTERVAL}, {major}.{EMR_MINOR_INTERVAL * 2}, '
+            f'{major}.{EMR_MINOR_INTERVAL * 3} ...), supported 36-48 months with scheduled '
+            f'rebuilds. Keep it on a current rebuild - the train being extended is what this '
+            f'checks, not how old this particular build is'
+        )
+
+    below, above = _nearest_extended_maintenance(minor)
+    return False, (
+        f'running {release} on {model} - {major}.{minor} is a Standard Maintenance release, '
+        f'supported for 12 months only and never extended. Move to an Extended Maintenance '
+        f'release: {major}.{below} or {major}.{above}'
     )
+
 
 # Regex/keyword checks for rules that can be verified directly from running-config
 # text. Rules with no entry here need external infrastructure (RADIUS, syslog,

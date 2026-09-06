@@ -404,10 +404,17 @@ def resolve_cklb_path(to_cklb, checklist_path, device_name, captured_on=None, ta
 NOTE_IN_FINDING_DETAILS = ('FAIL',)
 
 
-def _audit_note(reason, title, source, stamp, status):
-    """The audit's explanation of one verdict: why, then what read it and when."""
-    return ((f'{reason}\n\n' if reason else '')
-            + f'{title} against {source}, {stamp}. Reported {status}.')
+def _audit_note(reason):
+    """What goes in the box: why the rule got the verdict it got, and nothing
+    else. No status - STIG Viewer already shows that beside the box - and no
+    provenance, which would be the same sentence 64 times in one file. What
+    read this switch and when is recorded once, in the asset block's own
+    comment, where it is said once instead of per rule.
+
+    A rule with no reason leaves an empty box rather than a sentence saying so.
+    That is the honest rendering of a rule nothing looked at, and it reads in
+    STIG Viewer exactly as it should: unanswered."""
+    return reason or ''
 
 
 def write_cklb(checklist_path, output_path, findings, device_name, source, title,
@@ -456,7 +463,7 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
                 continue
             status, reason = answered[group_id]
             rule['status'] = CKLB_STATUS[status]
-            note = _audit_note(reason, title, source, stamp, status)
+            note = _audit_note(reason)
 
             # The box this verdict does not use is cleared rather than left
             # alone: a rule that fails today and passes tomorrow would otherwise

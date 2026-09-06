@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 
 import capture
 import capture_l2s
+import fixtures
 from fixtures import OUTPUTS
 
 failures = []
@@ -114,6 +115,31 @@ def run_script(**kwargs):
     return fake
 
 
+# l2_stig_audit.py parses argv and runs an audit at import, so its readers
+# cannot simply be imported here. They are lifted out of its source instead -
+# ugly, and much less ugly than a second hand-written copy of what they are
+# supposed to agree with.
+def audit_version_readers():
+    """The audit's `show version` readers, executed out of its source."""
+    with open(os.path.join(PROJECT, 'l2_stig_audit.py'), encoding='utf-8') as handle:
+        source = handle.read()
+    start = source.index('_SWITCH_TABLE_HEADER = ')
+    end = source.index('def _ios_release_supported_check')
+    namespace = {'re': __import__('re')}
+    exec(compile(source[start:end], 'l2_stig_audit.py', 'exec'), namespace)
+    return namespace
+
+
+# A `show version` with no version banner and no `Model Number` line, where the
+# switch table is the only place either fact appears. Both readers have to
+# agree there too, not just on the easy shape.
+SHOW_VERSION_TABLE_ONLY = """Cisco IOS Software [Dublin], Catalyst L3 Switch Software (CAT9K_IOSXE)
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+*    1 52    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL"""
+
+
 def test_constants_match_capture_module():
     print('standalone copies match capture.py')
     check('delimiter prefix identical',
@@ -146,6 +172,29 @@ def test_constants_match_capture_module():
           capture_l2s.sourced_template_names(sourcing)
           == capture.sourced_template_names(sourcing) == ['A', 'B'],
           capture_l2s.sourced_template_names(sourcing))
+
+    # The bulk walker's run log names each switch's hostname, model and release,
+    # and cannot import the audit's readers for them - nothing in securecrt/ may
+    # import from the repository. So they are duplicated, and a log that
+    # disagreed with the checklist beside it about which switch or which
+    # release would be worse than no log at all. Asserted against the audit's
+    # own readers on the same output, rather than against a hand-written
+    # expectation that could go stale with both of them.
+    audit = audit_version_readers()
+    for name, ours, theirs, expected in (
+            ('model', capture_l2s.show_version_model,
+             audit['_show_version_model'], 'C9300-48P'),
+            ('release', capture_l2s.show_version_release,
+             audit['_show_version_release'], '17.12.4')):
+        for label, output in (('the Catalyst form', fixtures.SHOW_VERSION),
+                              ('the switch table alone', SHOW_VERSION_TABLE_ONLY)):
+            check(f'{name} from {label} is what the audit reads',
+                  ours(output) == theirs(output), f'{ours(output)!r} vs {theirs(output)!r}')
+        check(f'{name} is right on the fixture', ours(fixtures.SHOW_VERSION) == expected,
+              ours(fixtures.SHOW_VERSION))
+    check('and the hostname is the config\'s, which is what names the checklist',
+          capture_l2s.running_config_hostname(fixtures.RUNNING_CONFIG) == 'TESTSW01',
+          capture_l2s.running_config_hostname(fixtures.RUNNING_CONFIG))
 
 
 def test_render_round_trips():

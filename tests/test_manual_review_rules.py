@@ -23,7 +23,11 @@ Every case here came off one hand-annotated IOS XE report:
     is the rule's whole review step - answered here rather than handed back.
 
   * V-220569 (supported release) was NOT AUTOMATED with nothing to act on. It
-    needs `show version`, which the audit is already connected to run.
+    needs `show version`, which the audit is already connected to run - and on
+    IOS XE the answer is in the numbering rather than in a lookup: every third
+    minor (17.3, 17.6, 17.9, 17.12, 17.15) is an Extended Maintenance release
+    with 36-48 months of support, everything between is Standard Maintenance
+    with twelve. An SMR is a finding no configuration can fix.
 
   * V-220651 (QoS) was NOT AUTOMATED because the IOS book's `mls qos` cannot
     answer it. The IOS XE book asks for the MQC shape, which is config text.
@@ -180,6 +184,7 @@ cisco WS-C3850-48P (MIPS) processor with 862968K/6147K bytes of memory.
 Model Number                         : WS-C3850-48P
 System Serial Number                 : FOC0000X0XX"""
 
+# 17.15 is the EMR after 17.12 - newer than anything anyone wrote down.
 SHOW_VERSION_UNKNOWN_RELEASE = fixtures.SHOW_VERSION.replace('17.12.04', '17.15.01').replace(
     'Version 17.12.4', 'Version 17.15.1')
 
@@ -223,10 +228,12 @@ def test_supported_release(tmpdir):
     line = verdict(known, 'V-220569')
     check('the release and the model are in the report, so no login is needed for them',
           '17.12.4' in line and 'C9300-48P' in line, line)
-    # PASS while SUPPORTED_RELEASES is current, NOT AUTOMATED once that reading
-    # goes stale - never a bare NOT AUTOMATED with nothing to act on.
-    check('a reviewed release passes, or says the list needs re-reading',
-          status(known, 'V-220569') == 'PASS' or 'update SUPPORTED_RELEASES' in line, line)
+    # 17.12 is an Extended Maintenance release - every third minor - so it
+    # passes on the numbering alone, with no table for anyone to re-read.
+    check('an Extended Maintenance release passes',
+          status(known, 'V-220569') == 'PASS', line)
+    check('and the reason says which track it is on',
+          'Extended Maintenance' in line, line)
 
     past_support = report_for(tmpdir, 'eos', version=SHOW_VERSION_3850)
     line = verdict(past_support, 'V-220569')
@@ -240,12 +247,23 @@ def test_supported_release(tmpdir):
     check('classic IOS names its release and model on different lines, and both are read',
           '15.2(20170717:130322)' in line and 'vios_l2' in line, line)
 
-    unknown = report_for(tmpdir, 'unknownrelease', version=SHOW_VERSION_UNKNOWN_RELEASE)
-    line = verdict(unknown, 'V-220569')
-    check('a release the table does not know is NOT AUTOMATED, not a finding',
-          status(unknown, 'V-220569') == 'NOT AUTOMATED', line)
-    check('and it says so in those words, with the release to look up',
-          '17.15.1' in line and 'unknown, not unsupported' in line, line)
+    # The rule that used to need a hand-maintained list: 17.15 had never been
+    # read off cisco.com, so it reported NOT AUTOMATED. It is every third minor,
+    # so it is an EMR, so it passes - and 17.18 will the day it ships.
+    newer = report_for(tmpdir, 'neweremr', version=SHOW_VERSION_UNKNOWN_RELEASE)
+    line = verdict(newer, 'V-220569')
+    check('an EMR nobody has written down anywhere still passes',
+          status(newer, 'V-220569') == 'PASS', line)
+    check('and names the release it decided that on', '17.15.1' in line, line)
+
+    # The finding this rule now catches on its own. 17.13 is Standard
+    # Maintenance: twelve months and no extension, whatever the config says.
+    smr = report_for(tmpdir, 'smr', version=fixtures.SHOW_VERSION.replace(
+        '17.12.04', '17.13.01').replace('Version 17.12.4', 'Version 17.13.1'))
+    line = verdict(smr, 'V-220569')
+    check('a Standard Maintenance release is a finding', status(smr, 'V-220569') == 'FAIL', line)
+    check('and the reason says why and what to move to',
+          '12 months' in line and '17.12' in line and '17.15' in line, line)
 
     # The switch table at the end of `show version` is the third place the
     # model and release appear, and on some images the only one. A switch whose

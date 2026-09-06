@@ -171,6 +171,82 @@ def render(outputs):
     return '\n'.join(blocks)
 
 
+# Model and release out of `show version`, for the bulk walker's run log. It
+# writes a row per switch naming the hardware and the software found on it, and
+# it cannot import l2_stig_audit's readers - nothing in securecrt/ may import
+# from the repository, since these two files get copied to a machine that has
+# none of it. tests/test_securecrt_script.py asserts these agree with the
+# audit's own readers on the same output, so the duplication cannot drift into
+# a log that disagrees with the checklist beside it.
+#
+# That includes the switch table `show version` ends with on a stackable
+# Catalyst, which on some images is the only place the model and release
+# appear. Skipping it here would leave the log's columns blank for a switch
+# whose checklist names both - the two disagreeing about the same device, which
+# is the thing this duplication most has to avoid.
+def _switch_table(output):
+    """(model, release) from the `Switch Ports Model SW Version` table's active
+    row, or ('', ''). Mirrors l2_stig_audit._show_version_switch_table."""
+    import re
+    header = re.search(r'^\s*Switch\s+Ports\s+Model\s+SW\s+Version', output or '',
+                       re.M | re.I)
+    if not header:
+        return '', ''
+    rest = (output or '').find('\n', header.end())
+    if rest == -1:
+        return '', ''
+    rows = []
+    for line in output[rest + 1:].splitlines():
+        if not line.strip() or set(line.strip()) <= set('- '):
+            continue
+        match = re.match(r'^\s*(\*?)\s*\d+\s+\d+\s+(\S+)\s+(\d\S*)', line)
+        if not match:
+            break
+        rows.append((bool(match.group(1)), match.group(2), match.group(3)))
+    if not rows:
+        return '', ''
+    active = next((row for row in rows if row[0]), rows[0])
+    return active[1], active[2]
+
+
+def running_config_hostname(output):
+    """The switch's own `hostname` line, or ''.
+
+    The prompt gives a name too, and collect() uses it - but a prompt can carry
+    a suffix, a location, or whatever someone set it to, while this is the name
+    the audit puts in the checklist and in the checklist's filename. The log
+    and the checklist beside it have to agree about which switch a row is."""
+    import re
+    match = re.search(r'^hostname (\S+)', output or '', re.M)
+    return match.group(1) if match else ''
+
+
+def show_version_model(output):
+    """The switch model, or '' - `Model Number : C9300-48P` on Catalyst, the
+    `cisco <model> (<cpu>) processor` line elsewhere."""
+    import re
+    for pattern in (r'^Model [Nn]umber\s*:\s*(\S+)',
+                    r'^\s*[Cc]isco (\S+) \(.*\) processor'):
+        match = re.search(pattern, output or '', re.M)
+        if match:
+            return match.group(1)
+    return _switch_table(output)[0]
+
+
+def show_version_release(output):
+    """The IOS/IOS XE release, or ''. Normalised the way the audit normalises
+    it, so 17.12.04 and 17.12.4 do not read as two different switches."""
+    import re
+    for pattern in (r'Cisco IOS XE Software, Version (\S+)',
+                    r'Cisco IOS Software.*?,\s*(?:Experimental )?Version ([^\s,]+)',
+                    r'^Version (\S+)'):
+        match = re.search(pattern, output or '', re.M)
+        if match:
+            return re.sub(r'(^|\.)0+(\d)', r'\1\2', match.group(1).strip().rstrip(','))
+    release = _switch_table(output)[1]
+    return re.sub(r'(^|\.)0+(\d)', r'\1\2', release) if release else ''
+
+
 def looks_paginated(text):
     """True if a pager prompt made it into the output, which means the capture
     is truncated. Checked here as well as in capture.py so the problem is

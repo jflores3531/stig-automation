@@ -295,17 +295,64 @@ def looks_rejected(error_text):
     return any(marker in lowered for marker in REJECTION_MARKERS)
 
 
+# What a switch that could not be reached gets written against its name. The
+# two that matter are distinct problems with distinct fixes: a refusal is the
+# host answering and saying no - SSH disabled, a management ACL, the wrong port
+# - while a timeout is nothing answering at all, which is a device that is off,
+# moved, or behind something dropping the traffic. Reading "unreachable" for
+# both, as the log did, throws that away on exactly the rows somebody has to
+# work through the morning after.
+#
+# Matched on SecureCRT's own error text, and never guessed at: anything these
+# do not recognise is written verbatim, which is more useful than a category
+# invented for it.
+CONNECT_FAILURES = (
+    (('timed out', 'timeout', 'no response'), 'Connection timed out'),
+    (('refused', 'reset by peer', 'actively refused'), 'System refused connection'),
+    (('no route', 'unreachable', 'cannot resolve', 'unknown host', 'name or service'),
+     'Host unreachable'),
+)
+
+
+def describe_connect_failure(error_text):
+    """A plain sentence for the log's comment column, from SecureCRT's error."""
+    lowered = (error_text or '').lower()
+    for markers, description in CONNECT_FAILURES:
+        if any(marker in lowered for marker in markers):
+            return description
+    if looks_rejected(error_text):
+        return 'Login rejected'
+    return first_line(error_text)
+
+
+# The run log's columns. The first five are the ones a person reads: what the
+# switch is called, where it lives, what hardware and software were found on
+# it, and a sentence saying what happened - "Connection timed out", "System
+# refused connection", or what the audit made of it.
+#
+# hostname is the switch's own where the walk got far enough to ask it, and the
+# saved session's name where it did not: a row for a device nobody could reach
+# still has to be identifiable, and the session name is what the person chasing
+# it will recognise. model and ios_version are blank on those rows for the
+# honest reason - nothing read them, because nothing answered.
+#
+# outcome, session and timestamp follow, and are what make the file a census
+# rather than a report: one row per session in the list, countable in a
+# spreadsheet without picking the newest row per switch out of a history.
+LOG_COLUMNS = ('hostname', 'ip_address', 'model', 'ios_version', 'comment',
+               'outcome', 'session', 'timestamp')
+
+
 class RunLog:
-    """One line per switch: what was tried, what happened, when.
+    """One line per switch: what it is, what happened to it, when.
 
     This is the coverage record, not just a debugging aid. A STIG audit of six
-    hundred switches has to account for all six hundred, and "42 unreachable,
-    here they are" is part of the deliverable.
+    hundred switches has to account for all six hundred, and "42 timed out,
+    here they are, with what we know about each" is part of the deliverable.
 
     One file per run, named for when the run started, so each file can be
-    opened in a spreadsheet and counted directly - no picking the newest row
-    per switch out of an accumulated history. Which is also why a run logs the
-    switches it *skipped* as already captured: without those rows the second
+    opened in a spreadsheet and counted directly. Which is also why a run logs
+    the switches it *skipped* as already done: without those rows the second
     pass would produce a log of forty devices and no trace of the other five
     hundred and sixty, and a log that only accounts for the switches it visited
     is not a census. Every run's file is a complete account of the whole list."""
@@ -315,11 +362,13 @@ class RunLog:
                                 'run_log_' + time.strftime('%Y%m%d_%H%M%S'), '.csv')
         self.counts = {}
         with open(self.path, 'w', encoding='utf-8') as handle:
-            handle.write('timestamp,session,host,outcome,detail\n')
+            handle.write(','.join(LOG_COLUMNS) + '\n')
 
-    def record(self, session_path, host, outcome, detail=''):
+    def record(self, session_path, host, outcome, comment='',
+               hostname='', model='', ios_version=''):
         self.counts[outcome] = self.counts.get(outcome, 0) + 1
-        row = [time.strftime('%Y-%m-%d %H:%M:%S'), session_path, host, outcome, detail]
+        row = (hostname or session_path, host, model, ios_version, comment,
+               outcome, session_path, time.strftime('%Y-%m-%d %H:%M:%S'))
         with open(self.path, 'a', encoding='utf-8') as handle:
             handle.write(','.join('"{0}"'.format(str(f).replace('"', "'")) for f in row) + '\n')
 
@@ -329,11 +378,14 @@ class RunLog:
 
 
 def connect_session(session_path):
-    """Connect to a saved session. Returns '' on success, or a short reason.
+    """Connect to a saved session. Returns (outcome, comment), both '' on
+    success.
 
     SecureCRT raises on a failed connect and puts the detail in
     GetLastErrorMessage(). A rejected login is retried once; anything else is
-    treated as unreachable and skipped without a retry."""
+    treated as unreachable and skipped without a retry. The comment is the
+    plain sentence for the log - see describe_connect_failure - and the outcome
+    is the word the run summary counts by."""
     for attempt in range(1, LOGIN_ATTEMPTS + 1):
         error = ''
         try:
@@ -341,13 +393,12 @@ def connect_session(session_path):
         except Exception:
             error = crt.GetLastErrorMessage() or 'connect failed'
         if crt.Session.Connected:
-            return ''
-        detail = first_line(error)
+            return '', ''
         if not looks_rejected(error):
-            return 'unreachable: ' + detail
+            return 'unreachable', describe_connect_failure(error)
         if attempt == LOGIN_ATTEMPTS:
-            return 'login rejected: ' + detail
-    return 'login rejected: ' + detail
+            return 'login rejected', describe_connect_failure(error)
+    return 'login rejected', 'Login rejected'
 
 
 def unused_path(directory, stem, extension):
@@ -489,9 +540,12 @@ def main():
         crt.Session.SetStatusText('Capturing {0}/{1}: {2}'
                                   .format(index, len(pending), session_path))
 
-        failure = connect_session(session_path)
-        if failure:
-            log.record(session_path, host, failure.split(':')[0], failure)
+        outcome, comment = connect_session(session_path)
+        if outcome:
+            # Nothing was read off this switch, so its model and release
+            # columns stay blank rather than carrying a guess. The comment is
+            # what the morning after works from.
+            log.record(session_path, host, outcome, comment)
             return
 
         try:
@@ -500,13 +554,28 @@ def main():
             log.record(session_path, host, 'refused', refused.reason)
             return
 
+        # Read once, here, and handed to every row this switch produces: the
+        # log says what hardware and software were found whatever happens to
+        # the checklist afterwards.
+        version = outputs.get('show version', '')
+        model = capture_l2s.show_version_model(version)
+        release = capture_l2s.show_version_release(version)
+        # The config's hostname rather than the prompt's, so a row and the
+        # checklist it produced name the same switch - the audit reads this one.
+        named = capture_l2s.running_config_hostname(
+            outputs.get('show running-config', '')) or hostname
+
+        def record(outcome, comment=''):
+            log.record(session_path, host, outcome, comment,
+                       hostname=named, model=model, ios_version=release)
+
         key = index_key(session_path, host)
         path = os.path.join(output_dir, key)
         try:
             with open(path, 'w', encoding='utf-8') as capture_file:
                 capture_file.write(capture_l2s.render(outputs))
         except OSError as error:
-            log.record(session_path, host, 'write failed', str(error)[:120])
+            record('write failed', str(error)[:120])
             return
 
         # The switch has been visited by this point, so an audit that fails
@@ -514,25 +583,25 @@ def main():
         # already spent. `audit failed` is its own outcome in the log, which is
         # what keeps it distinguishable from a switch never reached.
         if not runner:
-            log.record(session_path, host, 'captured', hostname)
+            record('captured', key)
             return
 
         checklist, detail = capture_l2s.run_audit(path, hostname, work_dir, runner=runner)
         if not checklist:
-            log.record(session_path, host, 'audit failed', first_line(detail))
+            record('audit failed', first_line(detail))
             return
 
         try:
             name, collided = place_checklist(output_dir, checklist, key, claimed)
         except OSError as error:
-            log.record(session_path, host, 'write failed', str(error)[:120])
+            record('write failed', str(error)[:120])
             return
 
         capture_l2s.remove_file(path)
         claimed[name] = key
         append_index(output_dir, key, name, hostname)
-        log.record(session_path, host, 'checklisted',
-                   name + (' (hostname already used by another switch)' if collided else ''))
+        record('checklisted',
+               name + (' (hostname already used by another switch)' if collided else ''))
 
     crt.Screen.Synchronous = True
     try:

@@ -59,6 +59,20 @@ def run_audit(tmpdir, capture_path, *extra):
     return result
 
 
+def reported_reasons(report):
+    """{group_id: the reason line the report printed under it}, for the rules
+    that got one. Compared against the checklist's own boxes, which now carry
+    the reason and nothing else - so the two are the same string, and this
+    suite can assert that rather than asserting a fragment appears somewhere."""
+    reasons = {}
+    lines = report.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r'\[\w+\s*\]\s+(?:PASS|FAIL|NOT APPLICABLE|NOT AUTOMATED)\s+(V-\d+)', line)
+        if match and index + 1 < len(lines) and lines[index + 1].strip():
+            reasons[match.group(1)] = lines[index + 1].strip()
+    return reasons
+
+
 def reported_statuses(report):
     """{group_id: status} as the report printed them."""
     return {group_id: status.strip() for status, group_id in
@@ -86,6 +100,7 @@ def test_export(tmpdir, capture_path):
 
     checklist, rules = rules_of(out)
     printed = reported_statuses(result.stdout)
+    printed_reasons = reported_reasons(result.stdout)
     check('every rule in the checklist got a verdict',
           len(printed) == len(rules) and len(rules) == 64, f'{len(printed)} printed, {len(rules)} in file')
 
@@ -99,9 +114,12 @@ def test_export(tmpdir, capture_path):
     check('NOT AUTOMATED is not_reviewed, never not_a_finding',
           all(rules[group_id]['status'] == 'not_reviewed' for group_id in not_automated),
           [rules[g]['status'] for g in not_automated])
-    check('and it still carries what the audit did determine, so the reviewer starts somewhere',
-          all(rules[group_id]['comments'].strip() for group_id in not_automated),
-          [rules[g]['comments'] for g in not_automated[:1]])
+    # A rule the audit reached a conclusion about carries that conclusion; one
+    # it never looked at carries nothing, which is what unanswered looks like.
+    reasoned = [g for g in not_automated if g in printed_reasons]
+    check('and it still carries what the audit did determine, where it determined anything',
+          all(rules[g]['comments'].splitlines()[0] == printed_reasons[g] for g in reasoned),
+          [(g, rules[g]['comments'], printed_reasons[g]) for g in reasoned[:1]])
 
     # Which box the audit's note lands in follows the verdict: a finding is
     # evidenced in Finding Details, a pass or a not-applicable is justified in
@@ -113,15 +131,22 @@ def test_export(tmpdir, capture_path):
           'Not Applicable' in na['comments'], na['comments'])
     check('and leaves Finding Details empty, since there is nothing to evidence',
           not na['finding_details'].strip(), na['finding_details'])
-    check('the Comments justification still says where the evidence came from',
-          'capture' in na['comments'] and 'x.capture' in na['comments'], na['comments'])
+    # The note is the reason and only the reason - no status (STIG Viewer shows
+    # it beside the box) and no provenance, which would be the same sentence 64
+    # times in one file. Where the run read the switch is said once, in the
+    # asset block's own comment.
+    check('the note is the reason and nothing else',
+          na['comments'].splitlines()[0] == printed_reasons['V-220567'], na['comments'])
+    check('with the run recorded once in the asset block instead of per rule',
+          'x.capture' in checklist['target_data']['comments'],
+          checklist['target_data']['comments'])
 
     failing = [group_id for group_id, status in printed.items() if status == 'FAIL']
     check('there is a FAIL to test the other direction on', failing)
     if failing:
         finding = rules[failing[0]]
         check('a finding is evidenced in Finding Details, not Comments',
-              finding['finding_details'].strip() and 'Reported FAIL' in finding['finding_details'],
+              finding['finding_details'].splitlines()[0] == printed_reasons[failing[0]],
               finding['finding_details'])
         check('and its Comments box is left empty',
               not finding['comments'].strip(), finding['comments'])
@@ -164,9 +189,7 @@ def test_rerun_overwrites_what_was_there(tmpdir, capture_path, out):
     _, rules = rules_of(out)
     unreviewed = rules['V-220566']['comments']
     check('a comment typed into STIG Viewer is replaced, not merged',
-          typed not in unreviewed and 'Reported NOT AUTOMATED' in unreviewed, unreviewed)
-    check('and it is the new run that wrote it, only once',
-          unreviewed.count('Reported') == 1, unreviewed)
+          typed not in unreviewed, unreviewed)
 
     passing = rules['V-220651']
     check('a hand-edited comment is replaced too',
