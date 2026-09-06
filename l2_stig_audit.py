@@ -1523,34 +1523,54 @@ def _normalise_release(release):
     return re.sub(r'(^|\.)0+(\d)', r'\1\2', release.strip().rstrip(','))
 
 
+# The switch table is asked first, and the reason is a stack.
+#
+# `Model Number :` is printed once per member, in member order, so the first
+# match is switch 1's model - which on a mixed stack is not the switch the rule
+# is about. The banner, meanwhile, gives the active member's release. Read that
+# way, a stack of a C9300-24P and an active C9300-48P reports the 24P's model
+# beside the 48P's release: two different pieces of hardware described as one.
+# The model is what decides the hardware end-of-support check, so that is a
+# wrong verdict, not just a wrong label.
+#
+# The table has neither problem. It marks the active member with `*`, and model
+# and release come off that one row, so they cannot describe different units.
+# The banner and `Model Number` remain the fallback, and have to: a classic IOS
+# switch, the lab's vios_l2 image and a router print no switch table at all.
 def _show_version_release(output):
-    """The release string from `show version`, normalized so the two lines
-    IOS XE prints for one release agree: the banner says 17.12.04 and the
-    IOS Software line says 17.12.4, and only one of those can be in a table.
-    Falls back to the switch table's SW Version column, which is where the
-    release is on an image that prints no version banner this recognises."""
+    """The release from `show version`, normalised - the banner says 17.12.04
+    and the IOS Software line says 17.12.4, and those are one release.
+
+    The switch table's SW Version column first (the active member's, on a
+    stack), then the banner lines for everything that prints no table."""
+    _model, release = _show_version_switch_table(output)
+    if release:
+        return _normalise_release(release)
     for pattern in (r'Cisco IOS XE Software, Version (\S+)',
                     r'Cisco IOS Software.*?,\s*(?:Experimental )?Version ([^\s,]+)',
                     r'^Version (\S+)'):
         m = re.search(pattern, output, re.M)
         if m:
             return _normalise_release(m.group(1))
-    _model, release = _show_version_switch_table(output)
-    return _normalise_release(release) if release else None
+    return None
 
 
 def _show_version_model(output):
-    """The switch model from `show version`. 'Model Number' is the Catalyst
-    form; the 'cisco <model> (<cpu>) processor' line is what everything else,
-    including the lab's vios_l2 image, prints; the switch table's Model column
-    is the third place it appears and the only one on some stack images."""
+    """The switch model from `show version`.
+
+    The switch table's Model column first, for the member the table marks
+    active. Then 'Model Number', the Catalyst per-member form, and finally the
+    'cisco <model> (<cpu>) processor' line, which is what everything else
+    prints - including the lab's vios_l2 image."""
+    model, _release = _show_version_switch_table(output)
+    if model:
+        return model
     for pattern in (r'^Model [Nn]umber\s*:\s*(\S+)',
                     r'^\s*[Cc]isco (\S+) \(.*\) processor'):
         m = re.search(pattern, output, re.M)
         if m:
             return m.group(1)
-    model, _release = _show_version_switch_table(output)
-    return model
+    return None
 
 
 def _ios_xe_train(release):

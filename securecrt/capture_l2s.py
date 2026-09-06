@@ -221,29 +221,41 @@ def running_config_hostname(output):
     return match.group(1) if match else ''
 
 
+# Table first, then the banner - same order and for the same reason as the
+# audit's readers. `Model Number :` is printed once per stack member, so its
+# first match is switch 1's model while the banner gives the active member's
+# release: on a mixed stack that names one switch's hardware beside another
+# switch's software. The table marks the active member and carries both on one
+# row.
 def show_version_model(output):
-    """The switch model, or '' - `Model Number : C9300-48P` on Catalyst, the
-    `cisco <model> (<cpu>) processor` line elsewhere."""
+    """The switch model, or '' - the table's Model column for the active stack
+    member, else `Model Number : C9300-48P`, else the `cisco <model> (<cpu>)
+    processor` line that everything without a table prints."""
     import re
+    model = _switch_table(output)[0]
+    if model:
+        return model
     for pattern in (r'^Model [Nn]umber\s*:\s*(\S+)',
                     r'^\s*[Cc]isco (\S+) \(.*\) processor'):
         match = re.search(pattern, output or '', re.M)
         if match:
             return match.group(1)
-    return _switch_table(output)[0]
+    return ''
 
 
 def show_version_release(output):
     """The IOS/IOS XE release, or ''. Normalised the way the audit normalises
     it, so 17.12.04 and 17.12.4 do not read as two different switches."""
     import re
-    for pattern in (r'Cisco IOS XE Software, Version (\S+)',
-                    r'Cisco IOS Software.*?,\s*(?:Experimental )?Version ([^\s,]+)',
-                    r'^Version (\S+)'):
-        match = re.search(pattern, output or '', re.M)
-        if match:
-            return re.sub(r'(^|\.)0+(\d)', r'\1\2', match.group(1).strip().rstrip(','))
     release = _switch_table(output)[1]
+    if not release:
+        for pattern in (r'Cisco IOS XE Software, Version (\S+)',
+                        r'Cisco IOS Software.*?,\s*(?:Experimental )?Version ([^\s,]+)',
+                        r'^Version (\S+)'):
+            match = re.search(pattern, output or '', re.M)
+            if match:
+                release = match.group(1).strip().rstrip(',')
+                break
     return re.sub(r'(^|\.)0+(\d)', r'\1\2', release) if release else ''
 
 

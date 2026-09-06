@@ -222,6 +222,32 @@ SHOW_VERSION_STACK = SHOW_VERSION_TABLE_ONLY.replace(
     '*    2 52    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL')
 
 
+# A stack whose members are not the same model, with the active one second.
+# `Model Number :` is printed per member in member order, so reading it takes
+# switch 1 - while the banner gives the active member's release. That pairing
+# describes two different pieces of hardware as one switch, and the model is
+# what decides the hardware end-of-support check, so it is a wrong verdict
+# rather than a wrong label. The switch table marks the active member and
+# carries both on one row, which is why it is asked first.
+SHOW_VERSION_MIXED_STACK = """Cisco IOS XE Software, Version 17.12.04
+Cisco IOS Software [Dublin], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.12.4
+
+Switch 01
+---------
+Model Number                         : WS-C3850-48P
+System Serial Number                 : FOC1111X1XX
+
+Switch 02
+---------
+Model Number                         : C9300-48P
+System Serial Number                 : FOC2222X2XX
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+     1 48    WS-C3850-48P       17.12.04          CAT9K_IOSXE           INSTALL
+*    2 48    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL"""
+
+
 def test_supported_release(tmpdir):
     print('\nsupported release: `show version` answers the model and the release')
     known = report_for(tmpdir, 'release')
@@ -281,6 +307,17 @@ def test_supported_release(tmpdir):
     line = verdict(stacked, 'V-220569')
     check('a stack is read from its active member, not whichever row came first',
           '17.12.4' in line and '16.9.8' not in line, line)
+
+    # The model has to come from the same member as the release. Reading it
+    # from the first `Model Number` line instead would report the 3850 here,
+    # whose last date of support has passed - a FAIL on a stack whose active
+    # switch is a supported C9300.
+    mixed = report_for(tmpdir, 'mixedstack', version=SHOW_VERSION_MIXED_STACK)
+    line = verdict(mixed, 'V-220569')
+    check('and its model comes from that same member, not the first one listed',
+          'C9300-48P' in line and 'WS-C3850' not in line, line)
+    check('so a mixed stack is not failed for hardware it is not running on',
+          status(mixed, 'V-220569') == 'PASS', line)
 
 
 def strip_service_policy(config, *ports):
