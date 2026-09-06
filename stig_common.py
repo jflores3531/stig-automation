@@ -3,8 +3,10 @@
 nxos_stig_audit.py: loads a DISA .cklb checklist, checks a device's
 running-config against it, and prints a PASS/FAIL/NOT AUTOMATED report."""
 
+import datetime
 import fnmatch
 import json
+import os
 import re
 
 import netauto
@@ -14,7 +16,7 @@ SEVERITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
 
 def run_stig_audit(device_name, device_info, checklist_path, checks, title, username, password,
                     not_automated_note='need manual review or external infrastructure',
-                    session=None):
+                    session=None, to_cklb=None):
     """Connect to a device, check its running-config against a DISA STIG checklist's
     rules using `checks` (group_id -> predicate(running_config) -> bool, or
     -> (bool, reason) to show why a rule passed/failed, or -> (None, reason)
@@ -77,6 +79,149 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
             print(f"           {reason}")
         print()
 
+    # Last, so a checklist is only written for a run that got far enough to
+    # print its report - and so a failure here cannot cost the report itself.
+    if to_cklb:
+        source = (f'capture {net_connect.source}' if getattr(net_connect, 'source', None)
+                  else f'device {device_name}')
+        try:
+            print(write_cklb(checklist_path, to_cklb, findings, device_name, source, title,
+                             device_info=device_info))
+        except (ChecklistError, OSError) as checklist_error:
+            # The report above is complete and correct; only the file failed.
+            # Said plainly, and with a non-zero exit so a script that asked for
+            # a checklist does not carry on as though it got one.
+            print(f'\nThe report above is complete, but the checklist was not written:\n'
+                  f'{checklist_error}')
+            raise SystemExit(2)
+
+    return findings
+
+
+# A report is read once and retyped into STIG Viewer by hand, which is the
+# slowest and least reliable part of the whole exercise: 64 rules, four
+# statuses, and a free-text box per rule that nobody fills in properly at
+# rule 50. STIG Viewer 3's own file format is JSON - the same .cklb these
+# audits already read the rules out of - so the verdicts can be written back
+# into a copy of it and opened directly.
+#
+# The status names below are STIG Viewer 3's, and the mapping is the whole
+# point of the feature, so each one is deliberate:
+#
+#   PASS           -> not_a_finding   the check ran and the switch complies
+#   FAIL           -> open            the check ran and it does not
+#   NOT APPLICABLE -> not_applicable  the rule's own precondition does not hold
+#   NOT AUTOMATED  -> not_reviewed    nothing here reviewed it
+#
+# NOT AUTOMATED must never become not_a_finding. It is the one mapping that
+# would turn "this tool did not look" into "a reviewer confirmed compliance",
+# signed off under someone's name, on rules like the configuration backup one
+# that genuinely need a human. not_reviewed is what STIG Viewer shows an
+# unanswered rule as, which is exactly what it is - and the reason line still
+# goes into finding_details, so the reviewer starts from what the audit did
+# manage to determine rather than from nothing.
+CKLB_STATUS = {
+    'PASS': 'not_a_finding',
+    'FAIL': 'open',
+    'NOT APPLICABLE': 'not_applicable',
+    'NOT AUTOMATED': 'not_reviewed',
+}
+
+
+class ChecklistError(Exception):
+    """The checklist could not be written. Raised rather than degrading to a
+    partial file: a .cklb that opens in STIG Viewer but carries half a run's
+    verdicts is worse than none, because nothing about it looks wrong."""
+
+
+def _existing_annotations(output_path):
+    """Per-rule `comments` and `overrides` already in the file being replaced.
+
+    A checklist that has been opened once is not just this tool's output any
+    more. The division of labour is: the audit owns `status` and
+    `finding_details` (it re-derives both on every run), the reviewer owns
+    `comments` and any severity `overrides` (nothing here can re-derive
+    those). Re-running the audit over yesterday's export therefore updates the
+    verdicts and keeps the notes - without this, the second run silently
+    deletes the reviewer's work on exactly the rules they had to answer by
+    hand."""
+    if not os.path.exists(output_path):
+        return {}
+    try:
+        with open(output_path, encoding='utf-8') as existing_file:
+            existing = json.load(existing_file)
+        return {
+            rule['group_id']: {'comments': rule.get('comments', ''),
+                               'overrides': rule.get('overrides', {})}
+            for stig in existing.get('stigs', []) for rule in stig.get('rules', [])
+            if rule.get('comments') or rule.get('overrides')
+        }
+    except (ValueError, KeyError, OSError):
+        # Not a readable .cklb - a stray file with the same name, or one
+        # truncated by a crash. There is nothing to preserve, and refusing to
+        # write over it would strand the run.
+        return {}
+
+
+def write_cklb(checklist_path, output_path, findings, device_name, source, title,
+               device_info=None, run_at=None):
+    """Write `findings` into a copy of the checklist as a STIG Viewer 3 .cklb.
+
+    findings is run_stig_audit's list of (status, rule, group_id, reason).
+    `source` says where the output came from - a device or a capture file - and
+    is recorded per rule, because a verdict without its evidence's provenance
+    is not evidence."""
+    if os.path.abspath(checklist_path) == os.path.abspath(output_path):
+        raise ChecklistError(
+            f'Refusing to write over the blank checklist at {checklist_path}.\n'
+            'That file is the template every audit reads its rules from; filling it in '
+            'with one device\'s verdicts would leave the next run auditing against '
+            "someone else's results. Choose another path.")
+
+    with open(checklist_path, encoding='utf-8') as checklist_file:
+        checklist = json.load(checklist_file)
+
+    run_at = run_at or datetime.datetime.now()
+    stamp = run_at.strftime('%Y-%m-%d %H:%M')
+    kept = _existing_annotations(output_path)
+    answered = {group_id: (status, reason) for status, _rule, group_id, reason in findings}
+
+    counts = {}
+    for stig in checklist.get('stigs', []):
+        for rule in stig.get('rules', []):
+            group_id = rule.get('group_id')
+            if group_id not in answered:
+                # A rule in the file the audit never reported on. It cannot
+                # happen through run_stig_audit, which walks this same list,
+                # but leaving it not_reviewed rather than assuming is the
+                # only safe treatment if it ever does.
+                continue
+            status, reason = answered[group_id]
+            rule['status'] = CKLB_STATUS[status]
+            rule['finding_details'] = (
+                f'{reason}\n\n' if reason else ''
+            ) + f'{title} against {source}, {stamp}. Reported {status}.'
+            if group_id in kept:
+                rule['comments'] = kept[group_id]['comments']
+                rule['overrides'] = kept[group_id]['overrides']
+            counts[rule['status']] = counts.get(rule['status'], 0) + 1
+
+    target = checklist.setdefault('target_data', {})
+    target['host_name'] = device_name
+    if device_info and device_info.get('host'):
+        target['ip_address'] = device_info['host']
+    target['comments'] = f'{title} against {source}, {stamp}.'
+
+    parent = os.path.dirname(os.path.abspath(output_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as output_file:
+        json.dump(checklist, output_file, indent=2)
+
+    summary = ', '.join(f'{counts.get(status, 0)} {status}'
+                        for status in ('not_a_finding', 'open', 'not_applicable', 'not_reviewed'))
+    kept_note = f', keeping reviewer comments on {len(kept)} rule(s)' if kept else ''
+    return f'Wrote {output_path} for STIG Viewer 3: {summary}{kept_note}.'
 
 def exec_timeout_ok(cfg, max_minutes=5):
     """True if every exec-timeout line sets a nonzero value no longer than

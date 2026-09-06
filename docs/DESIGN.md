@@ -189,6 +189,43 @@ The same reading of a real report against the switch that produced it found two 
 
 `tests/test_manual_review_rules.py` pins all four, in both directions — the newly automated verdicts, and the cases that must still report `NOT AUTOMATED` rather than a guess.
 
+## The report, as a file STIG Viewer opens
+
+A printed report is read once and retyped into STIG Viewer rule by rule, and that transcription is the least reliable step in the whole exercise: 64 rules, four statuses, and a free-text box per rule that nobody is filling in carefully by rule 50. STIG Viewer 3's format is `.cklb` — the same JSON these audits already read their rules out of — so `--to-cklb` writes the verdicts back into a copy of it.
+
+That makes one table load-bearing in a way a printed line never was. A wrong entry in `CKLB_STATUS` is a compliance claim inside a signed artifact:
+
+| audit | .cklb | why |
+|---|---|---|
+| PASS | `not_a_finding` | the check ran and the switch complies |
+| FAIL | `open` | the check ran and it does not |
+| NOT APPLICABLE | `not_applicable` | the rule's own precondition does not hold |
+| NOT AUTOMATED | `not_reviewed` | nothing here reviewed it |
+
+The last row is the one that matters. `NOT AUTOMATED` must never become `not_a_finding`: that turns "this tool did not look" into "a reviewer confirmed compliance", under someone's name, on exactly the rules that need a human — configuration backups, a CA's issuer. `not_reviewed` is what STIG Viewer shows an unanswered rule as, which is what it is. The reason line still goes into `finding_details`, so a reviewer starts from whatever the audit did manage to determine rather than from nothing.
+
+The second half is what a re-run does. Once a checklist has been opened it is not only this tool's output any more, so ownership is split: the audit owns `status` and `finding_details` and re-derives both on every run; the reviewer owns `comments` and any severity `overrides`, and those are carried across. Without that, the second run silently deletes the reviewer's notes on precisely the rules they had to answer by hand. Writing over `checklists/*.cklb` itself is refused outright — that is the blank template every audit reads its rules from, and filling it in with one device's verdicts would leave the next run auditing against someone else's results.
+
+## Redaction that refuses
+
+A capture is a verbatim copy of a production switch, which is why `captures/` is gitignored and why nothing here uploads one. But there is a standing need to show one to someone — a vendor case, a ticket, a question — and without a tool that need gets met by hand, under time pressure, on the one line that gets missed.
+
+`sanitize_capture.py` is blunt on purpose: every value of a kind becomes the same placeholder, so nothing in the output maps back to what it replaced. The cost is stated in the tool, in its output's first lines, and here: **a redacted capture is for reading, not for re-auditing.** A redacted ACL source no longer falls inside `management_subnet` and redacted VLAN IDs no longer match the user-VLAN list, so an audit of one reports findings against a switch that does not have them. Nothing stops that run, because nothing in the text can honestly detect it — so it is said instead of guarded.
+
+Two design decisions carry the weight:
+
+- **It scans its own output and refuses to write if anything still looks sensitive.** A partially redacted file is worse than no file: it arrives with REDACTED at the top and gets treated as safe. The scan reports line numbers and the shape it saw, never the value — the point of the message is to be read on a terminal, and printing the value would put the thing being redacted back on the screen.
+- **What it keeps is as deliberate as what it removes.** Command names, interface names, block structure, IOS keywords, model and release all survive; without them the file stops being a configuration and becomes a shape nobody can ask a question about. The model and release are not CUI, and `V-220569` needs them.
+
+Every leak in `tests/test_sanitize_capture.py` was a real one first, found by running the rules against a config shaped like a real switch's rather than against the test fixture: the SNMPv3 `auth` and `priv` passphrases survived untouched (running-config keeps those in the clear); `ntp authentication-key 1 md5 <hash> 7` had its key *id* redacted and its hash left, because a generic `key` rule was matching the tail of `authentication-key`; and the capture's own `show vtp password` delimiter was rewritten into a section header `capture.py` could no longer parse. The mirror failure is over-redaction, and it is tested too: `The VTP password is not configured.` came out as `The VTP password <redacted> not configured.`
+
+## Addressing that lives somewhere other than a config
+
+Two of the questions this repo gets asked are not about compliance at all: what is actually on this segment, and what does the diagram say the addressing is. Both were being answered by retyping, which is where a transposed octet comes from.
+
+- **`arp_inventory.py`** reads `show ip arp <subinterface>`. An ARP table is a snapshot of who has spoken, not an inventory of what exists — a host quiet longer than the four-hour timeout is simply absent, and a stale entry outlives its host — so the CSV carries the age column and marks the two rows that are not hosts: the router's own address (age `-`), and an incomplete entry, which is an ARP request nothing answered. An incomplete entry prints no interface, which makes filtering by interface a question about where the output came from: output the router itself filtered is all one interface's by construction, a pasted whole table is not, and guessing wrong would attribute a host to the wrong segment.
+- **`pdf_ips.py`** reads a Visio-exported PDF, parsing the file itself — objects, page tree, content streams, text-showing operators — because the host it runs on has no PDF library and cannot be given one. The limit worth knowing is that it reads *text*: a diagram flattened to an image contains pixels that look like text to a person and nothing to a parser. That case is reported as "this file has no text in it", not as an empty result, because an empty CSV reads like "the diagram has no addresses on it". Text in a PDF also has no reading order beyond the order it was drawn in, so the `context` column is the text drawn around each address — usually its label, sometimes the label of the next box over. It is a hint for finding the address on the page, and the tool says so rather than presenting it as an assertion.
+
 ## Captures arrive in whatever encoding saved them
 
 The work switches are reachable only through PowerShell or SecureCRT, and both of PowerShell's obvious ways to save output add a byte order mark: `>` and `Out-File` default to UTF-16LE on Windows PowerShell 5.1, and `Out-File -Encoding utf8` writes UTF-8 with a BOM. Read as plain UTF-8, neither failed in a way that named its cause — a UTF-8 BOM glues itself to the first delimiter line, so only `show running-config` goes missing, and UTF-16 decodes to NUL-riddled text matching nothing at all. Both refusals are correct and neither is actionable, which on someone else's network costs a second trip to the switch. `capture.py` sniffs the BOM instead, and a UTF-16 file with the BOM stripped — the one case that cannot be sniffed — names the encoding in its error.

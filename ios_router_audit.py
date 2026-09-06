@@ -946,6 +946,12 @@ CHECKS = {
 # Parse the target device from the command line
 parser = argparse.ArgumentParser(description='Audit a device against DISA IOS Router STIG rules from New IOS Router Checklist.cklb')
 parser.add_argument('device', help='Device name as it appears in inventory.yaml (e.g. R1)')
+parser.add_argument('--to-cklb', metavar='PATH', dest='to_cklb',
+                    help='Also write the verdicts into a STIG Viewer 3 checklist at PATH, so '
+                         'the report does not have to be retyped rule by rule. PASS/FAIL/NOT '
+                         'APPLICABLE become not_a_finding/open/not_applicable; NOT AUTOMATED '
+                         'becomes not_reviewed, never not_a_finding. Re-running over an existing '
+                         'export refreshes the verdicts and keeps any comments a reviewer added.')
 args = parser.parse_args()
 
 device_name = args.device
@@ -989,4 +995,5 @@ stig_common.run_stig_audit(
     title='IOS Router STIG audit',
     username=username, password=password,
     not_automated_note='need manual review, topology/policy context, or external infrastructure',
+    to_cklb=args.to_cklb,
 )

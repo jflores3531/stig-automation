@@ -12,6 +12,23 @@ ansible/reports/
 # network. This repository is public. Never commit one.
 captures/
 
+# Redacted copies of captures, wherever they are written. Redaction removes
+# what it has rules for; a capture can carry anything, and a file that is safe
+# enough to hand to one person is not thereby safe to publish.
+*.redacted.capture
+*.redacted.txt
+
+# Filled-in STIG Viewer checklists (`--to-cklb`) and the CSVs the addressing
+# tools write. The blank checklists in checklists/ are tracked; a completed one
+# names a device and its findings.
+checklists/out/
+*.cklb.filled
+
+# The CSVs arp_inventory.py and pdf_ips.py write. Both are lists of real
+# addressing off a real network, which is the thing this repo most carefully
+# does not commit. Nothing tracked here is a .csv.
+*.csv
+
 # Plaintext secrets used by the *_stig_harden.py scripts (VTP password, NTP auth
 # key, etc.) - never commit this. See secrets.yaml.example for the format.
 secrets.yaml

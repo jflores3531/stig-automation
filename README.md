@@ -23,6 +23,10 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 - **`secrets.yaml`** (gitignored) — Plaintext secrets for the `*_stig_harden*.py` scripts. Copy `secrets.yaml.example` to start.
 - **`yaml.py`** — Stand-in for PyYAML on hosts where nothing can be installed: `safe_load` reads the inventory with the stdlib `json` parser. It shadows any real PyYAML present, which is harmless while `inventory.yaml` stays JSON — that parses under either.
 
+### Reading what is already out there
+- **`arp_inventory.py`** — What is actually live on a subinterface, from the router's ARP table, as a CSV. Reads a device from `inventory.yaml` or a pasted `show ip arp` with `--from-file`. The router's own address, and an incomplete entry (an ARP request nothing answered), are marked as what they are rather than listed as hosts.
+- **`pdf_ips.py`** — The addresses out of a PDF network diagram — a Visio export, usually — into a CSV with the page and the label drawn beside each one. Parses the PDF itself (objects, page tree, content streams) because the host it runs on has no PDF library and cannot get one. A diagram flattened to an image has no text to find, and that is reported as itself rather than as a diagram with no addresses on it.
+
 ### Backup & save
 - **`backup_config.py`** — Back up running-config + VLANs; keeps a "latest" copy per device plus a timestamped archive pruned to 5.
 - **`config_diff.py`** — Compare current running-config/VLANs against the last backup.
@@ -33,7 +37,8 @@ Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX
 - **`securecrt/capture_l2s.py`** — Runs *inside* SecureCRT (Script → Run) against an already-open session, sending the six read-only show commands — plus one per interface template the config turns out to source — and writing a capture file — then, when it finds the repo next to itself, runs the audit and opens the report, making the whole flow one action: connect, run script, read report. Collection is standalone by design (no netmiko, no repo imports), and the offline audit itself needs only Python — `yaml.py` stands in for PyYAML and netmiko is imported lazily, only when a live connection is actually opened.
 - **`securecrt/capture_l2s_bulk.py`** — The same collection unattended, across every saved SecureCRT session: connect, send the six commands, write a capture, disconnect. It never aborts — a switch that is offline, in a login quiet period or refusing credentials is logged and skipped, because on a fleet of hundreds not all of them answer on a given night. Deliberately separate from `capture_l2s.py`, which cannot connect to anything and so cannot be pointed at the wrong device; this one logs into every switch on its own authority, which is a materially different thing to put in front of whoever approved the tooling. Copy both files together — it imports the guards, command list and capture format from `capture_l2s.py` rather than duplicating them.
 - **`capture.py`** — Offline auditing. Every check is a pure function of command output, so an audit can read a capture file instead of a switch — for networks where the tooling can't be pointed at the devices directly. A malformed, truncated or partial capture is refused rather than audited, since a check handed empty text returns a verdict just as confidently as one handed real config. Which commands a capture must cover is partly a fact about the capture: a config whose interfaces say `source template <name>` must also carry that template, or the per-port rules would be answered against configuration nobody read.
-- **`l2_stig_audit.py`** — Audit against the IOS XE Switch L2S/NDM STIG (the default) or the IOS Switch one (`--checklist ios` — what the lab's vios_l2 switches are). Full interface-scoped coverage, live discovery for root ports/VTP/user VLANs. `--from-capture` audits collected output; `--capture-to` records a live run so the two can be compared. Interface templates are read and expanded into the ports that source them, so a templated port is audited on what it is actually configured with — see [`docs/DESIGN.md`](docs/DESIGN.md).
+- **`sanitize_capture.py`** — Redact a capture so it can leave the network it came from: addressing, hostnames, VLAN names and IDs, ACL names, descriptions, credentials, certificates and serials, overwritten with placeholders rather than swapped for consistent fakes. It scans its own output before writing and refuses the file if anything still looks sensitive, because a partially redacted capture is more dangerous than none — it gets treated as safe. The redacted copy is for reading, not for re-auditing: the placeholders change verdicts.
+- **`l2_stig_audit.py`** — Audit against the IOS XE Switch L2S/NDM STIG (the default) or the IOS Switch one (`--checklist ios` — what the lab's vios_l2 switches are). Full interface-scoped coverage, live discovery for root ports/VTP/user VLANs. `--from-capture` audits collected output; `--capture-to` records a live run so the two can be compared; `--to-cklb` writes the verdicts into a STIG Viewer 3 checklist instead of leaving them to be retyped. Interface templates are read and expanded into the ports that source them, so a templated port is audited on what it is actually configured with — see [`docs/DESIGN.md`](docs/DESIGN.md).
 - **`ios_xe_rule_map.py`** — The IOS and IOS XE switch STIGs share no rule IDs, but 60 of the IOS XE STIG's 64 rules are the same requirement as an IOS rule already checked here. This maps them, accepting a pair only when the literal "this is a finding" condition matches in both. Three more — NTP, PKI and QoS — the IOS XE book asks differently enough to need their own checks, which live in `l2_stig_audit.py` rather than the map: re-keying the IOS predicate onto them would answer a different question. One rule (configuration backups) is deliberately excluded and reports NOT AUTOMATED, because nothing on the switch can answer it.
 - **`nxos_stig_audit.py`** — Audit against the NX-OS Switch L2S/NDM STIG.
 - **`ios_router_audit.py`** — Audit against the IOS Router NDM/RTR STIG. Most RTR rules need topology/policy context and report NOT AUTOMATED.
@@ -121,6 +126,27 @@ python3 l2_stig_audit.py S1 --checklist ios --from-capture captures/S1.capture
 # An IOS XE switch needs no flag - that checklist is the default.
 python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture
 
+# Write the verdicts straight into a STIG Viewer 3 checklist instead of
+# retyping 64 rules. PASS/FAIL/NOT APPLICABLE become not_a_finding/open/
+# not_applicable; NOT AUTOMATED becomes not_reviewed, never not_a_finding.
+# Re-running over the same file refreshes the verdicts and keeps whatever
+# comments a reviewer has added to it.
+python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
+    --to-cklb checklists/out/SW01.cklb
+
+# Redact a capture so it can be shown to someone off the network. Writes
+# <name>.redacted.capture beside it, and refuses to write anything at all if a
+# value it recognises as sensitive survives the pass.
+python3 sanitize_capture.py captures/SW01.capture
+python3 sanitize_capture.py captures/SW01.capture --also-redact "PROJECT NAME"
+
+# Addressing from places other than a config: the ARP table of a subinterface,
+# and a diagram someone sent as a PDF.
+python3 arp_inventory.py R1 --interface Gi0/0.100 -o vlan100.csv
+python3 arp_inventory.py R1 --from-file pasted-arp.txt --interface Gi0/0.100
+python3 pdf_ips.py diagram.pdf -o addressing.csv
+python3 pdf_ips.py diagram.pdf --all-text   # what it saw, when an answer looks wrong
+
 # Fleet-sized: collect from every saved SecureCRT session by running
 # securecrt/capture_l2s_bulk.py inside SecureCRT, then audit the lot in one
 # pass. Collection and audit stay separate so a failed audit can't be
@@ -155,7 +181,7 @@ python3 save_config.py            # or every device in the inventory
 
 # Tests - no framework, no device needed. A fresh clone has no inventory.yaml
 # (gitignored), and the suites that drive the audit through the CLI need one -
-# the example's placeholder values are enough to make all eight pass.
+# the example's placeholder values are enough to make all of them pass.
 cp inventory.yaml.example inventory.yaml
 python3 tests/test_capture.py
 python3 tests/test_ios_xe_map.py
@@ -165,6 +191,11 @@ python3 tests/test_securecrt_bulk.py
 python3 tests/test_user_vlans.py
 python3 tests/test_interface_templates.py
 python3 tests/test_false_fails.py
+python3 tests/test_manual_review_rules.py
+python3 tests/test_cklb_export.py
+python3 tests/test_sanitize_capture.py
+python3 tests/test_arp_inventory.py
+python3 tests/test_pdf_ips.py
 ```
 
 ## Notes

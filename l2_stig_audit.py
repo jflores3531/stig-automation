@@ -1608,6 +1608,12 @@ parser.add_argument('--capture-to', metavar='PATH', dest='capture_to',
                          'capture file. Re-running with --from-capture against that file must '
                          'produce an identical report, which is how the offline path is verified '
                          'against a switch. Read-only; nothing is pushed.')
+parser.add_argument('--to-cklb', metavar='PATH', dest='to_cklb',
+                    help='Also write the verdicts into a STIG Viewer 3 checklist at PATH, so '
+                         'the report does not have to be retyped rule by rule. PASS/FAIL/NOT '
+                         'APPLICABLE become not_a_finding/open/not_applicable; NOT AUTOMATED '
+                         'becomes not_reviewed, never not_a_finding. Re-running over an existing '
+                         'export refreshes the verdicts and keeps any comments a reviewer added.')
 args = parser.parse_args()
 
 if args.capture_to and args.from_capture:
@@ -1801,4 +1807,5 @@ stig_common.run_stig_audit(
     title=audit_title,
     username=username, password=password,
     session=audit_session,
+    to_cklb=args.to_cklb,
 )
