@@ -141,8 +141,8 @@ python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture
 # Write the verdicts straight into a STIG Viewer 3 checklist instead of
 # retyping 64 rules. PASS/FAIL/NOT APPLICABLE become not_a_finding/open/
 # not_applicable; NOT AUTOMATED becomes not_reviewed, never not_a_finding.
-# Re-running over the same file refreshes the verdicts and keeps whatever
-# comments a reviewer has added to it.
+# Re-running over the same file re-derives everything from the new capture,
+# including both text boxes - see "Getting a report into STIG Viewer 3".
 python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
     --to-cklb checklists/out/SW01.cklb
 
@@ -150,7 +150,7 @@ python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
 # <hostname>_<DDMMMYYYY>_<the checklist's own STIG versions>.cklb, e.g.
 # SW01_06AUG2026_L2S_V3R2_NDM_V3R6.cklb. The hostname is the switch's own and
 # the date is the capture's, so re-running on the same day writes the same
-# file - which is what keeps a reviewer's comments.
+# file rather than piling up one per run.
 python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
     --to-cklb checklists/out
 
@@ -253,7 +253,7 @@ The switch, the date the capture was taken, and the version and release of each 
 checklist it was audited against - read out of that checklist, so pointing the audit at next
 quarter's `.cklb` moves the versions in the name with it. The date carries no time of day: two
 exports of one switch on one day are the same audit re-run, and writing to the same file is what
-keeps a reviewer's comments (step 5). Pass a path ending in `.cklb` instead and that exact path is
+writes one file per switch per day. Pass a path ending in `.cklb` instead and that exact path is
 used, as before. Either way the output directory is created if it does not exist.
 
 The name you pass on the command line (`SW01`) is only a label when auditing a capture. The
@@ -302,22 +302,25 @@ rule arrives with its status set and its reason written into whichever box that 
 | `not_applicable` | **Comments** | Where a not-applicable justification is expected |
 | `not_reviewed` (NOT AUTOMATED) | **Comments** | How far the audit got on a rule you now have to finish |
 
-The note the audit writes into **Comments** starts with a `[Automated audit <date>]` marker line.
-Anything you write *above* that line is yours and survives a re-run untouched; everything from the
-marker down is replaced each time. That matters most on the `not_reviewed` rules, where you are
-answering in the same box the audit wrote in: put your answer at the top and it stays there.
+**A re-run replaces both boxes.** The checklist states what one capture said, so the new capture
+wins outright: status, Finding Details and Comments are all re-derived, and the box a verdict does
+not use is cleared rather than left holding the previous run's sentence. Anything typed into
+Comments in STIG Viewer is therefore gone on the next run over the same path — including answers on
+`not_reviewed` rules. Keep those somewhere the audit does not write, or export to a new path when
+you want to keep an annotated copy. The one thing carried over is a **severity override**, which is
+a decision about how much a finding matters at your site rather than a reading of the switch.
 
-**5. Answer what the tool could not, then re-run.** The `not_reviewed` rules are the ones needing a
-person - the configuration-backup server, for instance. Put your answer in that rule's
-**Comments** box in STIG Viewer and save. After the next fix and re-capture, run the same command
-at the same path:
+**5. Answer what the tool could not.** The `not_reviewed` rules are the ones needing a person - the
+configuration-backup server, for instance. Put your answer in that rule's **Comments** box in STIG
+Viewer and save. Note the rule above: re-running the audit at the same path overwrites it, so do
+your answering on the copy you are going to keep, or re-run to a different folder first:
 
 ```powershell
 python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
 ```
 
-Statuses and the audit's own notes are re-derived from the new capture; what you wrote stays. The
-audit owns the verdict, you own the commentary.
+Everything but a severity override is re-derived from the new capture. The audit owns the verdict
+and both text boxes; what it says about a switch is always what the latest capture said about it.
 
 A live run is the same flag, and prompts for credentials:
 

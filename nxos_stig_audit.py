@@ -908,7 +908,8 @@ parser.add_argument('--to-cklb', metavar='PATH', dest='to_cklb',
                          'the report does not have to be retyped rule by rule. PASS/FAIL/NOT '
                          'APPLICABLE become not_a_finding/open/not_applicable; NOT AUTOMATED '
                          'becomes not_reviewed, never not_a_finding. Re-running over an existing '
-                         'export refreshes the verdicts and keeps any comments a reviewer added.')
+                         'export re-derives everything from the new capture, including both text '
+                         'boxes: a comment typed into STIG Viewer does not survive it.')
 args = parser.parse_args()
 
 device_name = args.device

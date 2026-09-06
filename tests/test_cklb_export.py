@@ -12,11 +12,16 @@ the same run printed, and `NOT AUTOMATED -> not_reviewed` is asserted on its
 own, because that is the one whose failure mode is silent - "nothing looked at
 this" becoming "a reviewer confirmed it complies".
 
-The other half is what a second run does. A checklist that has been opened is
-no longer only this tool's output: the audit owns `status` and
-`finding_details` and re-derives both, the reviewer owns `comments`. A re-run
-that wiped the reviewer's notes would take exactly the rules that needed a
-human with it.
+The other half is what a second run does. A checklist is a statement about what
+one capture said, so the new capture wins outright: status, finding_details and
+comments are all re-derived, and the box a verdict does not use is cleared
+rather than left holding the previous run's sentence. The one thing carried
+over is a severity override - a decision about how much a finding matters here,
+not a reading of the switch, and nothing in this repository can re-derive it.
+
+That means an answer typed into Comments in STIG Viewer does not survive the
+next run over the same path. It is the intended trade, and it is asserted below
+rather than left to be discovered.
 """
 
 import json
@@ -117,12 +122,12 @@ def test_export(tmpdir, capture_path):
         check('a finding is evidenced in Finding Details, not Comments',
               finding['finding_details'].strip() and 'Reported FAIL' in finding['finding_details'],
               finding['finding_details'])
-        check('and Comments is left to the reviewer',
-              stig_common.AUDIT_NOTE_MARKER not in finding['comments'], finding['comments'])
+        check('and its Comments box is left empty',
+              not finding['comments'].strip(), finding['comments'])
 
     passing = [group_id for group_id, status in printed.items() if status == 'PASS']
     check('a PASS is justified in Comments too',
-          passing and all(stig_common.AUDIT_NOTE_MARKER in rules[g]['comments']
+          passing and all(rules[g]['comments'].strip()
                           and not rules[g]['finding_details'].strip() for g in passing),
           [(g, rules[g]['finding_details'], rules[g]['comments'][:60]) for g in passing[:2]])
 
@@ -131,50 +136,54 @@ def test_export(tmpdir, capture_path):
     return out
 
 
-def test_rerun_keeps_reviewer_comments(tmpdir, capture_path, out):
-    print('\na second run refreshes verdicts and keeps the reviewer\'s notes')
+def test_rerun_overwrites_what_was_there(tmpdir, capture_path, out):
+    """A checklist is a statement about what a capture said, so the new capture
+    wins outright: status, finding_details and comments are all re-derived, and
+    the box a verdict does not use is cleared rather than left holding the last
+    run's sentence.
+
+    The one thing carried over is a severity override, which is a decision
+    about how much a finding matters at this site rather than a reading of the
+    switch - nothing here can re-derive it."""
+    print('\na second run re-derives everything from the new capture')
     checklist, rules = rules_of(out)
-    note = 'Confirmed with the backup admins 2026-09-06: SCP to the config server, weekly.'
+    typed = 'Confirmed with the backup admins 2026-09-06: SCP to the config server, weekly.'
+    override = {'severity': {'severity': 'low', 'justification': 'compensating control'}}
     for stig in checklist['stigs']:
         for rule in stig['rules']:
-            if rule['group_id'] == 'V-220566':
-                rule['comments'] = note
-            if rule['group_id'] == 'V-220651':
-                # A verdict a reviewer disagreed with and edited by hand. The
-                # audit owns this field, so the re-run is expected to take it
-                # back - the comment beside it is what must survive. V-220651
-                # passes, so the audit writes its own note into this same box:
-                # the reviewer's words go above the marker and have to come
-                # back out from under it unchanged.
+            if rule['group_id'] == 'V-220566':      # NOT AUTOMATED
+                rule['comments'] = typed
+                rule['overrides'] = override
+            if rule['group_id'] == 'V-220651':      # PASS, edited by hand
                 rule['status'] = 'open'
-                rule['comments'] = 'Reviewed by hand.\n\n' + rule['comments']
+                rule['comments'] = 'Reviewed by hand.'
+                rule['finding_details'] = 'Left over from an earlier run.'
     with open(out, 'w', encoding='utf-8') as checklist_file:
         json.dump(checklist, checklist_file, indent=2)
 
     result = run_audit(tmpdir, capture_path, '--to-cklb', out)
     check('the second run exits cleanly', result.returncode == 0, result.stderr[-500:])
-    check('and says how many comments it kept',
-          'keeping reviewer comments on 2 rule(s)' in result.stdout,
-          result.stdout.splitlines()[-1] if result.stdout else '')
 
     _, rules = rules_of(out)
-    # V-220566 is NOT AUTOMATED - the rule a person has to answer themselves,
-    # and the one where the audit shares their box. Their words stay at the top
-    # of it, untouched, with the audit's note below the marker.
     unreviewed = rules['V-220566']['comments']
-    check('the reviewer\'s comment survives', unreviewed.startswith(note), unreviewed)
-    check('with the audit\'s note below it rather than instead of it',
-          unreviewed.count(stig_common.AUDIT_NOTE_MARKER) == 1
-          and 'Reported NOT AUTOMATED' in unreviewed, unreviewed)
-    # V-220651 passes, so the audit shares the Comments box with them. Its own
-    # note is replaced; theirs is not, and does not accumulate a second copy.
-    kept_comment = rules['V-220651']['comments']
-    check('so does one on a rule the audit writes its own note into',
-          kept_comment.startswith('Reviewed by hand.'), kept_comment)
-    check('and the audit\'s note is replaced rather than stacked up',
-          kept_comment.count(stig_common.AUDIT_NOTE_MARKER) == 1, kept_comment)
-    check('but the status is re-derived, not inherited',
-          rules['V-220651']['status'] == 'not_a_finding', rules['V-220651']['status'])
+    check('a comment typed into STIG Viewer is replaced, not merged',
+          typed not in unreviewed and 'Reported NOT AUTOMATED' in unreviewed, unreviewed)
+    check('and it is the new run that wrote it, only once',
+          unreviewed.count('Reported') == 1, unreviewed)
+
+    passing = rules['V-220651']
+    check('a hand-edited comment is replaced too',
+          'Reviewed by hand.' not in passing['comments'], passing['comments'])
+    check('the status is re-derived, not inherited',
+          passing['status'] == 'not_a_finding', passing['status'])
+    check('and the box this verdict does not use is cleared',
+          not passing['finding_details'].strip(), passing['finding_details'])
+
+    # The exception, and the only one.
+    check('a severity override survives, since nothing here can re-derive it',
+          rules['V-220566']['overrides'] == override, rules['V-220566']['overrides'])
+    check('and the run says so', 'keeping severity overrides on 1 rule(s)' in result.stdout,
+          result.stdout.splitlines()[-1] if result.stdout else '')
 
 
 def test_refuses_the_template(tmpdir, capture_path):
@@ -204,7 +213,7 @@ if __name__ == '__main__':
         path = capture.write(os.path.join(tmp, 'x.capture'), fixtures.OUTPUTS)
         exported = test_export(tmp, path)
         if exported:
-            test_rerun_keeps_reviewer_comments(tmp, path, exported)
+            test_rerun_overwrites_what_was_there(tmp, path, exported)
         test_refuses_the_template(tmp, path)
         test_no_flag_writes_nothing(tmp, path)
     print('\n' + ('ALL CHECKS PASSED' if not failures

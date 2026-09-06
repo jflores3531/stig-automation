@@ -352,8 +352,7 @@ def checklist_filename(checklist_path, device_name, captured_on=None):
     Date, not timestamp: two exports of the same switch on the same day are the
     same audit re-run, and a second file differing only in its minute is
     clutter rather than history. Re-running over the first one is also what
-    keeps a reviewer's comments (see _existing_annotations), which a
-    timestamped name would silently lose."""
+    keeps one file per switch per day rather than a pile of them."""
     captured_on = captured_on or datetime.date.today()
     label = checklist_stig_label(checklist_path)
     stamp = captured_on.strftime('%d%b%Y').upper()
@@ -382,27 +381,31 @@ def resolve_cklb_path(to_cklb, checklist_path, device_name, captured_on=None, ta
     return os.path.join(to_cklb, checklist_filename(checklist_path, host, captured_on))
 
 
-def _existing_annotations(output_path):
-    """Per-rule `comments` and `overrides` already in the file being replaced.
+def _existing_overrides(output_path):
+    """Per-rule severity `overrides` already in the file being replaced.
 
-    A checklist that has been opened once is not just this tool's output any
-    more. The division of labour is: the audit owns `status`, and writes its
-    own note into `finding_details` or `comments` depending on the verdict (see
-    NOTE_IN_COMMENTS); the reviewer owns everything else they typed and any
-    severity `overrides`, none of which this can re-derive. Re-running the
-    audit over yesterday's export therefore updates the verdicts and keeps the
-    notes - without this, the second run silently deletes the reviewer's work
-    on exactly the rules they had to answer by hand."""
+    The only thing carried over from an earlier export. A checklist is a
+    statement about what a capture said, and every part of that statement is
+    re-derived from the new capture on every run: status, finding_details and
+    comments are all overwritten, so a rule cannot keep a note describing a
+    switch as it was two captures ago.
+
+    A severity override is not such a statement. It is a decision about how
+    much a finding matters at this site, it applies to the rule rather than to
+    the reading, and nothing here can re-derive it - so it survives.
+
+    The cost of the rest being overwritten is real and worth knowing: an answer
+    typed into Comments in STIG Viewer is gone on the next run over the same
+    path. Answers that have to last belong somewhere the audit does not write."""
     if not os.path.exists(output_path):
         return {}
     try:
         with open(output_path, encoding='utf-8') as existing_file:
             existing = json.load(existing_file)
         return {
-            rule['group_id']: {'comments': rule.get('comments', ''),
-                               'overrides': rule.get('overrides', {})}
+            rule['group_id']: rule.get('overrides', {})
             for stig in existing.get('stigs', []) for rule in stig.get('rules', [])
-            if rule.get('comments') or rule.get('overrides')
+            if rule.get('overrides')
         }
     except (ValueError, KeyError, OSError):
         # Not a readable .cklb - a stray file with the same name, or one
@@ -420,29 +423,11 @@ def _existing_annotations(output_path):
 # and a not_reviewed rule's note is the audit saying how far it got on a rule
 # somebody now has to finish.
 #
-# not_reviewed sharing Comments with the reviewer is exactly why the marker
-# below exists: those are the rules a person types their own answer into, and
-# their answer has to survive the next run intact.
+# Both boxes are the audit's, and both are rewritten from the new capture every
+# run - see _existing_overrides for what that costs and why it is the trade
+# being made. Nothing is merged with what was there before, so no rule can end
+# up carrying one sentence about this capture and another about the last one.
 NOTE_IN_FINDING_DETAILS = ('FAIL',)
-
-# The audit's own note, wherever it lands in Comments, is marked so a re-run
-# can replace it without touching whatever the reviewer wrote around it.
-# Everything from this marker to the end of the box is the audit's; everything
-# above it is theirs and is kept verbatim.
-#
-# The alternative - the audit simply owning Comments on the rules it writes to -
-# would silently delete a reviewer's note on any rule that passes, which is the
-# exact failure _existing_annotations exists to prevent. A visible marker line
-# costs one line in STIG Viewer and makes the ownership legible to the person
-# reading it, rather than only to this file.
-AUDIT_NOTE_MARKER = '[Automated audit'
-
-
-def _reviewer_part(comment):
-    """What a reviewer wrote in a Comments box, with any note a previous run of
-    this audit left behind removed."""
-    index = (comment or '').find(AUDIT_NOTE_MARKER)
-    return (comment if index == -1 else comment[:index]).rstrip()
 
 
 def _audit_note(reason, title, source, stamp, status):
@@ -481,11 +466,10 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
     # verdicts had actually moved.
     run_at = run_at or datetime.datetime.now()
     stamp = run_at.strftime('%Y-%m-%d')
-    kept = _existing_annotations(output_path)
+    kept_overrides = _existing_overrides(output_path)
     answered = {group_id: (status, reason) for status, _rule, group_id, reason in findings}
 
     counts = {}
-    kept_reviewer = set()
     for stig in checklist.get('stigs', []):
         for rule in stig.get('rules', []):
             group_id = rule.get('group_id')
@@ -498,28 +482,19 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
             status, reason = answered[group_id]
             rule['status'] = CKLB_STATUS[status]
             note = _audit_note(reason, title, source, stamp, status)
-            reviewer = _reviewer_part(kept.get(group_id, {}).get('comments', ''))
-            if reviewer or kept.get(group_id, {}).get('overrides'):
-                # Counted here rather than from `kept`, which also holds this
-                # audit's own notes from the last run. Reporting those back as
-                # reviewer comments would claim a file full of human work on
-                # the second run of a switch nobody has opened yet.
-                kept_reviewer.add(group_id)
 
+            # Both boxes are written every run, and the one this verdict does
+            # not use is cleared rather than left alone: a rule that fails today
+            # and passes tomorrow would otherwise keep yesterday's finding in
+            # Finding Details underneath a Comments note saying it passes.
             if status in NOTE_IN_FINDING_DETAILS:
                 rule['finding_details'] = note
-                rule['comments'] = reviewer
+                rule['comments'] = ''
             else:
-                # Not a finding: nothing to evidence, so Finding Details is
-                # left empty and the reason for the verdict goes to Comments,
-                # under whatever the reviewer has written there. Only here does
-                # the note carry the marker, because only here is it sharing a
-                # box with someone else's writing.
-                marked = f'{AUDIT_NOTE_MARKER} {stamp}]\n{note}'
                 rule['finding_details'] = ''
-                rule['comments'] = f'{reviewer}\n\n{marked}' if reviewer else marked
-            if group_id in kept:
-                rule['overrides'] = kept[group_id]['overrides']
+                rule['comments'] = note
+            if group_id in kept_overrides:
+                rule['overrides'] = kept_overrides[group_id]
             counts[rule['status']] = counts.get(rule['status'], 0) + 1
 
     target = checklist.setdefault('target_data', {})
@@ -543,8 +518,8 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
 
     summary = ', '.join(f'{counts.get(status, 0)} {status}'
                         for status in ('not_a_finding', 'open', 'not_applicable', 'not_reviewed'))
-    kept_note = (f', keeping reviewer comments on {len(kept_reviewer)} rule(s)'
-                 if kept_reviewer else '')
+    kept_note = (f', keeping severity overrides on {len(kept_overrides)} rule(s)'
+                 if kept_overrides else '')
     return f'Wrote {output_path} for STIG Viewer 3: {summary}{kept_note}.'
 
 def exec_timeout_ok(cfg, max_minutes=5):
