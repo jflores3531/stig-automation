@@ -449,8 +449,16 @@ ACCEPT_HOST_KEYS = True
 # Rather than assume a version, the first connection that fails this way drops
 # the flag for the rest of the run and tries again - so an old SecureCRT costs
 # one retry, not the whole walk.
+#
+# 'hostname is required' is here because a real build answers the flag exactly
+# that way: "A hostname is required for the specific protocol." It reads like
+# a complaint about the session rather than about the option, which is what
+# made it worth an afternoon - every switch came back unreachable, on a fleet
+# that was reachable by hand. Whatever the wording, the recovery is the same
+# one, so it belongs in the same list rather than in a case of its own.
 _UNKNOWN_OPTION_MARKERS = ('invalid option', 'unknown option', 'unrecognized',
-                           'invalid argument', 'invalid command line')
+                           'invalid argument', 'invalid command line',
+                           'hostname is required')
 
 
 def _connect_string(session_path, accept_host_keys):

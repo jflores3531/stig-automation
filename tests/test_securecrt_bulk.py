@@ -83,8 +83,12 @@ class FakeSession:
         self.crt.attempts.append(session)
         self.crt.connect_strings.append(connect_string)
         if self.crt.reject_host_key_flag and '/ACCEPTHOSTKEYS' in connect_string:
-            # An old build refusing an option it does not know.
-            self.crt.last_error = 'Invalid option: /ACCEPTHOSTKEYS'
+            # A build refusing an option it does not know. Pass a string for
+            # reject_host_key_flag to refuse it in that build's own words.
+            self.crt.last_error = (
+                self.crt.reject_host_key_flag
+                if isinstance(self.crt.reject_host_key_flag, str)
+                else 'Invalid option: /ACCEPTHOSTKEYS')
             raise Exception(self.crt.last_error)
         outcome = self.crt.behaviour.get(session, 'ok')
         if outcome != 'ok':
@@ -621,6 +625,22 @@ def test_host_keys_are_accepted_without_a_dialog(tmpdir):
     check('and only the first switch pays for finding that out',
           sum('/ACCEPTHOSTKEYS' in text for text in older.connect_strings) == 1,
           older.connect_strings)
+
+    # The wording that cost an afternoon on a real build. It complains about
+    # the session rather than about the option, so it read as a fleet that had
+    # gone unreachable overnight - every switch, on a network that answered by
+    # hand. The recovery is the same one; only the recognising was missing.
+    quirky = run_walker(tmpdir, [('sw-d', '10.0.12.4'), ('sw-e', '10.0.12.5')], {},
+                        reject_host_key_flag='A hostname is required for the '
+                                             'specific protocol.')
+    check('a build that refuses the flag in its own words still gets its switches',
+          outcomes(tmpdir).get('sw-d') == 'checklisted'
+          and outcomes(tmpdir).get('sw-e') == 'checklisted', outcomes(tmpdir))
+    check('nothing is left logged as unreachable on a reachable fleet',
+          'unreachable' not in set(outcomes(tmpdir).values()), outcomes(tmpdir))
+    check('and that build, too, pays for it exactly once',
+          sum('/ACCEPTHOSTKEYS' in text for text in quirky.connect_strings) == 1,
+          quirky.connect_strings)
 
 
 def test_no_audit_here_falls_back_to_captures(tmpdir):
