@@ -202,7 +202,7 @@ def read_inventory(prompt=None):
 
 def main():
     folder = crt.Dialog.Prompt(
-        'Session folder to walk, e.g. "Switches\\Site A".\n'
+        'Session folder to walk, e.g. "Switches/Site A".\n'
         'Leave blank to walk every saved session.',
         'Inventory - scope', '', False)
     if folder is None:

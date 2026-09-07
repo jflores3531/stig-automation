@@ -150,7 +150,13 @@ def find_sessions(folder_filter=''):
     """Every saved session, as (session_path, hostname) pairs.
 
     session_path is what /S expects: the path as shown in the Connect dialog,
-    relative to Sessions\\ and without the .ini extension."""
+    relative to Sessions/ and without the .ini extension. SecureCRT's own
+    session database uses a forward slash between a folder and the session
+    inside it - not the backslash a Windows path would suggest - so a folder
+    is joined onto its session with '/' regardless of the OS path separator
+    os.path.relpath happens to use to get there. Get this wrong and /S never
+    resolves a session that lives in a folder at all: SecureCRT reports it
+    not found rather than a mismatched connection."""
     root = os.path.join(config_path(), 'Sessions')
     if not os.path.isdir(root):
         return []
@@ -163,7 +169,7 @@ def find_sessions(folder_filter=''):
             if name in SKIP_SESSIONS:
                 continue
             full = os.path.join(dirpath, filename)
-            relative = os.path.relpath(full, root)[:-len('.ini')].replace('/', '\\')
+            relative = os.path.relpath(full, root)[:-len('.ini')].replace('\\', '/')
             if folder_filter and not relative.lower().startswith(folder_filter.lower()):
                 continue
             found.append((relative, session_hostname(full)))
@@ -206,9 +212,12 @@ def session_name_parts(session_path):
     Returns ('', '') when the session's leaf name does not contain " - ", so a
     session that was never named this way - a lab box, a jump host, a test
     fixture - is left alone rather than misread. Only the leaf is looked at:
-    a session filed under a folder ("Site A\\10.1.2.3 - 5-200") still parses
-    on the part after the last folder separator."""
-    leaf = session_path.rsplit('\\', 1)[-1]
+    a session filed under a folder ("Site A/10.1.2.3 - 5-200") still parses
+    on the part after the last folder separator - '/', the same one
+    find_sessions() joins a folder onto its session with, and what SecureCRT's
+    own session database actually uses (not the backslash a Windows path
+    would suggest)."""
+    leaf = session_path.rsplit('/', 1)[-1]
     ip, separator, label = leaf.partition(' - ')
     if not separator:
         return '', ''
@@ -517,7 +526,7 @@ def disconnect():
 
 def main():
     folder = crt.Dialog.Prompt(
-        'Session folder to walk, e.g. "Switches\\Site A".\n'
+        'Session folder to walk, e.g. "Switches/Site A".\n'
         'Leave blank to walk every saved session.',
         'Bulk capture - scope', '', False)
     if folder is None:

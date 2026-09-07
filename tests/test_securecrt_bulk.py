@@ -471,6 +471,44 @@ def test_log_columns(tmpdir):
           not timed_out.get('model'), timed_out)
 
 
+def test_find_sessions_joins_a_folder_with_a_forward_slash(tmpdir):
+    """Every other test here stubs find_sessions() out entirely, which is
+    exactly how a real bug shipped unnoticed: SecureCRT's own session database
+    joins a folder onto a session with a forward slash, not the backslash a
+    Windows path would suggest, and /S never resolves a session filed under a
+    folder at all if this is wrong - SecureCRT reports it not found rather
+    than connecting to something unexpected. This is the one test that drives
+    the real function, against real .ini files, rather than replacing it."""
+    print('\nfind_sessions() joins a folder onto its session with a forward slash')
+    sessions_root = os.path.join(tmpdir, 'Sessions')
+    nested = os.path.join(sessions_root, 'DistNode1')
+    os.makedirs(nested)
+    with io.open(os.path.join(nested, '10.1.2.3 - b100-52.ini'), 'w', encoding='utf-8') as handle:
+        handle.write('S:"Hostname"=10.1.2.3\n')
+    with io.open(os.path.join(sessions_root, 'sw-top-level.ini'), 'w', encoding='utf-8') as handle:
+        handle.write('S:"Hostname"=10.1.2.4\n')
+
+    original = bulk.config_path
+    bulk.config_path = lambda: tmpdir
+    try:
+        found = dict(bulk.find_sessions())
+        scoped = dict(bulk.find_sessions('DistNode1'))
+    finally:
+        bulk.config_path = original
+
+    check('a session inside a folder is joined to it with a forward slash',
+          'DistNode1/10.1.2.3 - b100-52' in found, found)
+    check('not the backslash a Windows path would suggest',
+          'DistNode1\\10.1.2.3 - b100-52' not in found, found)
+    check("a top-level session has no separator to get wrong either way",
+          'sw-top-level' in found, found)
+    check("each session's own Hostname field is read correctly either way",
+          found.get('DistNode1/10.1.2.3 - b100-52') == '10.1.2.3'
+          and found.get('sw-top-level') == '10.1.2.4', found)
+    check('scoping to a folder still matches on the same separator',
+          list(scoped) == ['DistNode1/10.1.2.3 - b100-52'], scoped)
+
+
 def test_session_name_parts():
     """This fleet names sessions "<ip> - <bldg/trailer>[-<room/dept>]", and an
     unreachable switch has nothing else to say who it is - so the bldg/
@@ -481,11 +519,11 @@ def test_session_name_parts():
     check('a bldg/trailer with no room is still a whole label',
           bulk.session_name_parts('10.1.2.3 - 5') == ('10.1.2.3', '5'))
     check('a folder prefix does not confuse the parse',
-          bulk.session_name_parts('Site A\\10.1.2.3 - 5-200') == ('10.1.2.3', '5-200'))
+          bulk.session_name_parts('Site A/10.1.2.3 - 5-200') == ('10.1.2.3', '5-200'))
     check('a session not named this way parses to nothing',
           bulk.session_name_parts('sw-b') == ('', ''))
     check('...even one with a folder and a hyphen in it',
-          bulk.session_name_parts('site-a\\sw-1') == ('', ''))
+          bulk.session_name_parts('site-a/sw-1') == ('', ''))
 
     # The fleet's real convention: a building (b) or trailer (t) number, with
     # the room or department folded in by a plain hyphen when there is one.
@@ -599,7 +637,8 @@ def test_stop_file_halts_cleanly(tmpdir):
 
 if __name__ == '__main__':
     test_session_name_parts()
-    for test in (test_offline_switches_do_not_stop_the_run,
+    for test in (test_find_sessions_joins_a_folder_with_a_forward_slash,
+                 test_offline_switches_do_not_stop_the_run,
                  test_rejected_login_is_tried_twice,
                  test_duplicates_collapsed_and_recorded,
                  test_not_a_switch_is_refused,
