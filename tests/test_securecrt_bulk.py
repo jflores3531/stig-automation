@@ -67,6 +67,8 @@ class FakeScreen:
         self.Synchronous = False
         self.prompt = 'SW#'
         self.banner_lines = banner_lines
+        self.read_banner_synchronously = []
+        self.sent_synchronously = []
         self._pending = ''
         self.CurrentRow = 5
         self.CurrentColumn = len(self.prompt) + 1
@@ -74,6 +76,12 @@ class FakeScreen:
     def Get(self, *_args):
         if self.banner_lines > 0:
             self.banner_lines -= 1
+            # In synchronous mode SecureCRT holds the incoming stream until the
+            # script consumes it, and Get() does not - so a banner read this
+            # way backs up behind a buffer nothing is emptying until the switch
+            # drops the channel. Recorded so the test can assert the wait does
+            # not watch a banner in that mode.
+            self.read_banner_synchronously.append(self.Synchronous)
             return BANNER_LINE
         return self.prompt
 
@@ -83,6 +91,10 @@ class FakeScreen:
         # not a command - a real switch answers it with one and nothing else.
         if not command:
             return
+        # Recorded so the test can assert the prompt wait put the walk's own
+        # Synchronous setting back before any command went out - collection
+        # needs it on, or output is lost between Send and ReadString.
+        self.sent_synchronously.append(self.Synchronous)
         body = '' if command == 'terminal length 0' else self.host_outputs.get(command, '')
         self._pending = f'{command}\r\n{body}\r\n'
 
@@ -616,6 +628,18 @@ def test_a_banner_still_arriving_is_waited_out(tmpdir):
     check('and it waited, rather than spinning', fake.slept, fake.slept)
     check('for longer than the 20 seconds a real banner took',
           sum(fake.slept) >= 20000, sum(fake.slept))
+
+    # The wait must not hold the stream while it watches. Synchronous mode
+    # makes SecureCRT keep the incoming banner until the script consumes it,
+    # and polling the painted screen never does - so twenty seconds of banner
+    # backs up until the switch drops the channel, which is a protocol error a
+    # few seconds in on a switch that answered fine.
+    check('the banner was never watched with the stream held',
+          not any(fake.Screen.read_banner_synchronously),
+          fake.Screen.read_banner_synchronously)
+    check("and the walk's own setting is put back before commands are sent",
+          fake.Screen.sent_synchronously
+          and all(fake.Screen.sent_synchronously), fake.Screen.sent_synchronously)
 
     # A banner ruled off in '#' is the trap, and this fixture line is ruled off
     # that way on purpose: it ENDS in one, so "wait until a line ends in #"

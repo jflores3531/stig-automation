@@ -598,21 +598,38 @@ def read_prompt(timeout_seconds=PROMPT_TIMEOUT_SECONDS):
     line. Nothing is configured by it.
 
     Returns '' if no prompt appears within PROMPT_TIMEOUT_SECONDS, which the
-    callers report as the same "no prompt" they always did."""
-    polls = max(1, int(timeout_seconds * 1000 / PROMPT_POLL_MS))
-    for poll in range(polls):
-        row = crt.Screen.CurrentRow
-        column = crt.Screen.CurrentColumn - 1
-        if column >= 1:
-            line = crt.Screen.Get(row, 1, row, column).strip()
-            if _looks_like_a_prompt(line):
-                return line
-        # Nudged only after it has had a chance to arrive on its own, and then
-        # rarely: a banner is not waiting on us, it is simply long.
-        if poll and poll % PROMPT_NUDGE_EVERY == 0:
-            crt.Screen.Send('\r')
-        _sleep(PROMPT_POLL_MS)
-    return ''
+    callers report as the same "no prompt" they always did.
+
+    The banner has to be allowed to drain while this waits, which is why
+    Synchronous is turned off for the duration. In synchronous mode SecureCRT
+    holds the incoming stream until the script reads it, and Screen.Get() -
+    what this polls - reads the painted screen rather than consuming that
+    stream. So a walk that set Synchronous once for the whole run and then sat
+    here watching would let twenty seconds of banner back up behind a buffer
+    nothing was emptying, until the switch gave up on the channel: a protocol
+    error a few seconds in, on a switch that had answered fine. Nothing worth
+    keeping arrives before the prompt does, so there is nothing to lose by
+    letting it through, and the caller's setting is put back before any
+    command is sent."""
+    was_synchronous = getattr(crt.Screen, 'Synchronous', False)
+    crt.Screen.Synchronous = False
+    try:
+        polls = max(1, int(timeout_seconds * 1000 / PROMPT_POLL_MS))
+        for poll in range(polls):
+            row = crt.Screen.CurrentRow
+            column = crt.Screen.CurrentColumn - 1
+            if column >= 1:
+                line = crt.Screen.Get(row, 1, row, column).strip()
+                if _looks_like_a_prompt(line):
+                    return line
+            # Nudged only after it has had a chance to arrive on its own, and
+            # then rarely: a banner is not waiting on us, it is simply long.
+            if poll and poll % PROMPT_NUDGE_EVERY == 0:
+                crt.Screen.Send('\r')
+            _sleep(PROMPT_POLL_MS)
+        return ''
+    finally:
+        crt.Screen.Synchronous = was_synchronous
 
 
 def run_command(command, prompt):
