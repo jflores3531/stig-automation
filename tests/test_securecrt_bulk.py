@@ -487,6 +487,15 @@ def test_session_name_parts():
     check('...even one with a folder and a hyphen in it',
           bulk.session_name_parts('site-a\\sw-1') == ('', ''))
 
+    # The fleet's real convention: a building (b) or trailer (t) number, with
+    # the room or department folded in by a plain hyphen when there is one.
+    check('a building with a numeric room',
+          bulk.session_name_parts('10.1.2.3 - b100-52') == ('10.1.2.3', 'b100-52'))
+    check('a building with a department name instead of a room',
+          bulk.session_name_parts('10.1.2.3 - b500-hr') == ('10.1.2.3', 'b500-hr'))
+    check('a trailer with no room at all',
+          bulk.session_name_parts('10.1.2.3 - t1500') == ('10.1.2.3', 't1500'))
+
 
 def test_unreachable_switch_is_named_from_its_session(tmpdir):
     """When a switch cannot be reached, its session's own name - not the
