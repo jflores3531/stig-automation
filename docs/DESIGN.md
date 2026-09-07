@@ -260,3 +260,42 @@ a WS-C3850 whose hardware is past support, and that log is the file listing
 both. It drops the other two because the inventory answers them better and more
 often, and two files carrying the same fact disagree the day one of them is a
 week old.
+
+## A stack is more than one asset
+
+`show version` describes a stack the way an audit needs it: the active member's
+model and serial, and the release every member runs. An inventory needs the
+other thing — each chassis is its own asset with its own serial on its own
+property record, and a three-member stack read from `show version` alone leaves
+two of them unaccounted for.
+
+So the inventory walk asks two more short commands and joins all three on the
+member number: `show switch` for which members exist and which is Active,
+Standby or Member; `show license udi` for each member's PID and SN; and
+`show version`'s switch table for each member's release. A stack becomes one
+CSV row per chassis, sharing a hostname and an address.
+
+The join leaves a cell blank rather than filling it from another member. A
+serial beside the wrong chassis number is worse in an asset record than an
+empty cell — the empty one gets chased, the wrong one gets filed. A platform
+that answers neither extra command (not stackable, or a release without
+`show license udi`) falls back to what `show version` says about the one
+switch, which is exactly the row the walk produced before either command was
+asked for.
+
+## The dialog that would have stopped the night
+
+SecureCRT raises a New Host Key dialog on the first SSH connection to a switch
+it has not seen. With a person in the chair that is one press of Enter on
+Accept & Save. In an unattended walk it is a modal box no script can dismiss,
+and the run stops on switch 1 of six hundred until somebody comes back to the
+machine — the same class of failure as a progress dialog inside the loop, and
+the reason there are none.
+
+`/ACCEPTHOSTKEYS` on the connect string makes the same trust decision that
+button makes, without drawing it. What it does not do is accept a key that has
+*changed* on a host already in the database: that stays an error and lands in
+the log with its own comment, which is the one host-key case worth a human's
+attention. A build old enough not to know the option rejects it rather than
+ignoring it, so the first connection that fails that way drops the flag for the
+rest of the run and retries — one switch pays for finding out, not the walk.

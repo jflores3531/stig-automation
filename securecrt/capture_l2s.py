@@ -304,6 +304,184 @@ def show_version_release(output):
     return re.sub(r'(^|\.)0+(\d)', r'\1\2', release) if release else ''
 
 
+# --- Stack members ------------------------------------------------------------
+#
+# `show version` describes one switch: the active member's model and serial, and
+# a table of every member's model and release. That is the right answer for an
+# audit, which is about the software running the stack - but it is the wrong
+# answer for an inventory, where each chassis is its own asset with its own
+# serial on its own property record. A three-member stack is three things to
+# account for and `show version` names one of them.
+#
+# So two more commands, and a join:
+#
+#   `show switch`       - which members exist, and which is Active, Standby or
+#                         Member. The roles are the reason this is asked rather
+#                         than inferred: an inventory that cannot say which
+#                         chassis is which cannot be reconciled with a rack.
+#   `show license udi`  - each member's PID and SN. `show version` prints the
+#                         serial only for the active member, which is the whole
+#                         of why this is here.
+#   `show version`      - each member's release, off the switch table.
+#
+# Keyed by member number, which all three agree on. Anything the join cannot
+# find is left blank rather than filled from another member: a serial beside
+# the wrong chassis number is worse in an asset record than an empty cell.
+STACK_COMMANDS = ('show switch', 'show license udi')
+
+
+def _normalise_release(release):
+    """17.12.04 and 17.12.4 are one release printed two ways. Matches what the
+    audit does, so an inventory row and a checklist name the same release."""
+    import re
+    return re.sub(r'(^|\.)0+(\d)', r'\1\2', release.strip()) if release else ''
+
+
+def parse_show_switch(output):
+    """{number: role} from `show switch`.
+
+    Empty for a platform that has no such command, which answers with an error
+    - and for anything else this does not recognise, which then falls back to
+    the single-switch reading rather than inventing members."""
+    import re
+    members = {}
+    for line in (output or '').splitlines():
+        # Number, role, then a Cisco-form MAC: specific enough not to match the
+        # header, the separator rule, or the `Switch/Stack Mac Address` line.
+        match = re.match(r'^\s*\*?\s*(\d+)\s+(\S+)\s+'
+                         r'[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}', line)
+        if match:
+            members[int(match.group(1))] = match.group(2)
+    return members
+
+
+def parse_license_udi(output):
+    """{number: (model, serial)} from `show license udi`.
+
+    Two shapes are in the wild and both are read: the `PID:...,VID:...,SN:...`
+    form, which carries a `Switch N` on its line in a stack's HA UDI LIST, and
+    the plain columnar table some releases print instead. A standalone switch
+    prints one PID/SN line with no member number at all, which is recorded as
+    member 0 - the caller treats that as "the only switch there is"."""
+    import re
+    members = {}
+    for line in (output or '').splitlines():
+        pid_sn = re.search(r'PID:\s*(\S+?)\s*,\s*VID:[^,]*,\s*SN:\s*(\S+)', line)
+        if pid_sn:
+            number = re.search(r'Switch\s+(\d+)', line)
+            members[int(number.group(1)) if number else 0] = (pid_sn.group(1),
+                                                              pid_sn.group(2))
+            continue
+        # `1    C9300-48P    V01    FOC1111X1XX`, optionally `Switch 1  ...`.
+        row = re.match(r'^\s*(?:Switch\s+)?(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$', line)
+        if row and not row.group(2).isdigit():
+            members[int(row.group(1))] = (row.group(2), row.group(4))
+    return members
+
+
+def switch_table_members(output):
+    """{number: (model, release)} for every row of `show version`'s switch
+    table, not only the active one."""
+    import re
+    header = re.search(r'^\s*Switch\s+Ports\s+Model\s+SW\s+Version', output or '',
+                       re.M | re.I)
+    if not header:
+        return {}
+    rest = (output or '').find('\n', header.end())
+    if rest == -1:
+        return {}
+    members = {}
+    for line in output[rest + 1:].splitlines():
+        if not line.strip() or set(line.strip()) <= set('- '):
+            continue
+        match = re.match(r'^\s*(\*?)\s*(\d+)\s+\d+\s+(\S+)\s+(\d\S*)', line)
+        if not match:
+            break
+        members[int(match.group(2))] = (match.group(3), match.group(4))
+    return members
+
+
+def version_member_serials(output):
+    """{number: serial} from `show version`'s own per-member `Switch NN`
+    sections. The fallback when `show license udi` is unavailable - it names
+    only some members on some releases, and none at all where the command is
+    not supported."""
+    import re
+    serials = {}
+    for match in re.finditer(r'^Switch\s+0*(\d+)\s*$', output or '', re.M):
+        following = re.search(r'^Switch\s+\d+\s*$', output[match.end():], re.M)
+        section = (output[match.end():match.end() + following.start()]
+                   if following else output[match.end():])
+        serial = re.search(r'System Serial Number\s*:\s*(\S+)', section)
+        if serial:
+            serials[int(match.group(1))] = serial.group(1)
+    return serials
+
+
+def stack_members(version_output, switch_output='', udi_output=''):
+    """[{number, role, model, serial, release}, ...] - one entry per chassis,
+    in member order.
+
+    A standalone switch, and a stack whose extra commands came back as errors,
+    both produce exactly one entry built from `show version` alone: the same
+    row the inventory wrote before any of this existed."""
+    import re
+    roles = parse_show_switch(switch_output)
+    udi = parse_license_udi(udi_output)
+    table = switch_table_members(version_output)
+    section_serials = version_member_serials(version_output)
+
+    numbers = sorted(set(roles) | set(n for n in udi if n) | set(table))
+    if not numbers:
+        # No member numbering anywhere: one switch, described by the readers
+        # that already answer for a standalone.
+        standalone_udi = udi.get(0, ('', ''))
+        return [{
+            'number': '',
+            'role': '',
+            'model': show_version_model(version_output) or standalone_udi[0],
+            'serial': show_version_serial(version_output) or standalone_udi[1],
+            'release': show_version_release(version_output),
+        }]
+
+    # Which member `show version`'s own top-level readers describe, so their
+    # answers are attached to that member and to no other.
+    active = next((number for number, role in roles.items()
+                   if role.lower() == 'active'), None)
+    if active is None:
+        # No `show switch` to ask, so the switch table's own `*` marker - the
+        # same one every other reader here uses to mean "the member in charge".
+        active = _switch_table(version_output)[0] or None
+    if active is None and len(numbers) == 1:
+        active = numbers[0]
+
+    members = []
+    for number in numbers:
+        model, serial = udi.get(number, ('', ''))
+        table_model, release = table.get(number, ('', ''))
+        if not serial:
+            # `show license udi` is the only command that names every member's
+            # serial, so where it is missing this falls back to what the switch
+            # says about itself - its own section, then, for the active member
+            # only, the top-level reading.
+            serial = section_serials.get(number, '')
+        if not serial and number == active:
+            serial = show_version_serial(version_output)
+        members.append({
+            'number': number,
+            'role': roles.get(number, ''),
+            # The UDI's PID is the authority on what a chassis is; the switch
+            # table's Model column says the same thing and is the fallback for
+            # a release that prints no HA UDI list.
+            'model': model or table_model or (
+                show_version_model(version_output) if number == active else ''),
+            'serial': serial,
+            'release': _normalise_release(release) or (
+                show_version_release(version_output) if number == active else ''),
+        })
+    return members
+
+
 def looks_paginated(text):
     """True if a pager prompt made it into the output, which means the capture
     is truncated. Checked here as well as in capture.py so the problem is

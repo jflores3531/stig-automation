@@ -311,6 +311,8 @@ def looks_rejected(error_text):
 # do not recognise is written verbatim, which is more useful than a category
 # invented for it.
 CONNECT_FAILURES = (
+    (('host key', 'hostkey', 'fingerprint'),
+     'Host key changed or rejected - check it by hand before trusting this switch'),
     (('timed out', 'timeout', 'no response'), 'Connection timed out'),
     (('refused', 'reset by peer', 'actively refused'), 'System refused connection'),
     (('no route', 'unreachable', 'cannot resolve', 'unknown host', 'name or service'),
@@ -382,7 +384,41 @@ class RunLog:
                          for name in sorted(self.counts))
 
 
-def connect_session(session_path):
+# The first SSH connection to a switch SecureCRT has not seen before raises a
+# New Host Key dialog - the one where the default button is Accept & Save and
+# somebody presses Enter. That is fine with a person in the chair and fatal to
+# an unattended walk: it is a modal box, a script cannot dismiss it, and the run
+# stops on switch 1 of six hundred until someone comes back to the machine.
+#
+# `/ACCEPTHOSTKEYS` on the connect string is SecureCRT's own answer - it accepts
+# and saves the key exactly as that button does, without drawing the dialog. It
+# is the same trust decision either way: the first connection is trusted on
+# sight, which is what pressing Enter on the dialog does too. What it does not
+# do is silently accept a key that has CHANGED on a host already in the
+# database - that stays an error and shows up in the log as an unreachable
+# switch with SecureCRT's own message, which is the one host-key case worth a
+# human's attention.
+#
+# Set this False to leave the flag off - on a build old enough not to know it,
+# or where policy says host keys are added deliberately. The run then needs the
+# keys already in SecureCRT's database, or a person to click; the fallback
+# below covers the first case by itself.
+ACCEPT_HOST_KEYS = True
+
+# Some builds reject an unknown connect-string option rather than ignoring it.
+# Rather than assume a version, the first connection that fails this way drops
+# the flag for the rest of the run and tries again - so an old SecureCRT costs
+# one retry, not the whole walk.
+_UNKNOWN_OPTION_MARKERS = ('invalid option', 'unknown option', 'unrecognized',
+                           'invalid argument', 'invalid command line')
+
+
+def _connect_string(session_path, accept_host_keys):
+    return ('/S "{0}" /ACCEPTHOSTKEYS'.format(session_path) if accept_host_keys
+            else '/S "{0}"'.format(session_path))
+
+
+def connect_session(session_path, state=None):
     """Connect to a saved session. Returns (outcome, comment), both '' on
     success.
 
@@ -390,15 +426,37 @@ def connect_session(session_path):
     GetLastErrorMessage(). A rejected login is retried once; anything else is
     treated as unreachable and skipped without a retry. The comment is the
     plain sentence for the log - see describe_connect_failure - and the outcome
-    is the word the run summary counts by."""
+    is the word the run summary counts by.
+
+    `state` is the run's mutable settings dict, carrying whether the host-key
+    flag is still in use. A run passes the same one to every call so a build
+    that rejects the flag is discovered once rather than per switch."""
+    if state is None:
+        state = {}
+    state.setdefault('accept_host_keys', ACCEPT_HOST_KEYS)
+
     for attempt in range(1, LOGIN_ATTEMPTS + 1):
         error = ''
         try:
-            crt.Session.Connect('/S "{0}"'.format(session_path), True)
+            crt.Session.Connect(_connect_string(session_path,
+                                                state['accept_host_keys']), True)
         except Exception:
             error = crt.GetLastErrorMessage() or 'connect failed'
         if crt.Session.Connected:
             return '', ''
+        # An old build refusing the flag is not a switch problem. Drop it for
+        # the rest of the run and give this switch another go; the attempt is
+        # not counted against the login retry, since no login was attempted.
+        lowered = (error or '').lower()
+        if state['accept_host_keys'] and any(marker in lowered
+                                             for marker in _UNKNOWN_OPTION_MARKERS):
+            state['accept_host_keys'] = False
+            try:
+                crt.Session.Connect(_connect_string(session_path, False), True)
+            except Exception:
+                error = crt.GetLastErrorMessage() or 'connect failed'
+            if crt.Session.Connected:
+                return '', ''
         if not looks_rejected(error):
             return 'unreachable', describe_connect_failure(error)
         if attempt == LOGIN_ATTEMPTS:
@@ -520,6 +578,10 @@ def main():
                                   'Cannot write there')
             return
 
+    # Carried across every connection so a build that rejects /ACCEPTHOSTKEYS
+    # is discovered on switch 1 rather than on all six hundred.
+    connect_state = {}
+
     log = RunLog(output_dir)
     # Both of these are recorded rather than silently dropped, so that one run's
     # log accounts for every session in the list - the switches this run visited
@@ -545,7 +607,7 @@ def main():
         crt.Session.SetStatusText('Capturing {0}/{1}: {2}'
                                   .format(index, len(pending), session_path))
 
-        outcome, comment = connect_session(session_path)
+        outcome, comment = connect_session(session_path, connect_state)
         if outcome:
             # Nothing was read off this switch, so its model and release
             # columns stay blank rather than carrying a guess. The comment is

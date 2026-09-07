@@ -7,9 +7,14 @@ SecureCRT, no devices.
 This walk answers a different question from the STIG one beside it: what is out
 there, rather than whether it complies. That difference is the whole point of
 it being a separate script, and it shows up in what is asserted here - it sends
-one command, not seven, and it produces one CSV and nothing else. A walk that
-quietly wrote captures or checklists would be the STIG walk with a different
-name, and would take hours rather than minutes.
+three short commands, not seven, and it produces one CSV and nothing else. A
+walk that quietly wrote captures or checklists would be the STIG walk with a
+different name, and would take hours rather than minutes.
+
+A stack is one row per chassis. `show version` names the active member's serial
+and no other, so a three-member stack read from it alone leaves two chassis
+unaccounted for - which is why `show switch` and `show license udi` are asked
+too, and why the join between them is worth testing.
 
 The other half is the same property the bulk collector has: a switch nobody
 could reach is a row saying why, not a gap. An inventory with three hundred
@@ -146,17 +151,18 @@ def csv_rows(tmpdir):
             for line in lines[1:]]
 
 
-def test_one_command_per_switch(tmpdir):
+def test_short_commands_only(tmpdir):
     """The reason this is not the STIG walk with a flag. `show running-config`
     is the slow command, and an inventory does not need it - so a fleet that
     takes hours to audit takes minutes to count, and can be re-run whenever
     somebody wants to know what is out there."""
-    print('one short command per switch, not the audit\'s seven')
+    print('three short commands per switch, not the audit\'s seven')
     fake = run_inventory(tmpdir, [('sw-a', '10.20.0.1')])
     check('paging is disabled first', fake.Screen.sent[0] == 'terminal length 0',
           fake.Screen.sent)
-    check('and then one command, `show version`',
-          fake.Screen.sent[1:] == ['show version'], fake.Screen.sent[1:])
+    check('then `show version` and the two that describe a stack',
+          fake.Screen.sent[1:] == ['show version', 'show switch', 'show license udi'],
+          fake.Screen.sent[1:])
     check('the slow one is never sent',
           'show running-config' not in fake.Screen.sent, fake.Screen.sent)
 
@@ -177,8 +183,9 @@ def test_columns(tmpdir):
     print('\nthe columns, and what fills them')
     run_inventory(tmpdir, [('site-a\\sw-1', '10.20.2.1')])
     check('the columns are the ones asked for, in order',
-          inventory.CSV_COLUMNS == ('hostname', 'ip_address', 'model', 'serial_number',
-                                    'ios_version', 'comment', 'session', 'timestamp'),
+          inventory.CSV_COLUMNS == ('hostname', 'ip_address', 'switch_number', 'role',
+                                    'model', 'serial_number', 'ios_version',
+                                    'comment', 'session', 'timestamp'),
           inventory.CSV_COLUMNS)
 
     rows = csv_rows(tmpdir)
@@ -198,6 +205,85 @@ def test_columns(tmpdir):
     # A sentence saying "it worked" beside four columns of data is noise. The
     # comment column is for the rows that need explaining.
     check('and no comment on a switch that answered', not row['comment'], row)
+
+
+SHOW_SWITCH = """Switch/Stack Mac Address : 0011.2233.4455 - Local Mac Address
+                                             H/W   Current
+Switch#   Role    Mac Address     Priority Version  State
+-------------------------------------------------------------------------------
+*1       Active   0011.2233.4455     15     V01     Ready
+ 2       Standby  0011.2233.4466     14     V01     Ready
+ 3       Member   0011.2233.4477     10     V01     Ready"""
+
+SHOW_LICENSE_UDI = """UDI: PID:C9300-48P,VID:V01,SN:FOC1111X1XX
+
+HA UDI LIST:
+Switch/Slot Number    PID    VID    SN
+Switch 1             C9300-48P    V01    FOC1111X1XX
+Switch 2             C9300-24P    V01    FOC2222X2XX
+Switch 3             C9300-24P    V01    FOC3333X3XX"""
+
+STACK_VERSION = """Cisco IOS XE Software, Version 17.12.04
+
+STACKSW01 uptime is 3 weeks, 2 days
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+*    1 48    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL
+     2 24    C9300-24P          17.12.04          CAT9K_IOSXE           INSTALL
+     3 24    C9300-24P          17.12.04          CAT9K_IOSXE           INSTALL"""
+
+
+def test_stack_is_one_row_per_member(tmpdir):
+    """`show version` names the active member's serial and no other, so a
+    three-member stack read from it alone is two chassis unaccounted for. Each
+    one is its own asset with its own serial on its own property record, which
+    is why the walk asks `show switch` and `show license udi` too."""
+    print('\na stack is one row per chassis, not one row per stack')
+    run_inventory(tmpdir, [('sw-stack', '10.20.5.1')],
+                  outputs={'show version': STACK_VERSION,
+                           'show switch': SHOW_SWITCH,
+                           'show license udi': SHOW_LICENSE_UDI})
+    rows = csv_rows(tmpdir)
+    check('three members, three rows', len(rows) == 3, rows)
+    if len(rows) != 3:
+        return
+
+    check('every row names the same switch and address',
+          all(r['hostname'] == 'STACKSW01' and r['ip_address'] == '10.20.5.1'
+              for r in rows), rows)
+    check('numbered and roled from `show switch`',
+          [(r['switch_number'], r['role']) for r in rows]
+          == [('1', 'Active'), ('2', 'Standby'), ('3', 'Member')], rows)
+    # The serials are the point: `show version` knows only the first of these.
+    check('each chassis carries its own serial, from `show license udi`',
+          [r['serial_number'] for r in rows]
+          == ['FOC1111X1XX', 'FOC2222X2XX', 'FOC3333X3XX'], rows)
+    check('and its own model',
+          [r['model'] for r in rows] == ['C9300-48P', 'C9300-24P', 'C9300-24P'], rows)
+    check('with the release normalised the way the audit normalises it',
+          all(r['ios_version'] == '17.12.4' for r in rows), rows)
+
+
+def test_standalone_switch_is_still_one_row(tmpdir):
+    """A platform that is not stackable answers `show switch` with an error and
+    may have no `show license udi` at all. Neither is a reason to lose the row:
+    the join falls back to what `show version` said about the one switch, which
+    is exactly what it answered before either command was asked for."""
+    print('\na switch that answers neither extra command still gets its row')
+    run_inventory(tmpdir, [('sw-solo', '10.20.6.1')],
+                  outputs={'show version': OUTPUTS['show version'],
+                           'show switch': "% Invalid input detected at '^' marker.",
+                           'show license udi': '% Invalid input detected'})
+    rows = csv_rows(tmpdir)
+    check('one row', len(rows) == 1, rows)
+    if not rows:
+        return
+    check('with the model, serial and release `show version` gave',
+          (rows[0]['model'] == 'C9300-48P' and rows[0]['serial_number'] == 'FOC0000X0XX'
+           and rows[0]['ios_version'] == '17.12.4'), rows[0])
+    check('and no member number invented for it',
+          not rows[0]['role'], rows[0])
 
 
 def test_unreachable_switches_are_rows(tmpdir):
@@ -264,10 +350,12 @@ def test_readers_agree_with_the_audit():
 
 if __name__ == '__main__':
     test_readers_agree_with_the_audit()
-    for test in (test_one_command_per_switch,
+    for test in (test_short_commands_only,
+                 test_stack_is_one_row_per_member,
                  test_writes_one_csv_and_nothing_else,
                  test_columns,
                  test_unreachable_switches_are_rows,
+                 test_standalone_switch_is_still_one_row,
                  test_not_a_switch_is_refused):
         with tempfile.TemporaryDirectory() as tmpdir:
             test(tmpdir)

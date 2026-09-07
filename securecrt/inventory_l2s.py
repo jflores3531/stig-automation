@@ -4,12 +4,19 @@
 """Inventory every saved SecureCRT session: one CSV row per switch, unattended.
 
 Run this from SecureCRT (Script > Run...). For each saved session it connects
-using the credentials SecureCRT already holds, sends `show version`, reads the
-hostname, model, serial and release off it, and disconnects. It writes one file:
+using the credentials SecureCRT already holds, sends three short show commands,
+reads what the switch is off them, and disconnects. It writes one file:
 
     inventory_<stamp>.csv
 
-    hostname,ip_address,model,serial_number,ios_version,comment,session,timestamp
+    hostname,ip_address,switch_number,role,model,serial_number,ios_version,
+    comment,session,timestamp
+
+A stack is one row per chassis. Each member is its own asset with its own
+serial on its own property record, and `show version` names only the active
+one - so the walk also asks `show switch` for the members and their roles and
+`show license udi` for each member's model and serial, and joins the three on
+the member number.
 
 Nothing is configured on any device, no capture or checklist is written, and
 the only non-show command sent is `terminal length 0`, which is session-scoped.
@@ -17,8 +24,8 @@ the only non-show command sent is `terminal length 0`, which is session-scoped.
 WHY THIS IS SEPARATE FROM capture_l2s_bulk.py
 That script audits: it collects seven commands per switch, of which
 `show running-config` is much the slowest, and produces a STIG Viewer checklist
-per device. This one asks a single short question, so a fleet that takes hours
-to audit takes minutes to inventory - which is what makes it something you can
+per device. This one asks three short ones, so a fleet that takes hours to
+audit takes minutes to inventory - which is what makes it something you can
 re-run whenever you want to know what is out there, rather than a job you plan
 an evening around. The two answer different questions and are kept apart so
 neither has to compromise for the other.
@@ -27,6 +34,11 @@ A switch nobody could reach is a row, not a gap: its model, serial and release
 are blank because nothing read them, and its comment says why - "Connection
 timed out" where nothing answered, "System refused connection" where the host
 answered and said no. Those are different problems with different fixes.
+
+A switch SecureCRT has never connected to before does not stop the walk on its
+New Host Key dialog: the connect string carries /ACCEPTHOSTKEYS, which makes
+the same trust decision that dialog's default button does. See
+capture_l2s_bulk.ACCEPT_HOST_KEYS.
 
 Each run writes its own CSV and visits every session in the list. There is no
 resume, and none is wanted: the run is short enough to repeat, and one file per
@@ -69,17 +81,29 @@ OUTPUT_DIR = r'C:\Documents\netauto_inventory'
 # end of the current switch.
 STOP_FILE = 'STOP'
 
-# The one command this asks for. `terminal length 0` goes first so a stack's
-# `show version` cannot come back truncated behind a pager prompt.
+# What this asks for. `terminal length 0` goes first so a stack's output cannot
+# come back truncated behind a pager prompt.
+#
+# `show version` alone would be one round trip rather than three, and would be
+# wrong on a stack: it names the active member's serial and no other, while an
+# inventory has to account for every chassis. The other two are short, so the
+# walk stays a walk - see capture_l2s.stack_members for how they join.
 INVENTORY_COMMAND = 'show version'
+MEMBER_COMMANDS = capture_l2s.STACK_COMMANDS
 
 # hostname is the switch's own where the walk got far enough to ask, and the
 # saved session's name where it did not - a row for a device nobody reached
 # still has to be identifiable, and the session name is what the person chasing
 # it will recognise. comment is empty on a switch that answered: the data in
 # the row is the answer, and a sentence saying "it worked" beside it is noise.
-CSV_COLUMNS = ('hostname', 'ip_address', 'model', 'serial_number', 'ios_version',
-               'comment', 'session', 'timestamp')
+#
+# switch_number and role carry the stack. A three-member stack is three rows
+# sharing a hostname and an address, one per chassis, because that is what an
+# asset record counts - and role is what lets a row be matched to a rack unit
+# without opening the cabinet. Both are blank on a standalone switch that
+# reports no member numbering, which is not the same as a stack of one.
+CSV_COLUMNS = ('hostname', 'ip_address', 'switch_number', 'role', 'model',
+               'serial_number', 'ios_version', 'comment', 'session', 'timestamp')
 
 
 class InventoryCsv:
@@ -96,23 +120,33 @@ class InventoryCsv:
         with open(self.path, 'w', encoding='utf-8') as handle:
             handle.write(','.join(CSV_COLUMNS) + '\n')
 
-    def record(self, session_path, host, outcome, comment='',
-               hostname='', model='', serial='', release=''):
-        """One switch. `outcome` is counted for the summary and is not itself a
-        column - what a reader needs is in the row already."""
+    def record(self, session_path, host, outcome, comment='', hostname='',
+               members=()):
+        """One switch: one row, or one row per stack member.
+
+        `outcome` is counted for the summary and is not itself a column - what
+        a reader needs is in the row already. A switch nothing answered from
+        passes no members and gets a single row with its data columns blank."""
         self.counts[outcome] = self.counts.get(outcome, 0) + 1
-        row = (hostname or session_path, host, model, serial, release, comment,
-               session_path, time.strftime('%Y-%m-%d %H:%M:%S'))
+        rows = members or [{}]
         with open(self.path, 'a', encoding='utf-8') as handle:
-            handle.write(','.join('"{0}"'.format(str(f).replace('"', "'")) for f in row) + '\n')
+            for member in rows:
+                row = (hostname or session_path, host,
+                       member.get('number', ''), member.get('role', ''),
+                       member.get('model', ''), member.get('serial', ''),
+                       member.get('release', ''), comment, session_path,
+                       time.strftime('%Y-%m-%d %H:%M:%S'))
+                handle.write(','.join('"{0}"'.format(str(f).replace('"', "'"))
+                                      for f in row) + '\n')
 
     def summary(self):
         return ', '.join('{0}: {1}'.format(name, self.counts[name])
                          for name in sorted(self.counts))
 
 
-def read_version(prompt=None):
-    """Send `show version` to the connected session and return its output.
+def read_inventory(prompt=None):
+    """Send the inventory commands to the connected session and return
+    {command: output}.
 
     Raises capture_l2s.CollectionError if the session is not a Cisco switch in
     enable mode, or if the output arrives truncated or empty - the same guards
@@ -155,7 +189,15 @@ def read_version(prompt=None):
             'not a Cisco switch',
             "'{0}' output does not mention Cisco.".format(INVENTORY_COMMAND),
             'Not a Cisco switch')
-    return output
+
+    outputs = {INVENTORY_COMMAND: output}
+    # Unlike `show version`, these two are allowed to fail: a platform that is
+    # not stackable answers `show switch` with an error, and some releases have
+    # no `show license udi` at all. Neither is a reason to lose the row - the
+    # join falls back to what `show version` said about the one switch.
+    for command in MEMBER_COMMANDS:
+        outputs[command] = capture_l2s.run_command(command, prompt)
+    return outputs
 
 
 def main():
@@ -189,7 +231,7 @@ def main():
     if crt.Dialog.MessageBox(
             '{0} device(s) to visit{1}.\n\n'
             'This connects to each one in turn using its saved credentials and '
-            'sends one command, `show version`. Nothing is configured and no '
+            'sends three read-only show commands. Nothing is configured and no '
             'capture or checklist is written.\n\n'
             'To stop early, create a file named {2} in the output folder.\n\n'
             'Begin?'.format(len(sessions),
@@ -197,6 +239,11 @@ def main():
                             if duplicates else '', STOP_FILE),
             'Inventory', 4 | 32) != 6:  # MB_YESNO | MB_ICONQUESTION; 6 = IDYES
         return
+
+    # Carried across every connection: see bulk.connect_session. It also
+    # carries the /ACCEPTHOSTKEYS decision, which is what keeps a first
+    # connection to an unknown switch from stopping the walk on a modal dialog.
+    connect_state = {}
 
     csv = InventoryCsv(output_dir)
     # Recorded rather than silently dropped, so one run's file accounts for
@@ -210,20 +257,22 @@ def main():
     def visit_one(index, session_path, host):
         crt.Session.SetStatusText('Inventorying {0}/{1}: {2}'
                                   .format(index, len(sessions), session_path))
-        outcome, comment = bulk.connect_session(session_path)
+        outcome, comment = bulk.connect_session(session_path, connect_state)
         if outcome:
             csv.record(session_path, host, outcome, comment)
             return
         try:
-            version = read_version()
+            outputs = read_inventory()
         except capture_l2s.CollectionError as refused:
             csv.record(session_path, host, 'refused', refused.reason)
             return
+        version = outputs[INVENTORY_COMMAND]
         csv.record(session_path, host, 'inventoried',
                    hostname=capture_l2s.show_version_hostname(version),
-                   model=capture_l2s.show_version_model(version),
-                   serial=capture_l2s.show_version_serial(version),
-                   release=capture_l2s.show_version_release(version))
+                   members=capture_l2s.stack_members(
+                       version,
+                       outputs.get('show switch', ''),
+                       outputs.get('show license udi', '')))
 
     crt.Screen.Synchronous = True
     try:

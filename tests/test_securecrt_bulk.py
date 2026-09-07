@@ -81,6 +81,11 @@ class FakeSession:
     def Connect(self, connect_string, _suppress=False):
         session = connect_string.split('"')[1]
         self.crt.attempts.append(session)
+        self.crt.connect_strings.append(connect_string)
+        if self.crt.reject_host_key_flag and '/ACCEPTHOSTKEYS' in connect_string:
+            # An old build refusing an option it does not know.
+            self.crt.last_error = 'Invalid option: /ACCEPTHOSTKEYS'
+            raise Exception(self.crt.last_error)
         outcome = self.crt.behaviour.get(session, 'ok')
         if outcome != 'ok':
             self.crt.last_error = {
@@ -113,10 +118,13 @@ class FakeDialog:
 
 
 class FakeCRT:
-    def __init__(self, output_dir, behaviour, host_outputs, folder=''):
+    def __init__(self, output_dir, behaviour, host_outputs, folder='',
+                 reject_host_key_flag=False):
         self.output_dir = output_dir
         self.behaviour = behaviour
         self.folder = folder
+        self.reject_host_key_flag = reject_host_key_flag
+        self.connect_strings = []
         self.attempts = []
         self.messages = []
         self.last_error = ''
@@ -128,9 +136,11 @@ class FakeCRT:
         return self.last_error
 
 
-def run_walker(tmpdir, sessions, behaviour, host_outputs=None, folder=''):
+def run_walker(tmpdir, sessions, behaviour, host_outputs=None, folder='',
+               reject_host_key_flag=False):
     """Drive bulk.main() with a stubbed SecureCRT and a stubbed session list."""
-    fake = FakeCRT(tmpdir, behaviour, host_outputs or OUTPUTS, folder)
+    fake = FakeCRT(tmpdir, behaviour, host_outputs or OUTPUTS, folder,
+                   reject_host_key_flag)
     bulk.crt = fake
     capture_l2s.crt = fake
     original_find = bulk.find_sessions
@@ -461,6 +471,37 @@ def test_log_columns(tmpdir):
           not timed_out.get('model'), timed_out)
 
 
+def test_host_keys_are_accepted_without_a_dialog(tmpdir):
+    """The first SSH connection to a switch SecureCRT has not seen raises a New
+    Host Key dialog. With a person in the chair that is one press of Enter;
+    in an unattended walk it is a modal box no script can dismiss, and the run
+    stops on switch 1 of six hundred until somebody comes back to the machine.
+    `/ACCEPTHOSTKEYS` makes the same trust decision that button does, without
+    drawing it."""
+    print('\nan unknown host key does not stop the walk')
+    fake = run_walker(tmpdir, [('sw-a', '10.0.12.1')], {})
+    check('the connect string carries /ACCEPTHOSTKEYS',
+          all('/ACCEPTHOSTKEYS' in text for text in fake.connect_strings),
+          fake.connect_strings)
+    check('and the session is still named the way SecureCRT expects',
+          all(text.startswith('/S "') for text in fake.connect_strings),
+          fake.connect_strings)
+
+    # A build old enough not to know the option rejects it rather than ignoring
+    # it. That is one retry, not a lost night - and it is discovered once.
+    older = run_walker(tmpdir, [('sw-b', '10.0.12.2'), ('sw-c', '10.0.12.3')], {},
+                       reject_host_key_flag=True)
+    check('an older build still gets its switches',
+          outcomes(tmpdir).get('sw-b') == 'checklisted'
+          and outcomes(tmpdir).get('sw-c') == 'checklisted', outcomes(tmpdir))
+    without = [text for text in older.connect_strings if '/ACCEPTHOSTKEYS' not in text]
+    check('by dropping the flag rather than failing',
+          len(without) >= 2, older.connect_strings)
+    check('and only the first switch pays for finding that out',
+          sum('/ACCEPTHOSTKEYS' in text for text in older.connect_strings) == 1,
+          older.connect_strings)
+
+
 def test_no_audit_here_falls_back_to_captures(tmpdir):
     """Only these two files copied to a locked-down machine: nothing there can
     audit anything. Settled once, before the walk, and answered by collecting
@@ -516,6 +557,7 @@ if __name__ == '__main__':
                  test_same_hostname_does_not_overwrite,
                  test_audit_failure_keeps_its_capture,
                  test_log_columns,
+                 test_host_keys_are_accepted_without_a_dialog,
                  test_an_unhandled_error_does_not_end_the_walk,
                  test_no_audit_here_falls_back_to_captures,
                  test_stop_file_halts_cleanly):
