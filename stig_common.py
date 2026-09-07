@@ -167,11 +167,19 @@ class ChecklistError(Exception):
 MANAGEMENT_VLAN_NAMES = ('*mgt', '*mgmt')
 
 
+# Both readers below are deliberately loose about whitespace, and the reason is
+# a switch whose FQDN came out blank in a real export. A config line is not a
+# fixed-width record: it can carry a leading space (a paged or re-indented
+# capture), two spaces where the manual shows one, or a stray tab. Anchoring on
+# exactly one space between the words means the field is silently empty on that
+# switch and correct on the next one, which is the worst way for a reader to be
+# wrong - it looks like the switch has no domain rather than like the tool
+# cannot read it.
 def parse_hostname(cfg):
     """The configured hostname, which is not always the name the audit was
     invoked under - `--from-capture` takes any label. The switch's own answer
     is the one that belongs in the checklist."""
-    match = re.search(r'^hostname (\S+)', cfg, re.M)
+    match = re.search(r'^[ \t]*hostname\s+(\S+)', cfg, re.M)
     return match.group(1) if match else None
 
 
@@ -179,7 +187,8 @@ def parse_domain_name(cfg):
     """The domain from `ip domain name <name>` (IOS XE) or `ip domain-name
     <name>` (classic IOS). A `vrf <name>` variant carries the VRF between the
     command and the domain, and is skipped over rather than read as one."""
-    match = re.search(r'^ip domain[- ]name (?:vrf \S+ )?(\S+)', cfg, re.M)
+    match = re.search(r'^[ \t]*ip\s+domain[-\s]+name\s+(?:vrf\s+\S+\s+)?(\S+)',
+                      cfg, re.M)
     return match.group(1) if match else None
 
 

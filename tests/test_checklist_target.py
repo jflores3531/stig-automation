@@ -78,6 +78,29 @@ def test_reads_each_field():
     check('a VRF between the command and the domain is stepped over, not read as one',
           stig_common.parse_domain_name('ip domain name vrf Mgmt-vrf example.test')
           == 'example.test')
+
+    # A config line is not a fixed-width record. Anchoring on exactly one space
+    # between the words leaves the field silently empty on a switch whose
+    # capture carries a leading space or a doubled one - which reads as "this
+    # switch has no domain" rather than as "this could not be read", and is how
+    # a 9300 came back with a blank FQDN in a real export.
+    for label, line in (('a leading space', ' ip domain name example.test'),
+                        ('a leading tab', '\tip domain name example.test'),
+                        ('two spaces before the domain', 'ip domain name  example.test'),
+                        ('two spaces inside the command', 'ip domain  name example.test'),
+                        ('tabs throughout', 'ip\tdomain name\texample.test')):
+        check(f'{label} still reads the domain',
+              stig_common.parse_domain_name(line) == 'example.test',
+              f'{line!r} -> {stig_common.parse_domain_name(line)!r}')
+    check('and the hostname is read just as loosely',
+          stig_common.parse_hostname('  hostname\tSW01') == 'SW01',
+          stig_common.parse_hostname('  hostname\tSW01'))
+
+    # ...without reading a line that says the opposite.
+    check('`no ip domain-lookup` is not a domain',
+          stig_common.parse_domain_name('no ip domain-lookup') is None)
+    check('nor is `no ip domain name`',
+          stig_common.parse_domain_name('no ip domain name example.test') is None)
     check('FQDN is <hostname>.<domain name>',
           stig_common.parse_fqdn(fixtures.RUNNING_CONFIG) == 'TESTSW01.example.test')
 
