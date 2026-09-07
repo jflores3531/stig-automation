@@ -30,6 +30,7 @@ Every script lives in [`scripts/`](scripts/) and is run from the repository root
 ### Reading what is already out there
 - **`arp_inventory.py`** — What is actually live on a subinterface, from the router's ARP table, as a CSV. Reads a device from `inventory.yaml` or a pasted `show ip arp` with `--from-file`. The router's own address, and an incomplete entry (an ARP request nothing answered), are marked as what they are rather than listed as hosts.
 - **`pdf_ips.py`** — The addresses out of a PDF network diagram — a Visio export, usually — into a CSV with the page and the label drawn beside each one. Parses the PDF itself (objects, page tree, content streams) because the host it runs on has no PDF library and cannot get one. A diagram flattened to an image has no text to find, and that is reported as itself rather than as a diagram with no addresses on it.
+- **`merge_walk_csvs.py`** — Merges the per-run `inventory_*.csv` or `run_log_*.csv` files the two SecureCRT walkers below write, one per run, into one file — `python3 scripts/merge_walk_csvs.py <folder>`. Scoping a walk by distribution node (SecureCRT session folder) turns one run into one per node, and one CSV into one per node; this reads every matching CSV in a folder and merges them back, deduplicating to the newest row per switch by its own timestamp column, with `switch_number` folded into the key wherever the header carries one so a stack's members are never collapsed into each other. An `inventory_*.csv` and a `run_log_*.csv` are never merged together — they answer different questions — and a folder holding both needs `--prefix` to say which to merge. `--no-dedupe` keeps every row from every file instead, e.g. to see how many attempts a switch took across reruns.
 
 ### Backup & save
 - **`backup_config.py`** — Back up running-config + VLANs; keeps a "latest" copy per device plus a timestamped archive pruned to 5.
@@ -179,6 +180,12 @@ python3 scripts/pdf_ips.py diagram.pdf --all-text   # what it saw, when an answe
 # not bash.
 for %f in (C:\captures\*.capture) do ^
     python scripts/l2_stig_audit.py %~nf --from-capture "%f" --to-cklb C:\Documents\checklists
+
+# Scoping the walk by distribution node instead of the whole fleet leaves one
+# inventory_*.csv or run_log_*.csv per node in the output folder. Merge them
+# back into one file, deduplicated to each switch's newest row.
+python3 scripts/merge_walk_csvs.py C:\Documents\netauto_inventory
+python3 scripts/merge_walk_csvs.py C:\Documents\netauto_checklists --prefix run_log_
 
 # STIG hardening for an L2 switch - run in this order:
 python3 scripts/l2_stig_harden_global.py S1 # bulk fixes, run first
