@@ -49,22 +49,40 @@ def check(name, condition, detail=''):
         failures.append(name)
 
 
-class FakeScreen:
-    """Replays fixture output command by command, echoing like a real device."""
+# A line of the DoD notice and consent banner, ruled off in the '#' a prompt
+# also ends with - which is exactly why read_prompt() requires the cursor's own
+# line to end in one rather than merely contain one.
+BANNER_LINE = '#### You are accessing a U.S. Government (USG) Information System ####'
 
-    def __init__(self, host_outputs):
+
+class FakeScreen:
+    """Replays fixture output command by command, echoing like a real device.
+
+    `banner_lines` is how many screen reads land mid-banner before the prompt
+    appears - what a switch hardened to this STIG actually does to a session
+    that connects and reads straight away."""
+
+    def __init__(self, host_outputs, banner_lines=0):
         self.host_outputs = host_outputs
         self.Synchronous = False
         self.prompt = 'SW#'
+        self.banner_lines = banner_lines
         self._pending = ''
         self.CurrentRow = 5
         self.CurrentColumn = len(self.prompt) + 1
 
     def Get(self, *_args):
+        if self.banner_lines > 0:
+            self.banner_lines -= 1
+            return BANNER_LINE
         return self.prompt
 
     def Send(self, text):
         command = text.rstrip('\r\n')
+        # A bare carriage return is read_prompt() asking for a fresh prompt,
+        # not a command - a real switch answers it with one and nothing else.
+        if not command:
+            return
         body = '' if command == 'terminal length 0' else self.host_outputs.get(command, '')
         self._pending = f'{command}\r\n{body}\r\n'
 
@@ -127,28 +145,34 @@ class FakeDialog:
 
 class FakeCRT:
     def __init__(self, output_dir, behaviour, host_outputs, folder='',
-                 reject_host_key_flag=False):
+                 reject_host_key_flag=False, banner_lines=0):
         self.output_dir = output_dir
         self.behaviour = behaviour
         self.folder = folder
         self.reject_host_key_flag = reject_host_key_flag
+        self.slept = []
         self.connect_strings = []
         self.attempts = []
         self.messages = []
         self.last_error = ''
-        self.Screen = FakeScreen(host_outputs)
+        self.Screen = FakeScreen(host_outputs, banner_lines)
         self.Session = FakeSession(self)
         self.Dialog = FakeDialog(self)
 
     def GetLastErrorMessage(self):
         return self.last_error
 
+    def Sleep(self, milliseconds):
+        # Recorded rather than actually waited out: the point is that the
+        # script gives the banner time, not that a test suite spends it.
+        self.slept.append(milliseconds)
+
 
 def run_walker(tmpdir, sessions, behaviour, host_outputs=None, folder='',
-               reject_host_key_flag=False):
+               reject_host_key_flag=False, banner_lines=0):
     """Drive bulk.main() with a stubbed SecureCRT and a stubbed session list."""
     fake = FakeCRT(tmpdir, behaviour, host_outputs or OUTPUTS, folder,
-                   reject_host_key_flag)
+                   reject_host_key_flag, banner_lines)
     bulk.crt = fake
     capture_l2s.crt = fake
     original_find = bulk.find_sessions
@@ -567,6 +591,38 @@ def test_unreachable_switch_is_named_from_its_session(tmpdir):
     check('nothing here stopped the walk', fake.attempts.count('10.9.0.2 - 6') >= 1)
 
 
+def test_a_banner_still_arriving_is_waited_out(tmpdir):
+    """The failure that made a reachable fleet look refused. Every switch this
+    tool audits carries the DoD notice and consent banner - V-220521 requires
+    it - and that banner is still coming down the wire when Connect() returns.
+    Reading the screen straight away reads a line of it, which is not a prompt,
+    and the collection is refused on a switch that was answering perfectly
+    well.
+
+    Invisible by hand, which is what made it expensive: run capture_l2s.py
+    against a session a person logged into and the banner finished scrolling
+    long before the script started."""
+    print('\na banner still arriving is waited out, not mistaken for no prompt')
+    fake = run_walker(tmpdir, [('node-a/sw-1', '10.0.13.1')], {}, banner_lines=3)
+    result = outcomes(tmpdir)
+    check('the switch is collected rather than refused',
+          result.get('node-a/sw-1') == 'checklisted', result)
+    check('nothing is logged as having no prompt',
+          not any('prompt' in row['comment'].lower() for row in log_rows(tmpdir)),
+          [row['comment'] for row in log_rows(tmpdir)])
+    check('and it waited, rather than spinning', fake.slept, fake.slept)
+
+    # A banner ruled off in '#' is the trap: plenty of its lines contain the
+    # character a prompt ends with, so "wait until something has a #" would
+    # have read the banner and called it a prompt.
+    check('a banner line is not mistaken for the prompt',
+          BANNER_LINE.strip().endswith('#')
+          and not capture_l2s.show_version_hostname('') == BANNER_LINE)
+    checklist = checklists(tmpdir)
+    check('the checklist is named for the switch, not for a line of banner',
+          len(checklist) == 1 and checklist[0].startswith('TESTSW01_'), checklist)
+
+
 def test_an_unrecognised_failure_says_what_was_tried(tmpdir):
     """A connect error the categories do not recognise leaves the log saying
     only what SecureCRT said, and SecureCRT's own wording does not distinguish
@@ -701,6 +757,7 @@ if __name__ == '__main__':
                  test_audit_failure_keeps_its_capture,
                  test_log_columns,
                  test_unreachable_switch_is_named_from_its_session,
+                 test_a_banner_still_arriving_is_waited_out,
                  test_an_unrecognised_failure_says_what_was_tried,
                  test_host_keys_are_accepted_without_a_dialog,
                  test_an_unhandled_error_does_not_end_the_walk,

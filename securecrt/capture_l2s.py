@@ -537,18 +537,60 @@ def not_ios_config(running_config):
             'configuration, hostname, interface, version, end)')
 
 
+# How long to let a freshly connected session settle before believing what is
+# on its screen, and how many times to ask. A switch hardened to the STIG this
+# tool audits answers a new SSH session with the DoD notice and consent banner
+# - V-220521's requirement, so every switch worth auditing has one - and that
+# banner is still arriving when Connect() returns. Six seconds in total is far
+# longer than a banner takes and still nothing next to one switch's collection.
+PROMPT_ATTEMPTS = 6
+PROMPT_SETTLE_MS = 1000
+
+
+def _sleep(milliseconds):
+    """crt.Sleep, where the host provides it. A stand-in SecureCRT in the
+    tests does not, and does not need to - nothing there is still arriving."""
+    try:
+        crt.Sleep(milliseconds)
+    except AttributeError:
+        pass
+
+
 def read_prompt():
-    """Return the device prompt from the current cursor line.
+    """Return the device prompt, waiting for the session to settle first.
 
     This is the most fragile part of the script - everything else depends on
-    knowing what to read up to. If a capture comes back empty, check this
-    first: an unusual prompt, a banner still on screen, or a session sitting at
-    a --More-- is what breaks it."""
-    row = crt.Screen.CurrentRow
-    column = crt.Screen.CurrentColumn - 1
-    if column < 1:
-        return ''
-    return crt.Screen.Get(row, 1, row, column).strip()
+    knowing what to read up to. Reading the cursor line the instant this is
+    called is what a person driving the script by hand gets away with: by the
+    time they run it, the login banner finished scrolling minutes ago. An
+    unattended walk has no such luck. It calls this the moment Connect()
+    returns, with the banner still coming down the wire, and reads a line of
+    banner instead of a prompt - which the guards above then refuse as "no
+    prompt", on a switch that was answering perfectly well.
+
+    So the prompt is asked for rather than assumed: a bare carriage return,
+    which at an EXEC prompt does nothing except make the switch draw a fresh
+    prompt on a clean line - both the thing to wait for and the thing to read.
+    Nothing is configured by it, and a session already sitting at its prompt,
+    which is how capture_l2s.py always found one, answers the first one
+    immediately.
+
+    Returns '' if no prompt appears in PROMPT_ATTEMPTS tries, which the
+    callers report as the same "no prompt" they always did."""
+    for attempt in range(PROMPT_ATTEMPTS):
+        crt.Screen.Send('\r')
+        _sleep(PROMPT_SETTLE_MS)
+        row = crt.Screen.CurrentRow
+        column = crt.Screen.CurrentColumn - 1
+        if column < 1:
+            continue
+        line = crt.Screen.Get(row, 1, row, column).strip()
+        # The cursor's own line has to END in a prompt character. A banner
+        # ruled off in '#' has plenty of lines containing one, and matching
+        # those is how waiting for a prompt turns into reading a banner.
+        if line.endswith('#') or line.endswith('>'):
+            return line
+    return ''
 
 
 def run_command(command, prompt):

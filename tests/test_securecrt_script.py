@@ -64,6 +64,10 @@ class FakeScreen:
 
     def Send(self, text):
         command = text.rstrip('\r\n')
+        # A bare carriage return is read_prompt() asking for a fresh prompt,
+        # not a command - a real switch answers it with one and nothing else.
+        if not command:
+            return
         self.sent.append(command)
         if command == self.timeout_on:
             self._pending = None
