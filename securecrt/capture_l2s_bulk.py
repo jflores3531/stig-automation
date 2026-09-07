@@ -193,6 +193,28 @@ def dedupe_by_host(sessions):
     return unique, duplicates
 
 
+def session_name_parts(session_path):
+    """(ip, label) parsed from a saved session's own name, for a switch that
+    could not be reached and so cannot say who it is itself.
+
+    This fleet names sessions "<ip address> - <bldg/trailer>[-<room/dept>]" -
+    the room or department is sometimes left off, but the ip and the bldg/
+    trailer are always there, split by " - ". ip is the text before that
+    separator; label is everything after it, whole, since a bldg/trailer
+    number with no room is just as valid a label as one with a room folded in.
+
+    Returns ('', '') when the session's leaf name does not contain " - ", so a
+    session that was never named this way - a lab box, a jump host, a test
+    fixture - is left alone rather than misread. Only the leaf is looked at:
+    a session filed under a folder ("Site A\\10.1.2.3 - 5-200") still parses
+    on the part after the last folder separator."""
+    leaf = session_path.rsplit('\\', 1)[-1]
+    ip, separator, label = leaf.partition(' - ')
+    if not separator:
+        return '', ''
+    return ip.strip(), label.strip()
+
+
 def capture_name(session_path, hostname):
     """Capture filename for a session. Prefers the address; falls back to the
     session name with path separators flattened when a session has no Hostname
@@ -612,7 +634,16 @@ def main():
             # Nothing was read off this switch, so its model and release
             # columns stay blank rather than carrying a guess. The comment is
             # what the morning after works from.
-            log.record(session_path, host, outcome, comment)
+            #
+            # Nothing was read off it, but its own session name may still say
+            # who it is: this fleet's convention folds the address and a
+            # bldg/trailer into the name itself. ip only fills a blank -
+            # `host` from the session's Hostname field is trusted first - but
+            # the bldg/trailer label always replaces the raw session path,
+            # since that is the more useful thing for a person to see next to
+            # a switch nobody could reach.
+            ip, label = session_name_parts(session_path)
+            log.record(session_path, host or ip, outcome, comment, hostname=label)
             return
 
         try:

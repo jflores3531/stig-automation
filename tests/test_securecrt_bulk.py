@@ -471,6 +471,47 @@ def test_log_columns(tmpdir):
           not timed_out.get('model'), timed_out)
 
 
+def test_session_name_parts():
+    """This fleet names sessions "<ip> - <bldg/trailer>[-<room/dept>]", and an
+    unreachable switch has nothing else to say who it is - so the bldg/
+    trailer belongs in the log, not the raw session path."""
+    print('\nan unreachable switch\'s ip and bldg/trailer come off its own name')
+    check('ip before the separator, bldg/trailer-room after it',
+          bulk.session_name_parts('10.1.2.3 - 5-200') == ('10.1.2.3', '5-200'))
+    check('a bldg/trailer with no room is still a whole label',
+          bulk.session_name_parts('10.1.2.3 - 5') == ('10.1.2.3', '5'))
+    check('a folder prefix does not confuse the parse',
+          bulk.session_name_parts('Site A\\10.1.2.3 - 5-200') == ('10.1.2.3', '5-200'))
+    check('a session not named this way parses to nothing',
+          bulk.session_name_parts('sw-b') == ('', ''))
+    check('...even one with a folder and a hyphen in it',
+          bulk.session_name_parts('site-a\\sw-1') == ('', ''))
+
+
+def test_unreachable_switch_is_named_from_its_session(tmpdir):
+    """When a switch cannot be reached, its session's own name - not the
+    switch - is the only thing that can identify it. The bldg/trailer label
+    is what a person chasing it down actually wants to see; the ip backfills
+    the address only when the saved session carried none."""
+    print('\nan unreachable switch is named for its bldg/trailer, not its session path')
+    sessions = [('10.9.0.1 - 5-200', '10.9.0.1'), ('10.9.0.2 - 6', '')]
+    fake = run_walker(tmpdir, sessions, {'10.9.0.1 - 5-200': 'offline',
+                                         '10.9.0.2 - 6': 'timeout'})
+    rows = {row['session']: row for row in log_rows(tmpdir)}
+    with_room = rows.get('10.9.0.1 - 5-200', {})
+    check('the bldg/trailer-room label becomes the hostname',
+          with_room.get('hostname') == '5-200', with_room)
+    check('a Hostname field that was already set is kept as the address',
+          with_room.get('ip_address') == '10.9.0.1', with_room)
+
+    no_room = rows.get('10.9.0.2 - 6', {})
+    check('a bldg/trailer with no room still becomes the hostname',
+          no_room.get('hostname') == '6', no_room)
+    check('a blank Hostname field is backfilled from the session name',
+          no_room.get('ip_address') == '10.9.0.2', no_room)
+    check('nothing here stopped the walk', fake.attempts.count('10.9.0.2 - 6') >= 1)
+
+
 def test_host_keys_are_accepted_without_a_dialog(tmpdir):
     """The first SSH connection to a switch SecureCRT has not seen raises a New
     Host Key dialog. With a person in the chair that is one press of Enter;
@@ -548,6 +589,7 @@ def test_stop_file_halts_cleanly(tmpdir):
 
 
 if __name__ == '__main__':
+    test_session_name_parts()
     for test in (test_offline_switches_do_not_stop_the_run,
                  test_rejected_login_is_tried_twice,
                  test_duplicates_collapsed_and_recorded,
@@ -557,6 +599,7 @@ if __name__ == '__main__':
                  test_same_hostname_does_not_overwrite,
                  test_audit_failure_keeps_its_capture,
                  test_log_columns,
+                 test_unreachable_switch_is_named_from_its_session,
                  test_host_keys_are_accepted_without_a_dialog,
                  test_an_unhandled_error_does_not_end_the_walk,
                  test_no_audit_here_falls_back_to_captures,

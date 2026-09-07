@@ -259,7 +259,13 @@ def main():
                                   .format(index, len(sessions), session_path))
         outcome, comment = bulk.connect_session(session_path, connect_state)
         if outcome:
-            csv.record(session_path, host, outcome, comment)
+            # Nothing was read off this switch, but its own session name may
+            # still say who it is - see bulk.session_name_parts. ip only
+            # fills a blank left by the session's Hostname field; the
+            # bldg/trailer label always replaces the raw session path, since
+            # that is what identifies a switch nobody could reach.
+            ip, label = bulk.session_name_parts(session_path)
+            csv.record(session_path, host or ip, outcome, comment, hostname=label)
             return
         try:
             outputs = read_inventory()

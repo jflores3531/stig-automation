@@ -313,6 +313,30 @@ def test_unreachable_switches_are_rows(tmpdir):
           rows.get('sw-a', {}).get('model') == 'C9300-48P', rows.get('sw-a'))
 
 
+def test_unreachable_switch_is_named_from_its_session(tmpdir):
+    """A switch nobody could reach has nothing to say who it is except its own
+    session name, and this fleet folds the address and a bldg/trailer into
+    that name - see bulk.session_name_parts. The bldg/trailer label is what
+    goes in the hostname column; the address only backfills a session with no
+    Hostname field of its own."""
+    print('\nan unreachable switch is named for its bldg/trailer, not its session path')
+    sessions = [('10.20.7.1 - 5-200', '10.20.7.1'), ('10.20.7.2 - 6', '')]
+    run_inventory(tmpdir, sessions, {'10.20.7.1 - 5-200': 'offline',
+                                     '10.20.7.2 - 6': 'timeout'})
+    rows = {row['session']: row for row in csv_rows(tmpdir)}
+    with_room = rows.get('10.20.7.1 - 5-200', {})
+    check('the bldg/trailer-room label becomes the hostname',
+          with_room.get('hostname') == '5-200', with_room)
+    check('a Hostname field that was already set is kept as the address',
+          with_room.get('ip_address') == '10.20.7.1', with_room)
+
+    no_room = rows.get('10.20.7.2 - 6', {})
+    check('a bldg/trailer with no room still becomes the hostname',
+          no_room.get('hostname') == '6', no_room)
+    check('a blank Hostname field is backfilled from the session name',
+          no_room.get('ip_address') == '10.20.7.2', no_room)
+
+
 def test_not_a_switch_is_refused(tmpdir):
     """A session list reaches a jump host eventually. root's prompt ends in '#'
     too, and bash answers every command with an error - which is not empty and
@@ -355,6 +379,7 @@ if __name__ == '__main__':
                  test_writes_one_csv_and_nothing_else,
                  test_columns,
                  test_unreachable_switches_are_rows,
+                 test_unreachable_switch_is_named_from_its_session,
                  test_standalone_switch_is_still_one_row,
                  test_not_a_switch_is_refused):
         with tempfile.TemporaryDirectory() as tmpdir:
