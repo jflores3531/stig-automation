@@ -351,15 +351,24 @@ CONNECT_FAILURES = (
 )
 
 
-def describe_connect_failure(error_text):
-    """A plain sentence for the log's comment column, from SecureCRT's error."""
+def describe_connect_failure(error_text, connect_string=''):
+    """A plain sentence for the log's comment column, from SecureCRT's error.
+
+    An error none of the categories above recognise is one nobody has met yet,
+    and the single thing most likely to explain it is what was actually asked
+    of SecureCRT - a session name it could not resolve looks identical, from
+    the log, to a switch that is genuinely off. So the attempted connect
+    string rides along with those, and only those: the recognised failures
+    already say what went wrong, and repeating the request under them would be
+    noise on every unreachable row."""
     lowered = (error_text or '').lower()
     for markers, description in CONNECT_FAILURES:
         if any(marker in lowered for marker in markers):
             return description
     if looks_rejected(error_text):
         return 'Login rejected'
-    return first_line(error_text)
+    detail = first_line(error_text)
+    return '{0} [tried: {1}]'.format(detail, connect_string) if connect_string else detail
 
 
 # The run log's columns. This is the STIG walk's record of what happened to
@@ -488,10 +497,11 @@ def connect_session(session_path, state=None):
                 error = crt.GetLastErrorMessage() or 'connect failed'
             if crt.Session.Connected:
                 return '', ''
+        tried = _connect_string(session_path, state['accept_host_keys'])
         if not looks_rejected(error):
-            return 'unreachable', describe_connect_failure(error)
+            return 'unreachable', describe_connect_failure(error, tried)
         if attempt == LOGIN_ATTEMPTS:
-            return 'login rejected', describe_connect_failure(error)
+            return 'login rejected', describe_connect_failure(error, tried)
     return 'login rejected', 'Login rejected'
 
 

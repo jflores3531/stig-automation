@@ -92,6 +92,10 @@ class FakeSession:
                 'offline': 'The remote system refused the connection.',
                 'timeout': 'The connection attempt timed out. No response from host.',
                 'rejected': 'Password authentication failed.',
+                # Verbatim from a real run: an error none of the categories
+                # recognise, which is the case the connect string rides along
+                # with. See test_an_unrecognised_failure_says_what_was_tried.
+                'mystery': 'A hostname is required for the specific protocol.',
             }[outcome]
             raise Exception(self.crt.last_error)
         self.Connected = True
@@ -559,6 +563,35 @@ def test_unreachable_switch_is_named_from_its_session(tmpdir):
     check('nothing here stopped the walk', fake.attempts.count('10.9.0.2 - 6') >= 1)
 
 
+def test_an_unrecognised_failure_says_what_was_tried(tmpdir):
+    """A connect error the categories do not recognise leaves the log saying
+    only what SecureCRT said, and SecureCRT's own wording does not distinguish
+    "this switch is off" from "I could not resolve that session name at all" -
+    the second reads, unhelpfully, as an unreachable device. The request is
+    what tells them apart, so an unrecognised failure carries the connect
+    string that produced it. The recognised ones do not: they already say what
+    went wrong, and repeating the request under every timed-out switch would
+    be noise."""
+    print('\nan unrecognised connect failure says what was actually tried')
+    sessions = [('node-a/10.9.9.1 - b100-52', '10.9.9.1'), ('node-a/sw-2', '10.9.9.2')]
+    run_walker(tmpdir, sessions, {'node-a/10.9.9.1 - b100-52': 'mystery',
+                                  'node-a/sw-2': 'timeout'})
+    rows = {row['session']: row for row in log_rows(tmpdir)}
+
+    mystery = rows.get('node-a/10.9.9.1 - b100-52', {})
+    comment = mystery.get('comment', '')
+    check("SecureCRT's own wording is still the first thing said",
+          comment.startswith('A hostname is required for the specific protocol.'), mystery)
+    check('and the connect string that produced it rides along',
+          '/S ' in comment and 'node-a/10.9.9.1 - b100-52' in comment, mystery)
+
+    # A recognised failure is already self-explanatory; the request under it
+    # would be noise on what is normally the bulk of an overnight run's rows.
+    timed_out = rows.get('node-a/sw-2', {})
+    check('a recognised failure stays the plain sentence it was',
+          timed_out.get('comment') == 'Connection timed out', timed_out)
+
+
 def test_host_keys_are_accepted_without_a_dialog(tmpdir):
     """The first SSH connection to a switch SecureCRT has not seen raises a New
     Host Key dialog. With a person in the chair that is one press of Enter;
@@ -648,6 +681,7 @@ if __name__ == '__main__':
                  test_audit_failure_keeps_its_capture,
                  test_log_columns,
                  test_unreachable_switch_is_named_from_its_session,
+                 test_an_unrecognised_failure_says_what_was_tried,
                  test_host_keys_are_accepted_without_a_dialog,
                  test_an_unhandled_error_does_not_end_the_walk,
                  test_no_audit_here_falls_back_to_captures,
