@@ -563,6 +563,25 @@ def _sleep(milliseconds):
         pass
 
 
+def _still_connected():
+    """Whether the session is still up, as far as SecureCRT will say.
+
+    Assumed up where nothing answers the question - a stand-in without a
+    Session, say. Guessing "dropped" there would turn a healthy run into a
+    fleet of dropped sessions, which is the worse of the two mistakes."""
+    try:
+        return bool(crt.Session.Connected)
+    except AttributeError:
+        return True
+
+
+def _tail(text, length=30):
+    """The end of a line, for a log column. The end rather than the start
+    because that is where a prompt would be if there were one."""
+    text = (text or '').strip()
+    return text if len(text) <= length else '...' + text[-length:]
+
+
 def _looks_like_a_prompt(line):
     """Whether the cursor's line is a Cisco EXEC prompt rather than banner.
 
@@ -597,8 +616,11 @@ def read_prompt(timeout_seconds=PROMPT_TIMEOUT_SECONDS):
     prompt does nothing except make the switch draw a fresh prompt on a clean
     line. Nothing is configured by it.
 
-    Returns '' if no prompt appears within PROMPT_TIMEOUT_SECONDS, which the
-    callers report as the same "no prompt" they always did.
+    Raises CollectionError if no prompt appears within PROMPT_TIMEOUT_SECONDS,
+    or if the session drops while waiting - two different problems, and the
+    reason says which, along with how long it waited and what it was looking
+    at when it gave up. "no prompt" on its own sends whoever reads the log
+    back to the switch to find out what that meant.
 
     The banner has to be allowed to drain while this waits, which is why
     Synchronous is turned off for the duration. In synchronous mode SecureCRT
@@ -613,21 +635,49 @@ def read_prompt(timeout_seconds=PROMPT_TIMEOUT_SECONDS):
     command is sent."""
     was_synchronous = getattr(crt.Screen, 'Synchronous', False)
     crt.Screen.Synchronous = False
+    last_seen = ''
+    waited_ms = 0
     try:
         polls = max(1, int(timeout_seconds * 1000 / PROMPT_POLL_MS))
         for poll in range(polls):
+            # A session that has gone is not a session with an unreadable
+            # prompt, and the two want opposite things done about them: one is
+            # the switch or the link, the other is this function. Waiting out
+            # the full timeout on a dropped session would also cost 45 seconds
+            # a switch on a night when something is dropping all of them.
+            if not _still_connected():
+                raise CollectionError(
+                    'session dropped after {0}s waiting for the prompt'
+                    .format(waited_ms // 1000),
+                    'The session closed while waiting for the switch to finish '
+                    'its banner and show a prompt.\n\nThe switch answered and '
+                    'then went away, which is not something this script can '
+                    'read its way past.', 'Session dropped')
             row = crt.Screen.CurrentRow
             column = crt.Screen.CurrentColumn - 1
             if column >= 1:
                 line = crt.Screen.Get(row, 1, row, column).strip()
                 if _looks_like_a_prompt(line):
                     return line
+                if line:
+                    last_seen = line
             # Nudged only after it has had a chance to arrive on its own, and
             # then rarely: a banner is not waiting on us, it is simply long.
             if poll and poll % PROMPT_NUDGE_EVERY == 0:
                 crt.Screen.Send('\r')
             _sleep(PROMPT_POLL_MS)
-        return ''
+            waited_ms += PROMPT_POLL_MS
+        # What it was looking at is the thing that explains this, and a log
+        # saying only "no prompt" sends whoever reads it back to the switch to
+        # find out. The tail rather than the whole line: it is a log column,
+        # and a prompt would be at the end of it.
+        raise CollectionError(
+            'no prompt after {0}s; last saw "{1}"'.format(
+                waited_ms // 1000, _tail(last_seen)) if last_seen
+            else 'no prompt after {0}s; screen stayed blank'.format(waited_ms // 1000),
+            'Could not read the device prompt from the current line.\n\n'
+            'Press Enter in the session so the prompt is the last thing on '
+            'screen, then run this script again.', 'No prompt found')
     finally:
         crt.Screen.Synchronous = was_synchronous
 

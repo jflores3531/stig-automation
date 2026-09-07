@@ -62,8 +62,11 @@ class FakeScreen:
     appears - what a switch hardened to this STIG actually does to a session
     that connects and reads straight away."""
 
-    def __init__(self, host_outputs, banner_lines=0):
+    def __init__(self, host_outputs, banner_lines=0, session=None, drop_after_polls=0):
         self.host_outputs = host_outputs
+        self.session = session
+        self.drop_after_polls = drop_after_polls
+        self.polls = 0
         self.Synchronous = False
         self.prompt = 'SW#'
         self.banner_lines = banner_lines
@@ -74,6 +77,11 @@ class FakeScreen:
         self.CurrentColumn = len(self.prompt) + 1
 
     def Get(self, *_args):
+        self.polls += 1
+        # A switch that answers, starts its banner, and then goes - the shape
+        # of a session dropped mid-collection rather than never opened.
+        if self.drop_after_polls and self.polls > self.drop_after_polls and self.session:
+            self.session.Connected = False
         if self.banner_lines > 0:
             self.banner_lines -= 1
             # In synchronous mode SecureCRT holds the incoming stream until the
@@ -157,7 +165,7 @@ class FakeDialog:
 
 class FakeCRT:
     def __init__(self, output_dir, behaviour, host_outputs, folder='',
-                 reject_host_key_flag=False, banner_lines=0):
+                 reject_host_key_flag=False, banner_lines=0, drop_after_polls=0):
         self.output_dir = output_dir
         self.behaviour = behaviour
         self.folder = folder
@@ -167,8 +175,9 @@ class FakeCRT:
         self.attempts = []
         self.messages = []
         self.last_error = ''
-        self.Screen = FakeScreen(host_outputs, banner_lines)
         self.Session = FakeSession(self)
+        self.Screen = FakeScreen(host_outputs, banner_lines, self.Session,
+                                 drop_after_polls)
         self.Dialog = FakeDialog(self)
 
     def GetLastErrorMessage(self):
@@ -181,10 +190,10 @@ class FakeCRT:
 
 
 def run_walker(tmpdir, sessions, behaviour, host_outputs=None, folder='',
-               reject_host_key_flag=False, banner_lines=0):
+               reject_host_key_flag=False, banner_lines=0, drop_after_polls=0):
     """Drive bulk.main() with a stubbed SecureCRT and a stubbed session list."""
     fake = FakeCRT(tmpdir, behaviour, host_outputs or OUTPUTS, folder,
-                   reject_host_key_flag, banner_lines)
+                   reject_host_key_flag, banner_lines, drop_after_polls)
     bulk.crt = fake
     capture_l2s.crt = fake
     original_find = bulk.find_sessions
@@ -665,6 +674,46 @@ def test_a_banner_still_arriving_is_waited_out(tmpdir):
           not settled.slept, settled.slept)
 
 
+def test_a_prompt_that_never_comes_says_what_it_saw(tmpdir):
+    """"no prompt" on its own is the least useful true thing the log can say -
+    it sends whoever reads it back to the switch to find out what the script
+    was looking at. A switch that never prompts should say how long it waited
+    and what was on the line instead."""
+    print('\na prompt that never comes says how long it waited and what it saw')
+    # Never prompts: every read lands on banner.
+    fake = run_walker(tmpdir, [('node-a/sw-1', '10.0.14.1')], {}, banner_lines=10 ** 6)
+    rows = log_rows(tmpdir)
+    comment = rows[0]['comment'] if rows else ''
+    check('it is still refused rather than hanging the walk',
+          rows and rows[0]['outcome'] == 'refused', rows)
+    check('the wait it spent is in the comment', 'after' in comment and 's;' in comment,
+          comment)
+    check('and so is the tail of what it was looking at when it gave up',
+          'last saw' in comment and comment.rstrip("'\" ").endswith('####'), comment)
+    check('trimmed to a tail, so a log column stays a log column',
+          len(comment) < 100, len(comment))
+
+
+def test_a_session_that_drops_is_not_reported_as_no_prompt(tmpdir):
+    """A session that goes away mid-banner and a session whose prompt cannot be
+    read are different faults - one is the switch or the link, the other is
+    this script - and reporting both as "no prompt" is what sent an afternoon
+    into the prompt-reading code while the real fault was the session being
+    dropped. Waiting out the full timeout on a dead session also costs 45
+    seconds a switch on a night when something is dropping all of them."""
+    print('\na session that drops while waiting says so, rather than "no prompt"')
+    fake = run_walker(tmpdir, [('node-a/sw-1', '10.0.15.1')], {},
+                      banner_lines=10 ** 6, drop_after_polls=6)
+    rows = log_rows(tmpdir)
+    comment = rows[0]['comment'] if rows else ''
+    check('it is refused, not left to the outer handler as an error',
+          rows and rows[0]['outcome'] == 'refused', rows)
+    check('and named as a dropped session rather than an unreadable prompt',
+          'dropped' in comment and 'no prompt' not in comment, comment)
+    check('it gave up when the session went, not at the timeout',
+          sum(fake.slept) < capture_l2s.PROMPT_TIMEOUT_SECONDS * 1000, sum(fake.slept))
+
+
 def test_an_unrecognised_failure_says_what_was_tried(tmpdir):
     """A connect error the categories do not recognise leaves the log saying
     only what SecureCRT said, and SecureCRT's own wording does not distinguish
@@ -800,6 +849,8 @@ if __name__ == '__main__':
                  test_log_columns,
                  test_unreachable_switch_is_named_from_its_session,
                  test_a_banner_still_arriving_is_waited_out,
+                 test_a_prompt_that_never_comes_says_what_it_saw,
+                 test_a_session_that_drops_is_not_reported_as_no_prompt,
                  test_an_unrecognised_failure_says_what_was_tried,
                  test_host_keys_are_accepted_without_a_dialog,
                  test_an_unhandled_error_does_not_end_the_walk,
