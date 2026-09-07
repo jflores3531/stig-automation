@@ -40,8 +40,8 @@ stay identical, so the duplication cannot drift silently.
 # When either is missing - e.g. only this one file was copied to a locked-down
 # work machine - the capture is kept and the dialog says where to run the audit
 # instead. The audit needs Python only - neither pyyaml nor netmiko is required
-# offline: yaml.py in the repo root stands in for pyyaml, and netauto imports
-# netmiko lazily, only on connect.
+# offline: yaml.py in the repo's scripts/ stands in for pyyaml, and netauto
+# imports netmiko lazily, only on connect.
 #
 # No checklist setting: this runs against IOS XE devices, which is
 # l2_stig_audit.py's own default, so the audit is invoked without --checklist
@@ -50,7 +50,7 @@ stay identical, so the duplication cannot drift silently.
 # produces a report where nearly every rule reads NOT AUTOMATED, which looks
 # like broken tooling rather than a wrong flag. Auditing a classic-IOS device
 # (the lab's vios_l2 switches) is still possible, just not from here: run
-# `l2_stig_audit.py <name> --checklist ios --from-capture <file>` by hand.
+# `scripts/l2_stig_audit.py <name> --checklist ios --from-capture <file>` by hand.
 
 # Open the folder the checklist landed in when the run finishes, so the file is
 # in front of whoever ran it rather than at a path they have to go find. The
@@ -784,11 +784,11 @@ def find_audit():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo = os.path.dirname(script_dir)
-    audit = os.path.join(repo, 'l2_stig_audit.py')
+    audit = os.path.join(repo, 'scripts', 'l2_stig_audit.py')
     if not os.path.exists(audit):
         return None, None, ('l2_stig_audit.py not found next to this script - run the '
                             'audit on a machine with the repo:\n'
-                            'python l2_stig_audit.py <name> --from-capture <capture>')
+                            'python scripts/l2_stig_audit.py <name> --from-capture <capture>')
 
     # Prefer the repo's own venv; fall back to whatever python is on PATH.
     candidates = [os.path.join(repo, '.venv', 'Scripts', 'python.exe'),
@@ -837,7 +837,7 @@ def run_audit(capture_path, hostname, output_dir, runner=None):
         # No --checklist: the audit defaults to IOS XE, which is what this
         # script captures from. See the note at the top of the file.
         result = subprocess.run(
-            [python, os.path.join(repo, 'l2_stig_audit.py'), hostname,
+            [python, os.path.join(repo, 'scripts', 'l2_stig_audit.py'), hostname,
              '--from-capture', capture_path, '--to-cklb', output_dir],
             capture_output=True, text=True, cwd=repo, timeout=180)
     except (OSError, subprocess.TimeoutExpired) as error:

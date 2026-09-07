@@ -20,7 +20,7 @@ import sys
 import tempfile
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 
@@ -123,7 +123,7 @@ def run_script(**kwargs):
 def audit_version_readers():
     """The audit's `show version` readers, executed out of its source."""
     import stig_common
-    with open(os.path.join(PROJECT, 'l2_stig_audit.py'), encoding='utf-8') as handle:
+    with open(os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), encoding='utf-8') as handle:
         source = handle.read()
     start = source.index('def _show_version_switch_table')
     end = source.index('def _ios_release_supported_check')

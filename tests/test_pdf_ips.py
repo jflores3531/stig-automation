@@ -21,7 +21,7 @@ import tempfile
 import zlib
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 
 import pdf_ips
 
@@ -133,7 +133,7 @@ def test_repeats_are_counted_not_repeated(tmpdir):
 
 
 def run_cli(*args):
-    result = subprocess.run([sys.executable, os.path.join(PROJECT, 'pdf_ips.py'), *args],
+    result = subprocess.run([sys.executable, os.path.join(PROJECT, 'scripts', 'pdf_ips.py'), *args],
                             capture_output=True, text=True, cwd=PROJECT, timeout=60)
     return result
 

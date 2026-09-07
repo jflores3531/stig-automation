@@ -21,7 +21,7 @@ import sys
 import tempfile
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 
 import arp_inventory
 
@@ -111,7 +111,7 @@ def test_command_built():
 
 
 def run_cli(tmpdir, *args):
-    return subprocess.run([sys.executable, os.path.join(PROJECT, 'arp_inventory.py'), *args],
+    return subprocess.run([sys.executable, os.path.join(PROJECT, 'scripts', 'arp_inventory.py'), *args],
                           capture_output=True, text=True, cwd=PROJECT, timeout=60)
 
 

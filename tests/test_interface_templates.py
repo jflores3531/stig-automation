@@ -27,7 +27,7 @@ import sys
 import tempfile
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture
@@ -93,7 +93,7 @@ def report_for(tmpdir, name, template_output=TEMPLATE_OUTPUT, interfaces=TEMPLAT
         outputs[TEMPLATE_COMMAND] = template_output
     path = capture.write(os.path.join(tmpdir, name + '.capture'), outputs)
     result = subprocess.run(
-        [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'TESTSW01',
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
          '--from-capture', path, '--non-user-vlans', '999,1000'],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)
     return result.stdout + result.stderr, result.returncode

@@ -14,7 +14,7 @@
 # Consumed by the stig_audit role - runs l2_stig_audit.py against this group.
 # --checklist ios: the script defaults to the IOS XE STIG (the work target),
 # but these lab switches run vios_l2, which is IOS.
-audit_script: l2_stig_audit.py
+audit_script: scripts/l2_stig_audit.py
 audit_args: --checklist ios
 
 # VLAN IDs excluded when discovering "user VLANs" for DHCP snooping/DAI

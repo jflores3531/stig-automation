@@ -22,7 +22,7 @@ The switches this is aimed at are reachable only from a host where pip is not an
 
 `inventory.yaml` holds JSON rather than YAML. JSON is a subset of YAML 1.2, so one file parses under real PyYAML where it exists and under `yaml.py` — a stand-in whose `safe_load` is the stdlib `json.load` — where it does not. Vendoring PyYAML into the repo would also have worked, and was rejected: several thousand lines of someone else's code to review and keep current, for one function call, in a repo whose whole claim is that it can be read before it is trusted.
 
-The cost is that `yaml.py` shadows an installed PyYAML for anything run from the repo root. That is harmless while the inventory stays JSON, since that parses either way, but a YAML-formatted inventory on a machine that has PyYAML fails with a `JSONDecodeError` naming the parser rather than the format — which reads like broken tooling instead of a file in the wrong dialect.
+The cost is that `yaml.py` shadows an installed PyYAML for anything run from `scripts/`, where it sits beside the modules that import it. That is harmless while the inventory stays JSON, since that parses either way, but a YAML-formatted inventory on a machine that has PyYAML fails with a `JSONDecodeError` naming the parser rather than the format — which reads like broken tooling instead of a file in the wrong dialect.
 
 Netmiko is imported inside `netauto.connect()` rather than at module scope, so nothing on the audit path loads it. `--from-capture` and the SecureCRT collectors run on Python alone, and the collectors import nothing from this repository at all — they are copied onto the host as single files.
 

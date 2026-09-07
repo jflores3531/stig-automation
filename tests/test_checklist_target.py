@@ -26,7 +26,7 @@ import sys
 import tempfile
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture
@@ -246,7 +246,7 @@ def test_end_to_end(tmpdir):
     capture_path = capture.write(os.path.join(tmpdir, 'sw.capture'), fixtures.OUTPUTS)
     out = os.path.join(tmpdir, 'exports')
     result = subprocess.run(
-        [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'any-old-label',
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'any-old-label',
          '--from-capture', capture_path, '--non-user-vlans', '1,10,999,1000',
          '--to-cklb', out],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)
@@ -283,7 +283,7 @@ def test_older_capture(tmpdir):
     capture_path = capture.write(os.path.join(tmpdir, 'older.capture'), without)
     out = os.path.join(tmpdir, 'older-exports')
     result = subprocess.run(
-        [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'TESTSW01',
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
          '--from-capture', capture_path, '--non-user-vlans', '1,10,999,1000',
          '--to-cklb', out],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)

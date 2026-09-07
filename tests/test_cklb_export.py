@@ -33,7 +33,7 @@ import sys
 import tempfile
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture
@@ -53,7 +53,7 @@ def check(name, condition, detail=''):
 
 def run_audit(tmpdir, capture_path, *extra):
     result = subprocess.run(
-        [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'TESTSW01',
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
          '--from-capture', capture_path, '--non-user-vlans', '1,10,999,1000', *extra],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)
     return result

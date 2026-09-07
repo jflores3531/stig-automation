@@ -29,7 +29,7 @@ import sys
 import tempfile
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture
@@ -243,7 +243,7 @@ def test_end_to_end(tmpdir):
     print('\nend-to-end: l2_stig_audit.py --from-capture, every rule in the checklist')
     good = capture.write(os.path.join(tmpdir, 'e2e.capture'), OUTPUTS)
     result = subprocess.run(
-        [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'TESTSW01',
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
          '--checklist', 'ios',  # this test's expectations are IOS-keyed (65 rules)
          '--from-capture', good, '--non-user-vlans', '1,10,999,1000'],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)
@@ -258,7 +258,7 @@ def test_end_to_end(tmpdir):
 
     print('\nmutually exclusive flags')
     clash = subprocess.run(
-        [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'S1',
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'S1',
          '--checklist', 'ios',
          '--from-capture', good, '--capture-to', os.path.join(tmpdir, 'x.capture')],
         capture_output=True, text=True, cwd=PROJECT, timeout=60)

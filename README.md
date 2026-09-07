@@ -19,11 +19,13 @@ Development and the hardening scripts are validated against a 7-device virtual l
 
 ## What's here
 
+Every script lives in [`scripts/`](scripts/) and is run from the repository root — `python3 scripts/<name>.py`. The names below are given bare for readability. `inventory.yaml`, `secrets.yaml`, `checklists/`, `backups/` and `audit_logs/` sit at the root beside `scripts/`, and are found there no matter which directory a script is invoked from.
+
 ### Shared
 - **`netauto.py`** — Inventory loading, device-name validation, credential prompting, Netmiko SSH connection handling, automatic privilege escalation.
-- **`inventory.yaml`** — Device inventory and STIG-hardening config (NTP/syslog/RADIUS server IPs, VLAN IDs, management subnet, automation host). No credentials. Written as JSON — see `yaml.py` — which parses under real PyYAML too, since JSON is a subset of YAML 1.2.
+- **`inventory.yaml`** — Device inventory and STIG-hardening config (NTP/syslog/RADIUS server IPs, VLAN IDs, management subnet, automation host). No credentials. Written as JSON — see `scripts/yaml.py` — which parses under real PyYAML too, since JSON is a subset of YAML 1.2.
 - **`secrets.yaml`** (gitignored) — Plaintext secrets for the `*_stig_harden*.py` scripts. Copy `secrets.yaml.example` to start.
-- **`yaml.py`** — Stand-in for PyYAML on hosts where nothing can be installed: `safe_load` reads the inventory with the stdlib `json` parser. It shadows any real PyYAML present, which is harmless while `inventory.yaml` stays JSON — that parses under either.
+- **`yaml.py`** — Stand-in for PyYAML on hosts where nothing can be installed: `safe_load` reads the inventory with the stdlib `json` parser. Sitting in `scripts/` beside its importers, it shadows any real PyYAML present for anything run from there, which is harmless while `inventory.yaml` stays JSON — that parses under either.
 
 ### Reading what is already out there
 - **`arp_inventory.py`** — What is actually live on a subinterface, from the router's ARP table, as a CSV. Reads a device from `inventory.yaml` or a pasted `show ip arp` with `--from-file`. The router's own address, and an incomplete entry (an ARP request nothing answered), are marked as what they are rather than listed as hosts.
@@ -68,7 +70,7 @@ Development and the hardening scripts are validated against a 7-device virtual l
 
 Which of the two paths applies is decided by whether the host lets you install anything.
 
-**Offline audit — nothing installed, and nothing installable.** On the work machine neither netmiko nor PyYAML can be installed at all, so the offline path is written not to need them: `yaml.py` stands in for PyYAML, and netmiko is imported inside `netauto.connect()`, which an offline audit never calls. The SecureCRT collectors and `l2_stig_audit.py --from-capture` therefore run on a stock Python and nothing else — copy the files in and run them. This is the deployment target, not a fallback.
+**Offline audit — nothing installed, and nothing installable.** On the work machine neither netmiko nor PyYAML can be installed at all, so the offline path is written not to need them: `yaml.py` stands in for PyYAML, and netmiko is imported inside `netauto.connect()`, which an offline audit never calls. The SecureCRT collectors and `l2_stig_audit.py --from-capture` therefore run on a stock Python and nothing else — copy `scripts/` and `checklists/` in and run them. This is the deployment target, not a fallback.
 
 The inventory it reads can be this small:
 
@@ -107,26 +109,26 @@ line** — the `\` continuations here are bash, and PowerShell's continuation ch
 backtick. Paths take `\` or `/`; both work. The checklist export below, as PowerShell takes it:
 
 ```powershell
-python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out\SW01.cklb
+python scripts/l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out\SW01.cklb
 ```
 
 Output directories are created if they do not exist.
 
 ```bash
 # Back up one device or all devices
-python3 backup_config.py R1
-python3 backup_config.py
+python3 scripts/backup_config.py R1
+python3 scripts/backup_config.py
 
 # Diff current running-config against last backup
-python3 config_diff.py R1
+python3 scripts/config_diff.py R1
 
 # STIG audit. l2_stig_audit.py defaults to the IOS XE STIG (the deployment
 # target); the lab's vios_l2 switches are IOS, hence --checklist ios there.
 # The two STIGs share no rule IDs, so the wrong checklist reports every rule
 # NOT AUTOMATED.
-python3 l2_stig_audit.py S1 --checklist ios
-python3 nxos_stig_audit.py NXCore1
-python3 ios_router_audit.py R1
+python3 scripts/l2_stig_audit.py S1 --checklist ios
+python3 scripts/nxos_stig_audit.py NXCore1
+python3 scripts/ios_router_audit.py R1
 
 # Audit without connecting. Collect the read-only show commands into a
 # file - a logged terminal session works - then audit it from anywhere. A
@@ -135,18 +137,18 @@ python3 ios_router_audit.py R1
 # capture rather than reporting against config it could not see.
 # --capture-to records a live run; auditing that file must give the same
 # report, which is how the offline path is checked against a real switch.
-python3 l2_stig_audit.py S1 --checklist ios --capture-to captures/S1.capture
-python3 l2_stig_audit.py S1 --checklist ios --from-capture captures/S1.capture
+python3 scripts/l2_stig_audit.py S1 --checklist ios --capture-to captures/S1.capture
+python3 scripts/l2_stig_audit.py S1 --checklist ios --from-capture captures/S1.capture
 
 # An IOS XE switch needs no flag - that checklist is the default.
-python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture
+python3 scripts/l2_stig_audit.py SW01 --from-capture captures/SW01.capture
 
 # Write the verdicts straight into a STIG Viewer 3 checklist instead of
 # retyping 64 rules. PASS/FAIL/NOT APPLICABLE become not_a_finding/open/
 # not_applicable; NOT AUTOMATED becomes not_reviewed, never not_a_finding.
 # Re-running over the same file re-derives everything from the new capture,
 # including both text boxes - see "Getting a report into STIG Viewer 3".
-python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
+python3 scripts/l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
     --to-cklb checklists/out/SW01.cklb
 
 # Give --to-cklb a directory instead and the audit names the file itself:
@@ -154,21 +156,21 @@ python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
 # SW01_06AUG2026_L2S_V3R2_NDM_V3R6.cklb. The hostname is the switch's own and
 # the date is the capture's, so re-running on the same day writes the same
 # file rather than piling up one per run.
-python3 l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
+python3 scripts/l2_stig_audit.py SW01 --from-capture captures/SW01.capture \
     --to-cklb checklists/out
 
 # Redact a capture so it can be shown to someone off the network. Writes
 # <name>.redacted.capture beside it, and refuses to write anything at all if a
 # value it recognises as sensitive survives the pass.
-python3 sanitize_capture.py captures/SW01.capture
-python3 sanitize_capture.py captures/SW01.capture --also-redact "PROJECT NAME"
+python3 scripts/sanitize_capture.py captures/SW01.capture
+python3 scripts/sanitize_capture.py captures/SW01.capture --also-redact "PROJECT NAME"
 
 # Addressing from places other than a config: the ARP table of a subinterface,
 # and a diagram someone sent as a PDF.
-python3 arp_inventory.py R1 --interface Gi0/0.100 -o vlan100.csv
-python3 arp_inventory.py R1 --from-file pasted-arp.txt --interface Gi0/0.100
-python3 pdf_ips.py diagram.pdf -o addressing.csv
-python3 pdf_ips.py diagram.pdf --all-text   # what it saw, when an answer looks wrong
+python3 scripts/arp_inventory.py R1 --interface Gi0/0.100 -o vlan100.csv
+python3 scripts/arp_inventory.py R1 --from-file pasted-arp.txt --interface Gi0/0.100
+python3 scripts/pdf_ips.py diagram.pdf -o addressing.csv
+python3 scripts/pdf_ips.py diagram.pdf --all-text   # what it saw, when an answer looks wrong
 
 # Fleet-sized: run securecrt/capture_l2s_bulk.py inside SecureCRT and it walks
 # every saved session, leaving one checklist per switch in the output folder.
@@ -176,32 +178,32 @@ python3 pdf_ips.py diagram.pdf --all-text   # what it saw, when an answer looks 
 # which are then audited in one pass elsewhere. The loop below is Windows cmd,
 # not bash.
 for %f in (C:\captures\*.capture) do ^
-    python l2_stig_audit.py %~nf --from-capture "%f" --to-cklb C:\Documents\checklists
+    python scripts/l2_stig_audit.py %~nf --from-capture "%f" --to-cklb C:\Documents\checklists
 
 # STIG hardening for an L2 switch - run in this order:
-python3 l2_stig_harden_global.py S1 # bulk fixes, run first
-python3 l2_stig_harden_ipsg.py S1   # IP Source Guard - can drop a statically-addressed host, see Notes
-python3 l2_stig_harden_dai.py S1    # DAI - same static-host risk as IPSG, see Notes
-python3 l2_stig_harden_acl.py S1    # vty management ACL - run isolated
-python3 l2_stig_harden_aaa.py S1    # AAA/RADIUS + password policy - run last
+python3 scripts/l2_stig_harden_global.py S1 # bulk fixes, run first
+python3 scripts/l2_stig_harden_ipsg.py S1   # IP Source Guard - can drop a statically-addressed host, see Notes
+python3 scripts/l2_stig_harden_dai.py S1    # DAI - same static-host risk as IPSG, see Notes
+python3 scripts/l2_stig_harden_acl.py S1    # vty management ACL - run isolated
+python3 scripts/l2_stig_harden_aaa.py S1    # AAA/RADIUS + password policy - run last
 
 # NX-OS hardening - global first, then the isolated scripts
-python3 nxos_stig_harden_global.py NXCore1
-python3 nxos_stig_harden_interfaces.py NXCore1
-python3 nxos_stig_harden_acl.py NXCore1
-python3 nxos_stig_harden_aaa.py NXCore1
+python3 scripts/nxos_stig_harden_global.py NXCore1
+python3 scripts/nxos_stig_harden_interfaces.py NXCore1
+python3 scripts/nxos_stig_harden_acl.py NXCore1
+python3 scripts/nxos_stig_harden_aaa.py NXCore1
 
 # IOS router hardening - same order
-python3 ios_router_stig_harden_global.py R1
-python3 ios_router_stig_harden_urpf.py R1     # external-facing interfaces only
-python3 ios_router_stig_harden_acl.py R1
-python3 ios_router_stig_harden_aaa.py R1
+python3 scripts/ios_router_stig_harden_global.py R1
+python3 scripts/ios_router_stig_harden_urpf.py R1     # external-facing interfaces only
+python3 scripts/ios_router_stig_harden_acl.py R1
+python3 scripts/ios_router_stig_harden_aaa.py R1
 
 # Persist the result - only after re-auditing and confirming it's what you wanted.
 # Until this runs, a reload reverts the device, which is the escape hatch if a
 # push locked you out.
-python3 save_config.py NXCore1
-python3 save_config.py            # or every device in the inventory
+python3 scripts/save_config.py NXCore1
+python3 scripts/save_config.py            # or every device in the inventory
 
 # Tests - no framework, no device needed. A fresh clone has no inventory.yaml
 # (gitignored), and the suites that drive the audit through the CLI need one -
@@ -232,7 +234,7 @@ printed report and the file.
 **1. Collect, or use a capture you already have.**
 
 ```powershell
-python l2_stig_audit.py SW01 --capture-to captures\SW01.capture
+python scripts/l2_stig_audit.py SW01 --capture-to captures\SW01.capture
 ```
 
 Or collect it from SecureCRT, on a machine where nothing else may touch the network:
@@ -243,7 +245,7 @@ of what you need, skip to step 4.
 **2. Audit, writing the checklist in the same pass.**
 
 ```powershell
-python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
+python scripts/l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
 ```
 
 Given a **directory**, the audit names the file itself:
@@ -326,7 +328,7 @@ Viewer and save. Per the rule above, re-running the audit to the same path will 
 annotate the copy you intend to keep - and send the next run somewhere else:
 
 ```powershell
-python l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
+python scripts/l2_stig_audit.py SW01 --from-capture captures\SW01.capture --to-cklb checklists\out
 ```
 
 Every field is re-derived from the new capture. What the file says about a switch is always what
@@ -335,14 +337,14 @@ the latest capture said about it, and only that.
 A live run is the same flag, and prompts for credentials:
 
 ```powershell
-python l2_stig_audit.py SW01 --to-cklb checklists\out
+python scripts/l2_stig_audit.py SW01 --to-cklb checklists\out
 ```
 
 So are the other two platforms:
 
 ```powershell
-python nxos_stig_audit.py NXCore1 --to-cklb checklists\out\NXCore1.cklb
-python ios_router_audit.py R1 --to-cklb checklists\out\R1.cklb
+python scripts/nxos_stig_audit.py NXCore1 --to-cklb checklists\out\NXCore1.cklb
+python scripts/ios_router_audit.py R1 --to-cklb checklists\out\R1.cklb
 ```
 
 Give each device its own output file - which a directory does for you, since the name carries the

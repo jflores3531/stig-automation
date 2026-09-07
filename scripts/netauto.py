@@ -18,10 +18,12 @@ import yaml
 # where captures are collected via SecureCRT and neither netmiko nor pyyaml can
 # be installed at all.
 
-# Every path below is anchored to the directory this file lives in, not the
-# caller's working directory, so the scripts behave the same wherever they're
-# run from (cron, an IDE run config, another checkout).
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Every path below is anchored to the repository root - the parent of scripts/,
+# where this file lives - not the caller's working directory, so the scripts
+# behave the same wherever they're run from (cron, an IDE run config, another
+# checkout). inventory.yaml, secrets.yaml, checklists/, backups/ and
+# audit_logs/ all sit at the root, beside scripts/ rather than inside it.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 INVENTORY_PATH = os.path.join(PROJECT_ROOT, 'inventory.yaml')
 SECRETS_PATH = os.path.join(PROJECT_ROOT, 'secrets.yaml')

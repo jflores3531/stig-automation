@@ -20,7 +20,7 @@ import sys
 import tempfile
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture
@@ -152,7 +152,7 @@ def test_end_to_end(tmpdir):
     print('\nend-to-end: the IOS XE checklist, exercised as the DEFAULT (no flag)')
     path = capture.write(os.path.join(tmpdir, 'xe.capture'), OUTPUTS)
     result = subprocess.run(
-        [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'TESTSW01',
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
          '--from-capture', path, '--non-user-vlans', '1,10,999,1000'],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)
     check('script exits cleanly', result.returncode == 0, result.stderr[-1500:])
@@ -181,7 +181,7 @@ def test_end_to_end(tmpdir):
 
     print('\n  --checklist ios still audits the IOS checklist unchanged')
     baseline = subprocess.run(
-        [sys.executable, os.path.join(PROJECT, 'l2_stig_audit.py'), 'TESTSW01',
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
          '--checklist', 'ios',
          '--from-capture', path, '--non-user-vlans', '1,10,999,1000'],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)

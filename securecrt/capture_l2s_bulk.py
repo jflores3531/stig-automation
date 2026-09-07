@@ -25,7 +25,7 @@ because the switch has already been visited by then and the collection is the
 part that cannot be repeated cheaply. Those show in the log as `audit failed`
 with the reason, and can be audited by hand afterwards:
 
-    python l2_stig_audit.py <name> --from-capture <file> --to-cklb <folder>
+    python scripts/l2_stig_audit.py <name> --from-capture <file> --to-cklb <folder>
 
 Whether the audit can run on this machine at all is settled once, before the
 walk starts, rather than discovered six hundred connections later. Where it
@@ -532,7 +532,7 @@ def main():
                 'The audit cannot run on this machine, so no checklists can be '
                 'written here:\n\n{0}\n\nCollect captures instead? They can be '
                 'audited on a machine with the repo:\n\n'
-                '  python l2_stig_audit.py <name> --from-capture <file> '
+                '  python scripts/l2_stig_audit.py <name> --from-capture <file> '
                 '--to-cklb <folder>\n\nCollect captures only?'.format(why_not),
                 'No audit available here', 4 | 48) != 6:  # MB_YESNO | MB_ICONWARNING
             return

@@ -29,7 +29,7 @@ import sys
 import tempfile
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT)
+sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

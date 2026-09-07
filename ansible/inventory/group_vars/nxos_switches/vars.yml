@@ -9,7 +9,7 @@
 # configures less than it should rather than configuring something wrong.
 
 # Consumed by the stig_audit role - runs nxos_stig_audit.py against this group.
-audit_script: nxos_stig_audit.py
+audit_script: scripts/nxos_stig_audit.py
 
 # VLAN IDs excluded when discovering "user VLANs" for DHCP snooping/DAI
 # (V-220684/V-220686). This mirrors inventory.yaml's non_user_vlans_by_device
