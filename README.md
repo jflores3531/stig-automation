@@ -13,7 +13,9 @@ Manually STIG-checking a single switch means working through ~65 rules by hand a
 
 Rules needing external infrastructure (a backup server, an NMS) or topology/policy judgment are reported **NOT AUTOMATED** rather than guessed at — a false pass on a compliance tool is worse than no answer. Every rule check is coded against the STIG's literal Check Text, and every fix against its Fix Text.
 
-Validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX-OS cores). See [`docs/DESIGN.md`](docs/DESIGN.md) for the reasoning behind script isolation, run order, and credential handling.
+**Run against production hardware.** The read-only path — SecureCRT collection, the offline audit, the checklist export and the fleet inventory — has been exercised against Cisco Catalyst **3850s and 9300s on a production network**, including stacks. Several of the parsers here exist because that is where they were first proved wrong: the release and model on an image that prints no version banner, per-member serials on a stack, a domain line spaced unlike the manual's.
+
+Development and the hardening scripts are validated against a 7-device virtual lab (2 IOS routers, 3 IOSvL2 switches, 2 NX-OS cores). See [`docs/DESIGN.md`](docs/DESIGN.md) for the reasoning behind script isolation, run order, and credential handling.
 
 ## What's here
 
