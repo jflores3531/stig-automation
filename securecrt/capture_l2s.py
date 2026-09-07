@@ -537,14 +537,21 @@ def not_ios_config(running_config):
             'configuration, hostname, interface, version, end)')
 
 
-# How long to let a freshly connected session settle before believing what is
-# on its screen, and how many times to ask. A switch hardened to the STIG this
-# tool audits answers a new SSH session with the DoD notice and consent banner
-# - V-220521's requirement, so every switch worth auditing has one - and that
-# banner is still arriving when Connect() returns. Six seconds in total is far
-# longer than a banner takes and still nothing next to one switch's collection.
-PROMPT_ATTEMPTS = 6
-PROMPT_SETTLE_MS = 1000
+# How long to wait for a prompt on a freshly connected session before giving
+# up on it. A switch hardened to the STIG this tool audits answers a new SSH
+# session with the DoD notice and consent banner - V-220521's requirement, so
+# every switch worth auditing has one - and it is still arriving when Connect()
+# returns. Measured at 20 seconds on real hardware; 45 leaves better than twice
+# that, and costs nothing on a switch that prompts straight away, because the
+# wait ends the moment a prompt appears. Raise it if a slow link needs longer.
+PROMPT_TIMEOUT_SECONDS = 45
+PROMPT_POLL_MS = 500
+
+# Polls between carriage returns while waiting. The screen is read first and
+# nudged only if nothing has arrived, so a session already sitting at its
+# prompt - which is how capture_l2s.py has always found one - is read exactly
+# as it used to be, without anything being sent to it at all.
+PROMPT_NUDGE_EVERY = 10
 
 
 def _sleep(milliseconds):
@@ -556,7 +563,21 @@ def _sleep(milliseconds):
         pass
 
 
-def read_prompt():
+def _looks_like_a_prompt(line):
+    """Whether the cursor's line is a Cisco EXEC prompt rather than banner.
+
+    Ending in '#' is not enough on its own, and assuming it was is how a wait
+    for the prompt would end by reading the banner instead: the DoD notice
+    every switch here carries is commonly ruled off in exactly that character,
+    so its own lines end in one. What a banner line has and a prompt never
+    does is a space - `SW01#` and `SW01(config-if)#` are single words, because
+    a Cisco hostname cannot contain whitespace."""
+    if not line or (not line.endswith('#') and not line.endswith('>')):
+        return False
+    return not any(character.isspace() for character in line)
+
+
+def read_prompt(timeout_seconds=PROMPT_TIMEOUT_SECONDS):
     """Return the device prompt, waiting for the session to settle first.
 
     This is the most fragile part of the script - everything else depends on
@@ -568,28 +589,29 @@ def read_prompt():
     banner instead of a prompt - which the guards above then refuse as "no
     prompt", on a switch that was answering perfectly well.
 
-    So the prompt is asked for rather than assumed: a bare carriage return,
-    which at an EXEC prompt does nothing except make the switch draw a fresh
-    prompt on a clean line - both the thing to wait for and the thing to read.
-    Nothing is configured by it, and a session already sitting at its prompt,
-    which is how capture_l2s.py always found one, answers the first one
-    immediately.
+    So the prompt is waited for rather than assumed. The screen is read first,
+    so a session already sitting at its prompt - which is how capture_l2s.py
+    has always found one - is read exactly as it used to be, immediately and
+    without anything being sent to it. Only if nothing prompt-like is there
+    does this start nudging with a bare carriage return, which at an EXEC
+    prompt does nothing except make the switch draw a fresh prompt on a clean
+    line. Nothing is configured by it.
 
-    Returns '' if no prompt appears in PROMPT_ATTEMPTS tries, which the
+    Returns '' if no prompt appears within PROMPT_TIMEOUT_SECONDS, which the
     callers report as the same "no prompt" they always did."""
-    for attempt in range(PROMPT_ATTEMPTS):
-        crt.Screen.Send('\r')
-        _sleep(PROMPT_SETTLE_MS)
+    polls = max(1, int(timeout_seconds * 1000 / PROMPT_POLL_MS))
+    for poll in range(polls):
         row = crt.Screen.CurrentRow
         column = crt.Screen.CurrentColumn - 1
-        if column < 1:
-            continue
-        line = crt.Screen.Get(row, 1, row, column).strip()
-        # The cursor's own line has to END in a prompt character. A banner
-        # ruled off in '#' has plenty of lines containing one, and matching
-        # those is how waiting for a prompt turns into reading a banner.
-        if line.endswith('#') or line.endswith('>'):
-            return line
+        if column >= 1:
+            line = crt.Screen.Get(row, 1, row, column).strip()
+            if _looks_like_a_prompt(line):
+                return line
+        # Nudged only after it has had a chance to arrive on its own, and then
+        # rarely: a banner is not waiting on us, it is simply long.
+        if poll and poll % PROMPT_NUDGE_EVERY == 0:
+            crt.Screen.Send('\r')
+        _sleep(PROMPT_POLL_MS)
     return ''
 
 

@@ -603,7 +603,10 @@ def test_a_banner_still_arriving_is_waited_out(tmpdir):
     against a session a person logged into and the banner finished scrolling
     long before the script started."""
     print('\na banner still arriving is waited out, not mistaken for no prompt')
-    fake = run_walker(tmpdir, [('node-a/sw-1', '10.0.13.1')], {}, banner_lines=3)
+    # 40 reads at the poll interval is the 20 seconds a real switch was
+    # measured taking to finish its banner - the wait has to outlast that with
+    # room to spare, not merely outlast a tidy fixture.
+    fake = run_walker(tmpdir, [('node-a/sw-1', '10.0.13.1')], {}, banner_lines=40)
     result = outcomes(tmpdir)
     check('the switch is collected rather than refused',
           result.get('node-a/sw-1') == 'checklisted', result)
@@ -611,16 +614,31 @@ def test_a_banner_still_arriving_is_waited_out(tmpdir):
           not any('prompt' in row['comment'].lower() for row in log_rows(tmpdir)),
           [row['comment'] for row in log_rows(tmpdir)])
     check('and it waited, rather than spinning', fake.slept, fake.slept)
+    check('for longer than the 20 seconds a real banner took',
+          sum(fake.slept) >= 20000, sum(fake.slept))
 
-    # A banner ruled off in '#' is the trap: plenty of its lines contain the
-    # character a prompt ends with, so "wait until something has a #" would
-    # have read the banner and called it a prompt.
-    check('a banner line is not mistaken for the prompt',
-          BANNER_LINE.strip().endswith('#')
-          and not capture_l2s.show_version_hostname('') == BANNER_LINE)
+    # A banner ruled off in '#' is the trap, and this fixture line is ruled off
+    # that way on purpose: it ENDS in one, so "wait until a line ends in #"
+    # reads the banner and calls it a prompt. A space is what a banner line has
+    # and a prompt never does.
+    check('the fixture really is the trap - a banner line ending in #',
+          BANNER_LINE.endswith('#'), BANNER_LINE)
+    check('and it is not accepted as a prompt',
+          not capture_l2s._looks_like_a_prompt(BANNER_LINE), BANNER_LINE)
+    check('while a real prompt still is',
+          capture_l2s._looks_like_a_prompt('TESTSW01#')
+          and capture_l2s._looks_like_a_prompt('TESTSW01(config-if)#'))
     checklist = checklists(tmpdir)
     check('the checklist is named for the switch, not for a line of banner',
           len(checklist) == 1 and checklist[0].startswith('TESTSW01_'), checklist)
+
+    # The other half of the bargain: waiting must not change what a session
+    # already at its prompt does. capture_l2s.py attaches to one a person
+    # logged into, and it should still be read on sight, with nothing sent to
+    # it and nothing waited out.
+    settled = run_walker(tmpdir, [('node-b/sw-2', '10.0.13.2')], {})
+    check('a session already at its prompt is read immediately',
+          not settled.slept, settled.slept)
 
 
 def test_an_unrecognised_failure_says_what_was_tried(tmpdir):
