@@ -379,30 +379,48 @@ def parse_license_udi(output):
     return members
 
 
-def switch_table_members(output):
-    """{number: (model, release)} for every row of `show version`'s switch
-    table, not only the active one."""
+def switch_table_rows(output):
+    """({number: (model, release)}, whole_table) for `show version`'s switch
+    table, every row of it and not only the active one.
+
+    `whole_table` is False when the walk stopped on a line that begins like a
+    member row and could not be read. Reading stops at the first line that is
+    not a row either way - that is how the end of the table is found - but the
+    two are not the same fact, and one caller badly needs to tell them apart:
+    a three-member stack whose second row this cannot parse yields exactly one
+    member, which is indistinguishable from a standalone switch unless the
+    partial read is reported as partial. See is_standalone."""
     import re
     header = re.search(r'^\s*Switch\s+Ports\s+Model\s+SW\s+Version', output or '',
                        re.M | re.I)
     if not header:
-        return {}
+        return {}, False
     rest = (output or '').find('\n', header.end())
     if rest == -1:
-        return {}
+        return {}, False
     members = {}
+    whole_table = True
     for line in output[rest + 1:].splitlines():
         if not line.strip() or set(line.strip()) <= set('- '):
             continue
         match = re.match(r'^\s*(\*?)\s*(\d+)\s+\d+\s+(\S+)\s+(\d\S*)', line)
         if not match:
+            # A line that opens with a member number is a row this could not
+            # read; anything else is the table having ended, which is normal.
+            whole_table = re.match(r'^\s*\*?\s*\d+\s', line) is None
             break
         members[int(match.group(2))] = (match.group(3), match.group(4))
-    return members
+    return members, whole_table
+
+
+def switch_table_members(output):
+    """{number: (model, release)} for every row of `show version`'s switch
+    table, not only the active one."""
+    return switch_table_rows(output)[0]
 
 
 def is_standalone(version_output):
-    """Whether `show version`'s switch table names exactly one chassis.
+    """Whether this switch is positively, provably one chassis.
 
     What it is for: `show switch` and `show license udi` exist to account for
     the members `show version` does not describe, and a switch that is its own
@@ -411,13 +429,27 @@ def is_standalone(version_output):
     hundreds is the difference between an inventory somebody re-runs whenever
     they want to know what is out there and one they plan an evening around.
 
-    Deliberately false when the table is missing altogether, rather than
-    treating "no table" as "one switch". A release that prints no switch table
-    is exactly the case where `show version` is least able to answer for the
-    hardware - see show_version_model - and where `show license udi` is the
-    fallback that names the model and serial. Skipping it there would save two
-    commands and lose the row's data."""
-    return len(switch_table_members(version_output)) == 1
+    Every uncertainty answers False, and the asymmetry is deliberate. Being
+    wrong the other way costs two commands; being wrong this way reports a
+    three-member stack as a standalone switch, with two chassis missing from
+    an asset record and nothing in the row admitting it - a walk that finishes
+    looking healthy while quietly leaving hardware out. So this wants proof of
+    one, not absence of proof of more:
+
+      * a table read only in part is not proof of anything. A stack whose
+        second row cannot be parsed leaves exactly one member behind, which is
+        why switch_table_rows reports the partial read as partial.
+      * no table at all is not "one switch". It is also the case where
+        `show version` is least able to answer for the hardware - see
+        show_version_model - and where `show license udi` is the fallback that
+        names the model and serial.
+      * a second opinion that costs nothing: `show version` prints a section
+        per member on a stack, so more than one of those is a stack whatever
+        the table said."""
+    members, whole_table = switch_table_rows(version_output)
+    if not whole_table or len(members) != 1:
+        return False
+    return len(version_member_serials(version_output)) <= 1
 
 
 def version_member_serials(output):

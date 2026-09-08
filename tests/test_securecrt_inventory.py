@@ -195,6 +195,21 @@ def test_short_commands_only(tmpdir):
           no_table.Screen.sent[1:] == ['show version', 'show switch', 'show license udi'],
           no_table.Screen.sent[1:])
 
+    # The way this went wrong on a real fleet. Reading the table stops at the
+    # first line that is not a row, so a stack with a row this cannot parse
+    # leaves exactly one member behind - and "exactly one" was the whole test
+    # for a standalone. Every stack came back looking like a standalone switch,
+    # with its other chassis missing and nothing in the row saying so.
+    partial = run_inventory(tmpdir, [('sw-partial', '10.20.0.4')],
+                            outputs={'show version': UNREADABLE_ROW_VERSION,
+                                     'show switch': SHOW_SWITCH,
+                                     'show license udi': SHOW_LICENSE_UDI})
+    check('a table this cannot read to the end is never called a standalone',
+          partial.Screen.sent[1:] == ['show version', 'show switch', 'show license udi'],
+          partial.Screen.sent[1:])
+    check('so the members it could not parse are still accounted for',
+          len(csv_rows(tmpdir)) == 3, csv_rows(tmpdir))
+
 
 def test_writes_one_csv_and_nothing_else(tmpdir):
     print('\nthe run leaves a CSV and nothing else')
@@ -251,6 +266,20 @@ Switch/Slot Number    PID    VID    SN
 Switch 1             C9300-48P    V01    FOC1111X1XX
 Switch 2             C9300-24P    V01    FOC2222X2XX
 Switch 3             C9300-24P    V01    FOC3333X3XX"""
+
+# A three-member stack whose second row this cannot read - the shape that made
+# every stack on a real fleet come back looking like a standalone switch. The
+# member number is there, so the line is a row rather than the end of the
+# table; what follows it is not what the reader expects.
+UNREADABLE_ROW_VERSION = """Cisco IOS XE Software, Version 17.12.04
+
+STACKSW01 uptime is 3 weeks, 2 days
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+*    1 48    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL
+     2       C9300-24P          17.12.04          CAT9K_IOSXE           INSTALL
+     3 24    C9300-24P          17.12.04          CAT9K_IOSXE           INSTALL"""
 
 STACK_VERSION = """Cisco IOS XE Software, Version 17.12.04
 
