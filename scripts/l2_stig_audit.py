@@ -411,31 +411,78 @@ def _dhcp_snooping_check(cfg, user_vlans):
 # V-220575: vty access-class ACL must actually be scoped to the management
 # subnet, not just present. A "permit any" or out-of-subnet source doesn't
 # satisfy "controlling the flow of management information."
-def _acl_source_in_subnet(source_spec, subnet):
+def _acl_source_network(source_spec):
+    """The network an ACL permit's source names, or None if this cannot read
+    one from it.
+
+    None is not "outside the management network" and must not be reported as
+    though it were - see _source_is_readable, which uses this to send the
+    entry to a human instead. The case that made the difference matter is a
+    non-contiguous wildcard: `0.0.255.0` is a legal ACL mask and names no
+    network at all in CIDR terms, so it has no prefix length to compare, and
+    reporting it as a source outside the management network would be a finding
+    invented out of not being able to read the line."""
     source_spec = source_spec.strip()
-    if source_spec == 'any':
-        return False
     m = re.match(r'host (\S+)$', source_spec)
     if m:
         try:
-            return ipaddress.ip_address(m.group(1)) in subnet
+            return ipaddress.ip_network(m.group(1) + '/32', strict=False)
         except ValueError:
-            return False
+            return None
     m = re.match(r'(\S+)\s+(\S+)$', source_spec)
     if m:
         addr, wildcard = m.groups()
         try:
             netmask = ipaddress.ip_address(int(ipaddress.ip_address(wildcard)) ^ 0xFFFFFFFF)
-            acl_net = ipaddress.ip_network(f'{addr}/{netmask}', strict=False)
-            return acl_net.subnet_of(subnet)
+            return ipaddress.ip_network(f'{addr}/{netmask}', strict=False)
         except ValueError:
-            return False
+            return None
     # Bare address with no wildcard - a standard ACL's implicit single host
     # (`permit 10.1.1.5`). Extended ACLs never produce this shape.
     try:
-        return ipaddress.ip_address(source_spec) in subnet
+        return ipaddress.ip_network(source_spec + '/32', strict=False)
     except ValueError:
+        return None
+
+
+def _acl_source_in_networks(source_spec, networks):
+    """Whether a permit's source sits inside any one of the management
+    networks. `any` never does, whatever they are."""
+    if source_spec.strip() == 'any':
         return False
+    source = _acl_source_network(source_spec)
+    if source is None:
+        return False
+    return any(source.subnet_of(network) for network in networks)
+
+
+# A management network is not always one prefix. A site whose out-of-band
+# addressing grew a second range, or which manages from a jump network as well
+# as an admin VLAN, writes several permits into the vty ACL - each one legal,
+# each one inside "the management network" as the site defines it - and a
+# single CIDR in inventory.yaml cannot say so. So this takes one or several.
+#
+# What it must not become is a list widened until it covers whatever the ACL
+# already permits. The whole value of this check is that the ACL is compared
+# against a management network declared independently of it; a list
+# reverse-engineered from the ACL makes the rule pass by construction and
+# tests nothing.
+def _management_networks(subnet_spec):
+    """(networks, unreadable) from inventory's management_subnet, which may be
+    one CIDR, several separated by commas or whitespace, or a YAML list."""
+    if isinstance(subnet_spec, str):
+        items = [part for part in re.split(r'[,\s]+', subnet_spec) if part]
+    elif subnet_spec:
+        items = [str(part).strip() for part in subnet_spec if str(part).strip()]
+    else:
+        items = []
+    networks, unreadable = [], []
+    for item in items:
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            unreadable.append(item)
+    return networks, unreadable
 
 
 # Standard ACL numbers per IOS: 1-99 and 1300-1999. Everything else applied
@@ -535,21 +582,21 @@ def _acl_permit_sources(acl_block, kind):
 # subnet, and must not be reported as though it were. Neither is a pass: the
 # group's contents are not in the text handed to this check.
 def _source_is_readable(source_spec):
-    return source_spec == 'any' or bool(
-        re.match(r'(host\s+)?\d+\.\d+\.\d+\.\d+(\s+\d+\.\d+\.\d+\.\d+)?$', source_spec.strip()))
+    return source_spec.strip() == 'any' or _acl_source_network(source_spec) is not None
 
 
 def _vty_management_acl_check(cfg, subnet_str):
-    if not subnet_str:
-        return False, 'no `management_subnet` configured in inventory.yaml'
-    try:
-        subnet = ipaddress.ip_network(subnet_str, strict=False)
-    except ValueError:
+    networks, unreadable_subnets = _management_networks(subnet_str)
+    if unreadable_subnets:
         # A netmask instead of a prefix length is the easy typo. One bad value
         # costs this rule its verdict; it must not cost the whole report, which
         # is what an uncaught ValueError here used to do mid-fleet-run.
-        return False, (f'`management_subnet` in inventory.yaml is not a network: {subnet_str!r} '
-                       f'- expected CIDR form, e.g. 10.10.50.0/24')
+        return False, (f'`management_subnet` in inventory.yaml is not a network: '
+                       f'{", ".join(repr(item) for item in unreadable_subnets)} '
+                       f'- expected CIDR form, e.g. 10.10.50.0/24, or several of them')
+    if not networks:
+        return False, 'no `management_subnet` configured in inventory.yaml'
+    subnet_str = ', '.join(str(network) for network in networks)
 
     vty_blocks = _vty_acl_blocks(cfg)
     if not vty_blocks:
@@ -577,7 +624,7 @@ def _vty_management_acl_check(cfg, subnet_str):
             problems.append(f'{header}: `{acl_name}` permits source(s) this cannot resolve from '
                             f'config text (review by hand): {", ".join(unreadable)}')
             continue
-        bad = [src for src in permits if not _acl_source_in_subnet(src, subnet)]
+        bad = [src for src in permits if not _acl_source_in_networks(src, networks)]
         if bad:
             problems.append(f'{header}: `{acl_name}` permits source(s) outside {subnet_str}: {", ".join(bad)}')
             continue

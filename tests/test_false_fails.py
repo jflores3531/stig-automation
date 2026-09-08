@@ -59,7 +59,7 @@ INSIDE_HOST = '192.0.2.25'
 OUTSIDE = '203.0.113.0'          # a different documentation range - never inside MANAGEMENT
 
 
-def report_for(tmpdir, name, running_config=None, vtp_password=None):
+def report_for(tmpdir, name, running_config=None, vtp_password=None, management=None):
     outputs = dict(fixtures.OUTPUTS)
     if running_config is not None:
         outputs['show running-config'] = running_config
@@ -69,7 +69,7 @@ def report_for(tmpdir, name, running_config=None, vtp_password=None):
     result = subprocess.run(
         [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
          '--from-capture', path, '--non-user-vlans', '999,1000',
-         '--management-subnet', MANAGEMENT],
+         '--management-subnet', management or MANAGEMENT],
         capture_output=True, text=True, cwd=PROJECT, timeout=120)
     return result.stdout + result.stderr
 
@@ -143,6 +143,55 @@ def test_management_acl_shapes(tmpdir):
           verdict(permit_any, 'V-220523'))
 
 
+SECOND_MANAGEMENT = '198.51.100.0/24'    # RFC 5737 too - a second admin range
+SECOND_NETWORK = '198.51.100.0'
+
+
+def test_management_network_of_several_prefixes(tmpdir):
+    """A management network is not always one prefix. A site whose out-of-band
+    addressing grew a second range, or that manages from a jump network as well
+    as an admin VLAN, writes a permit for each - every one of them inside "the
+    management network" as the site defines it - and a single CIDR could not
+    say so, so the second permit was reported as a source outside it."""
+    print('\nthe management network can be more than one prefix')
+    two_ranges = config_with_acl([
+        f'permit tcp {NETWORK} 0.0.0.255 any eq 22 log',
+        f'permit tcp {SECOND_NETWORK} 0.0.0.255 any eq 22 log',
+        'deny ip any any log-input',
+    ])
+    both = report_for(tmpdir, 'acltwo', running_config=two_ranges,
+                      management=f'{MANAGEMENT},{SECOND_MANAGEMENT}')
+    check('an ACL permitting each declared range passes',
+          'PASS' in verdict(both, 'V-220523'), verdict(both, 'V-220523'))
+
+    # The point of the check is that the ACL is compared against a management
+    # network declared independently of it. Declaring only one range must still
+    # fail the permit that leaves it, or the list is just a way of agreeing
+    # with whatever the ACL already says.
+    one = report_for(tmpdir, 'aclone', running_config=two_ranges)
+    line = verdict(one, 'V-220523')
+    check('and a range the inventory does not declare is still a finding',
+          'FAIL' in line and SECOND_NETWORK in line, line)
+
+
+def test_a_wildcard_this_cannot_read_is_not_a_finding(tmpdir):
+    """A non-contiguous wildcard - `0.0.255.0` - is a legal ACL mask that names
+    no CIDR network, so there is no prefix to compare against the management
+    one. Answering "outside the management network" there is a finding
+    invented out of not being able to read the line, which is the direction
+    that costs an engineer a morning proving it is not real."""
+    print('\na wildcard this cannot read goes to a human, not into a finding')
+    odd = report_for(tmpdir, 'aclodd', running_config=config_with_acl([
+        f'permit tcp {NETWORK} 0.0.255.0 any eq 22 log',
+        'deny ip any any log-input',
+    ]))
+    line = verdict(odd, 'V-220523')
+    check('it is reported as needing review by hand',
+          'review by hand' in line, line)
+    check('and not as a source outside the management network',
+          'outside' not in line, line)
+
+
 def test_standard_acl_with_logging(tmpdir):
     """The IOS XE book's own fix text for V-220523 builds a standard ACL, whose
     entries carry no protocol and no destination - and often a trailing `log`,
@@ -178,6 +227,8 @@ if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmpdir:
         test_vtp_wordings(tmpdir)
         test_management_acl_shapes(tmpdir)
+        test_management_network_of_several_prefixes(tmpdir)
+        test_a_wildcard_this_cannot_read_is_not_a_finding(tmpdir)
         test_standard_acl_with_logging(tmpdir)
         test_unreadable_source_is_not_reported_as_out_of_subnet(tmpdir)
     print('\n' + ('ALL CHECKS PASSED' if not failures
