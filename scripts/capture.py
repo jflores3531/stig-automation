@@ -121,6 +121,27 @@ def looks_like_ios_config(text):
     return any(marker in lowered for marker in IOS_CONFIG_MARKERS)
 
 
+def config_cut_short(running_config):
+    """Return a reason if `show running-config` stopped before its end, or ''.
+
+    IOS and IOS XE finish a running-config with `end` on a line of its own, so
+    its absence means the output was cut off rather than that the switch had
+    nothing further to say. Only this platform's captures reach here - the
+    NX-OS audit does not use this loader, and NX-OS prints no `end`.
+
+    Duplicated in securecrt/capture_l2s.py, which cannot import from here: the
+    collector runs inside SecureCRT's embedded Python on a machine that may
+    have nothing else on it. Both are covered by tests/test_capture.py."""
+    for line in reversed((running_config or '').splitlines()):
+        if not line.strip():
+            continue
+        if line.strip() == 'end':
+            return ''
+        return ('does not finish with `end`, so it was cut off - the last line '
+                'read was: ' + line.strip()[:60])
+    return 'is empty'
+
+
 # Written before each command's output by the capture tooling. The leading '!'
 # makes the whole line an IOS comment, so a capture pasted into a terminal by
 # mistake is inert rather than interpreted.
@@ -396,6 +417,27 @@ def load(path, required_commands=AUDIT_COMMANDS_L2S,
             'markers (Current configuration, hostname, interface, version, end). '
             'This usually means the capture was taken against something other '
             'than a Cisco switch.'
+        )
+
+    # A config that stops early passes every check above, which is what makes
+    # it worth its own. The check immediately before this one is deliberately
+    # loose - any single marker will do - and the markers a config opens with
+    # survive any truncation at all, so a config read to a third of its length
+    # is accepted as a Cisco configuration, because that is exactly what it is:
+    # a third of one. IOS and IOS XE end a running-config with `end` on a line
+    # of its own, so its absence is the output having been cut off.
+    #
+    # The cost of missing it is a report nobody can act on. aaa, line vty,
+    # logging, ntp, snmp and ssh all sit near the end of a config - the part a
+    # short read loses - so their rules come back as findings on a switch that
+    # configured every one of them, and nothing in the report says why.
+    cut_short = config_cut_short(config)
+    if cut_short:
+        raise CaptureError(
+            f"{source}: 'show running-config' {cut_short}\n"
+            'Auditing a config that stopped early reports everything configured '
+            'after the cut as a finding, on a switch that may be entirely '
+            'compliant, so this is refused rather than reported.'
         )
     return CaptureSession(sections, source)
 

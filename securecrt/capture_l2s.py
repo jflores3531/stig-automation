@@ -597,6 +597,38 @@ def not_ios_config(running_config):
             'configuration, hostname, interface, version, end)')
 
 
+def config_cut_short(running_config):
+    """Return a reason if `show running-config` stopped before its end.
+
+    IOS and IOS XE finish a running-config with `end` on a line of its own, so
+    its absence means the output was cut off rather than that the switch had
+    nothing further to say.
+
+    Worth its own guard because a config cut short passes every other one.
+    not_ios_config is deliberately loose - any single marker will do - and the
+    markers a config opens with, `Current configuration` and `hostname`,
+    survive any truncation at all. So a config read to a third of its length
+    is accepted, and audited, and the rules answered against the part that
+    never arrived come back as findings: aaa, line vty, logging, ntp, snmp and
+    ssh all sit near the end of a config, which is exactly the part a short
+    read loses. Sixty findings on a compliant switch is not a report anyone
+    can act on, and nothing in it would say why.
+
+    How the output gets cut short in the first place: the collector reads up
+    to the prompt, so anything that makes the prompt appear early ends the
+    read early - a `SW01#` inside a banner, an interface description or an ACL
+    remark is enough, and a switch hardened to this STIG carries a large
+    mandatory banner in its config."""
+    for line in reversed((running_config or '').splitlines()):
+        if not line.strip():
+            continue
+        if line.strip() == 'end':
+            return ''
+        return ('output does not finish with `end`, so it was cut off - the last '
+                'line read was: ' + line.strip()[:60])
+    return 'output is empty'
+
+
 # How long to wait for a prompt on a freshly connected session before giving
 # up on it. A switch hardened to the STIG this tool audits answers a new SSH
 # session with the DoD notice and consent banner - V-220521's requirement, so
@@ -844,6 +876,15 @@ def collect(prompt=None):
                     'configuration - {0}.\n\nNo capture was written. Check '
                     'that this session is on the switch you meant.'
                     .format(wrong_output), 'Not a Cisco switch')
+            cut_short = config_cut_short(outputs[command])
+            if cut_short:
+                raise CollectionError(
+                    'running-config cut short',
+                    '"show running-config" {0}.\n\nNo capture was written. '
+                    'Auditing a config that stopped early reports everything '
+                    'configured after the cut as a finding, on a switch that '
+                    'may be entirely compliant.'.format(cut_short),
+                    'Config truncated')
 
     for command in COMMANDS:
         collect(command)

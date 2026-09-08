@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture
 import stig_common
+import fixtures
 from fixtures import OUTPUTS, VLAN_BRIEF, VTP_PASSWORD
 
 CHECKLIST = os.path.join(PROJECT, 'checklists', 'New Layer 2 switch Checklist.cklb')
@@ -204,6 +205,30 @@ def test_refusals(tmpdir):
 
     expect_error('absent file rejected',
                  lambda: capture.load(os.path.join(tmpdir, 'nope.capture')), 'no such capture')
+
+    # A config that stops early is the refusal that had been missing, and the
+    # one that passes every check above: `looks_like_ios_config` needs a single
+    # marker, and the markers a config opens with survive any truncation at
+    # all. Auditing the remainder answers aaa, line vty, logging, ntp, snmp and
+    # ssh - all of which sit near the end of a config - against text that never
+    # arrived, and reports each as a finding on a switch that configured them.
+    whole = fixtures.RUNNING_CONFIG
+    chopped = whole[:whole.index('aaa new-model')]
+    check('the truncated config still looks like a Cisco config, which is why '
+          'the marker check cannot catch this',
+          capture.looks_like_ios_config(chopped))
+    cut = capture.write(os.path.join(tmpdir, 'cut.capture'),
+                        {**OUTPUTS, 'show running-config': chopped})
+    expect_error('a running-config that stops before `end` is rejected',
+                 lambda: capture.load(cut), 'cut off')
+
+    # Not merely "shorter than expected": a config is complete when it ends the
+    # way IOS ends one, whatever its length.
+    check('a whole config is not mistaken for a cut one',
+          capture.config_cut_short(whole) == '', capture.config_cut_short(whole))
+    check('and trailing blank lines do not make one look cut',
+          capture.config_cut_short(whole + '\n\n') == '',
+          capture.config_cut_short(whole + '\n\n'))
 
     good = capture.write(os.path.join(tmpdir, 'good.capture'), OUTPUTS)
     expect_error('unrequested command raises rather than returning empty',

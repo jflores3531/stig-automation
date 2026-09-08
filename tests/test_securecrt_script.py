@@ -378,6 +378,25 @@ def test_refusals(tmpdir):
     check('a bash session with a root # prompt is refused',
           ok and 'cisco' in titles, titles)
 
+    # A running-config that stopped early. The collector reads up to the
+    # prompt, so anything making the prompt appear early ends the read early -
+    # a `TESTSW01#` inside a banner, a description or an ACL remark is enough,
+    # and a switch hardened to this STIG carries a large mandatory banner in
+    # its config. What comes back opens exactly like a running-config, because
+    # it is the opening of one, so every other guard here waves it through:
+    # not empty, not paginated, and full of Cisco markers.
+    #
+    # Auditing it answers aaa, line vty, logging, ntp, snmp and ssh - all of
+    # which sit near the end of a config - against text that never arrived, and
+    # reports each as a finding on a switch that configured every one of them.
+    whole = fixtures.RUNNING_CONFIG
+    ok, titles = wrote_nothing('cutshort', outputs={
+        **OUTPUTS, 'show running-config': whole[:whole.index('aaa new-model')]})
+    check('a running-config that stops before `end` is refused',
+          ok and 'truncated' in titles, titles)
+    check('and the whole config is still accepted, so this is not just "shorter"',
+          capture_l2s.config_cut_short(whole) == '', capture_l2s.config_cut_short(whole))
+
     # ...but not for the one command whose empty output is the answer. A switch
     # with no SNMPv3 users prints nothing, and that is the V-220604/605 finding
     # itself - abandoning the capture there would throw away the whole
