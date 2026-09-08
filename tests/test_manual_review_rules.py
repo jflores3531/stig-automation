@@ -484,7 +484,7 @@ BARE_TRUNK = """interface GigabitEthernet1/0/47
 
 
 def report_with(tmpdir, name, extra_interfaces='', hostname='TESTSW01',
-                core_tags='CORE,DIST', uplink_keywords='TO-CORE,UPLINK'):
+                core_tags='CORE,DIST', uplink_keywords='UPLINK,DOWNLINK,TO-CORE,TO-DIST'):
     """An IOS XE report for the fixture switch, optionally renamed, with extra
     interfaces spliced in.
 
@@ -541,6 +541,27 @@ def test_user_facing_trunk(tmpdir):
           'GigabitEthernet1/0/47' in line, line)
     check('never FAIL - every access switch needs a trunk',
           'FAIL' not in status(unlabelled, 'V-220671'), line)
+
+    # An access switch does not only trunk upwards. It often trunks down to
+    # another access switch in the same area, and that link is switch-to-switch
+    # like any uplink - so `downlink` is one of the words the shipped list
+    # carries. Case is not part of the declaration: a fleet writing `Downlink`,
+    # `DOWNLINK` and `downlink` in three closets means one thing by all three.
+    for label, description in (('upper case', 'DOWNLINK TO SW-B'),
+                               ('lower case', 'downlink to sw-b'),
+                               ('mixed case', 'Downlink To Closet 2 Switch')):
+        down = report_with(tmpdir, 'down_' + label.split()[0], BARE_TRUNK.replace(
+            ' switchport mode trunk', f' description {description}\n switchport mode trunk'))
+        check(f'a downlink to a nearby switch passes, written in {label}',
+              status(down, 'V-220671') == 'PASS', verdict(down, 'V-220671'))
+
+    # The keyword is matched against the description, not the other way round,
+    # so a port whose description merely mentions a user is not exempted by a
+    # keyword appearing nowhere in it.
+    user_port = report_with(tmpdir, 'userdesc', BARE_TRUNK.replace(
+        ' switchport mode trunk', ' description user area drop\n switchport mode trunk'))
+    check('a trunk described as facing users is not exempted',
+          status(user_port, 'V-220671') == 'NOT AUTOMATED', verdict(user_port, 'V-220671'))
 
     # With nothing declared, nothing is exempted and nothing is assumed.
     nothing = report_with(tmpdir, 'nodecl', UPLINK_TRUNK, core_tags='', uplink_keywords='')
