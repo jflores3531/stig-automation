@@ -153,6 +153,17 @@ ip ssh version 2
 ip ssh server algorithm mac hmac-sha2-256
 ip ssh server algorithm encryption aes256-ctr aes192-ctr aes128-ctr
 !
+ip scp server enable
+file prompt quiet
+!
+event manager applet BACKUP_CONFIG
+ event syslog pattern "%SYS-5-CONFIG_I"
+ action 1 cli command "enable"
+ action 2 info type routername
+ action 3 cli command "copy running-config scp://backup@192.0.2.40/configs/$_info_routername-running-config"
+ action 4 syslog priority informational msg "Configuration backup executed for $_info_routername"
+ authorization bypass
+!
 end"""
 
 VLAN_BRIEF = """VLAN Name                             Status    Ports

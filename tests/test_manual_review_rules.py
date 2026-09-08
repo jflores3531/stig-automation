@@ -32,9 +32,11 @@ Every case here came off one hand-annotated IOS XE report:
   * V-220651 (QoS) was NOT AUTOMATED because the IOS book's `mls qos` cannot
     answer it. The IOS XE book asks for the MQC shape, which is config text.
 
-V-220566 (configuration backups) stays NOT AUTOMATED: which server a switch
-backs up to is a fact about the site, not about the switch, and no command
-here can discover it.
+  * V-220566 (configuration backups) was NOT AUTOMATED on the strength of the
+    IOS book's version, whose check is an SCP server held by the site rather
+    than by the switch. The IOS XE book asks about the mechanism instead - an
+    EEM applet on `%SYS-5-CONFIG_I` copying the running configuration to a
+    secure destination - which is config text like any other rule.
 """
 
 import os
@@ -373,12 +375,100 @@ def test_qos_bandwidth(tmpdir):
           'FAIL' in line and 'reserves bandwidth' in line, line)
 
 
+APPLET_HEADER = 'event manager applet BACKUP_CONFIG'
+COPY_ACTION = ('action 3 cli command "copy running-config '
+               'scp://backup@192.0.2.40/configs/$_info_routername-running-config"')
+
+
+def backup_config(**edits):
+    """The fixture config with one thing about its backup applet changed."""
+    cfg = fixtures.RUNNING_CONFIG
+    if edits.get('no_applet'):
+        return cfg.split(APPLET_HEADER)[0] + 'end'
+    if edits.get('trigger'):
+        cfg = cfg.replace('%SYS-5-CONFIG_I', edits['trigger'])
+    if edits.get('no_copy'):
+        cfg = cfg.replace(' ' + COPY_ACTION + '\n', '')
+    if edits.get('scheme'):
+        cfg = cfg.replace('scp://backup@', edits['scheme'] + '://backup@')
+    if edits.get('password'):
+        cfg = cfg.replace('scp://backup@', 'scp://backup:' + edits['password'] + '@')
+    if edits.get('no_prompt_quiet'):
+        cfg = cfg.replace('file prompt quiet\n', '')
+    if edits.get('no_bypass'):
+        cfg = cfg.replace(' authorization bypass\n', '')
+    return cfg
+
+
+def test_config_backup(tmpdir):
+    """V-220566 was NOT AUTOMATED on the IOS book's version of the rule, whose
+    check is an SCP server held by the site. The IOS XE book asks about the
+    mechanism instead - an EEM applet on `%SYS-5-CONFIG_I` copying the running
+    configuration somewhere secure - and that is running-config text.
+
+    Its finding sentence names two conditions: no automated backup on change,
+    or one taken "using an insecure method like a cleartext password". Those
+    fail. The two supporting settings the Check Content also asks to verify are
+    what make the applet run rather than findings DISA wrote, so they are
+    reported on the PASS instead."""
+    print('\nconfiguration backup on change: a rule the IOS XE book makes answerable')
+    passing = report_for(tmpdir, 'backupok')
+    line = verdict(passing, 'V-220566')
+    check('the compliant switch passes rather than reporting NOT AUTOMATED',
+          status(passing, 'V-220566') == 'PASS', line)
+    check('and the reason says where it backs up to',
+          'scp://backup@192.0.2.40' in line, line)
+
+    none = verdict(report_for(tmpdir, 'noapplet',
+                              running_config=backup_config(no_applet=True)), 'V-220566')
+    check('no EEM applet at all is a finding',
+          'FAIL' in none and 'event manager applet' in none, none)
+
+    other = verdict(report_for(tmpdir, 'othertrigger',
+                               running_config=backup_config(trigger='%LINK-3-UPDOWN')),
+                    'V-220566')
+    check('an applet that fires on something other than a config change is a finding',
+          'FAIL' in other and '%SYS-5-CONFIG_I' in other, other)
+
+    quiet = verdict(report_for(tmpdir, 'nocopy',
+                               running_config=backup_config(no_copy=True)), 'V-220566')
+    check('an applet that notices the change and copies nothing is a finding',
+          'FAIL' in quiet and 'copying the running configuration' in quiet, quiet)
+
+    # The second half of the finding sentence, in its two forms.
+    clear = verdict(report_for(tmpdir, 'ftp',
+                               running_config=backup_config(scheme='ftp')), 'V-220566')
+    check('backing up over a cleartext transport is a finding',
+          'FAIL' in clear and 'in the clear' in clear, clear)
+
+    secret = verdict(report_for(tmpdir, 'password',
+                                running_config=backup_config(password='hunter2')), 'V-220566')
+    check('and so is a password in the destination - the Check Content reads its '
+          'absence as key authentication',
+          'FAIL' in secret and 'cleartext password' in secret, secret)
+
+    # Asked for by the Check Content, but not named by the finding sentence:
+    # reported on the PASS rather than invented as a finding.
+    no_quiet = verdict(report_for(tmpdir, 'noquiet',
+                                  running_config=backup_config(no_prompt_quiet=True)),
+                       'V-220566')
+    check('a missing `file prompt quiet` is said out loud, not failed',
+          status(no_quiet, 'V-220566') == 'PASS' and 'file prompt quiet' in no_quiet, no_quiet)
+
+    no_bypass = verdict(report_for(tmpdir, 'nobypass',
+                                   running_config=backup_config(no_bypass=True)), 'V-220566')
+    check('and so is a missing `authorization bypass`',
+          status(no_bypass, 'V-220566') == 'PASS' and 'authorization bypass' in no_bypass,
+          no_bypass)
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
         test_persistent_logging(tmp)
         test_pki_trustpoint(tmp)
         test_supported_release(tmp)
         test_qos_bandwidth(tmp)
+        test_config_backup(tmp)
     print('\n' + ('ALL CHECKS PASSED' if not failures
                   else f'{len(failures)} FAILED: {", ".join(failures)}'))
     sys.exit(1 if failures else 0)

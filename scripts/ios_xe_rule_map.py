@@ -108,14 +108,18 @@ RULE_MAP = {
 # with the same title has no predicate worth reusing, and no IOS XE-specific
 # check can answer it from config text. These report NOT AUTOMATED, which is
 # what they are.
-EXCLUDED = {
-    'V-220566': (
-        'Configuration backup. No IOS check exists to reuse (V-220618 is '
-        'NOT AUTOMATED there too - it needs an SCP target this project has no '
-        'access to), and IOS XE additionally fails the rule for using an '
-        'insecure transfer method, which is not derivable from config text.'
-    ),
-}
+# Empty, and worth keeping empty rather than deleting: this is where a rule
+# goes when the IOS predicate would answer the wrong question, and the reason
+# it is empty is that the last occupant turned out not to need it.
+#
+# V-220566 (configuration backup) sat here on the strength of the IOS book's
+# version, whose check is an SCP target held by the site rather than by the
+# switch. The IOS XE book asks about the mechanism instead - an EEM applet on
+# `%SYS-5-CONFIG_I` copying the running configuration to a secure destination -
+# which is running-config text like any other rule. It is checked in
+# l2_stig_audit.IOS_XE_ONLY_CHECKS, not mapped, because there is still no IOS
+# rule to re-key it from.
+EXCLUDED = {}
 
 
 def translate(checks, rule_map=None):

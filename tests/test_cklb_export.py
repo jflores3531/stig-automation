@@ -109,9 +109,17 @@ def test_export(tmpdir, capture_path):
              if rules[group_id]['status'] != stig_common.CKLB_STATUS[status]]
     check('every status maps as CKLB_STATUS says', not wrong, wrong[:5])
 
-    not_automated = [group_id for group_id, status in printed.items() if status == 'NOT AUTOMATED']
-    check('there is a NOT AUTOMATED rule to test the dangerous mapping on', not_automated)
+    # The dangerous mapping, asserted on the table rather than on whichever
+    # rules this fixture happens to leave unanswered. Every IOS XE rule now
+    # gets a real verdict, so there is no longer a NOT AUTOMATED rule in this
+    # export to read it off - and the property is far too important to test
+    # only while one happens to exist. A rule nothing checked must never come
+    # out of here as a pass.
     check('NOT AUTOMATED is not_reviewed, never not_a_finding',
+          stig_common.CKLB_STATUS['NOT AUTOMATED'] == 'not_reviewed',
+          stig_common.CKLB_STATUS['NOT AUTOMATED'])
+    not_automated = [group_id for group_id, status in printed.items() if status == 'NOT AUTOMATED']
+    check('and any rule this export does leave unanswered maps that way',
           all(rules[group_id]['status'] == 'not_reviewed' for group_id in not_automated),
           [rules[g]['status'] for g in not_automated])
     # A rule the audit reached a conclusion about carries that conclusion; one
@@ -173,7 +181,7 @@ def test_rerun_overwrites_what_was_there(tmpdir, capture_path, out):
     override = {'severity': {'severity': 'low', 'justification': 'compensating control'}}
     for stig in checklist['stigs']:
         for rule in stig['rules']:
-            if rule['group_id'] == 'V-220566':      # NOT AUTOMATED
+            if rule['group_id'] == 'V-220566':      # PASS, marked up by hand
                 rule['comments'] = typed
                 rule['overrides'] = override
             if rule['group_id'] == 'V-220651':      # PASS, edited by hand

@@ -1414,6 +1414,146 @@ def _qos_bandwidth_check(cfg):
     return True, reason
 
 
+# V-220566 (IOS XE): back up the configuration when it changes. This was
+# NOT AUTOMATED on the strength of the IOS book's version of the rule, whose
+# check is an SCP target held by the site's administrators and discoverable
+# from nothing on the switch. The IOS XE Check Content asks a different and
+# entirely answerable question, because it names the mechanism rather than the
+# server: an EEM applet triggering on `%SYS-5-CONFIG_I` with an action copying
+# the running configuration to a secure destination, plus `authorization
+# bypass` in the applet and a global `file prompt quiet`. All four are
+# running-config text.
+#
+# The finding sentence names two conditions and only two: not configured to
+# conduct automated backups when changes occur, or doing so "using an insecure
+# method like a cleartext password". Those FAIL. The other two the Check
+# Content asks to verify are what make the applet run rather than findings DISA
+# wrote, so a switch missing them passes with them named in the reason - the
+# same treatment V-220651 gives a traffic type the policy does not cover.
+#
+# What "insecure" means is the Check Content's own note: "The absence of a
+# password indicates the use of secure public/private key authentication." So a
+# password in the destination is the cleartext method the rule fails, and a
+# scheme that cannot be private carries the configuration in the clear whatever
+# credentials it is given.
+CONFIG_CHANGE_SYSLOG = '%SYS-5-CONFIG_I'
+INSECURE_COPY_SCHEMES = ('ftp', 'tftp', 'http', 'rcp')
+
+
+def _eem_applets(cfg):
+    """{applet name: body} for every `event manager applet` in the config.
+
+    The body is the indented run of lines under the header, the way every
+    other block in a running-config is written - so it ends at the next `!`
+    or the next unindented command."""
+    applets = {}
+    for chunk in re.split(r'^(?=event manager applet )', cfg, flags=re.M):
+        match = re.match(r'event manager applet (\S+)', chunk)
+        if not match:
+            continue
+        body = []
+        for line in chunk.splitlines()[1:]:
+            if line.strip() and not line.startswith(' '):
+                break
+            body.append(line)
+        applets[match.group(1)] = '\n'.join(body)
+    return applets
+
+
+def _applet_copy_targets(body):
+    """Every destination an applet copies the running configuration to.
+
+    The action is a quoted CLI command - `action 3 cli command "copy
+    running-config scp://..."` - so the destination is the token after the
+    source, with the closing quote trimmed off it."""
+    targets = []
+    for match in re.finditer(
+            r'copy\s+(?:system:)?running-config\s+(\S+)', body, re.I):
+        targets.append(match.group(1).strip('"\''))
+    return targets
+
+
+def _copy_target_problem(target):
+    """Why a destination is not a secure off-box backup, or '' if it is one."""
+    match = re.match(r'([A-Za-z][A-Za-z0-9+.-]*)://(.*)', target)
+    if not match:
+        # No scheme: `flash:`, `bootflash:`, a filename. Whatever else that is,
+        # it is a copy to the switch's own storage, and a switch that loses its
+        # storage loses the backup with it.
+        return f'`{target}` is not a remote destination'
+    scheme, rest = match.group(1).lower(), match.group(2)
+    if scheme in INSECURE_COPY_SCHEMES:
+        return f'`{scheme}://` carries the configuration in the clear'
+    authority = rest.split('/', 1)[0]
+    if '@' in authority and ':' in authority.split('@')[0]:
+        return 'the destination carries a cleartext password'
+    return ''
+
+
+def _config_backup_check(cfg):
+    applets = _eem_applets(cfg)
+    if not applets:
+        return False, (
+            'no `event manager applet` is configured, so nothing copies the configuration '
+            'anywhere when it changes'
+        )
+
+    triggered = {name: body for name, body in applets.items()
+                 if CONFIG_CHANGE_SYSLOG in body}
+    if not triggered:
+        return False, (
+            f'no EEM applet triggers on `{CONFIG_CHANGE_SYSLOG}`: '
+            f'`{"`/`".join(sorted(applets))}` exist but none of them fires on a '
+            'configuration change'
+        )
+
+    backing_up, insecure = {}, []
+    for name, body in sorted(triggered.items()):
+        for target in _applet_copy_targets(body):
+            problem = _copy_target_problem(target)
+            if problem:
+                insecure.append(f'`{name}` copies to `{target}`, where {problem}')
+            else:
+                backing_up.setdefault(name, []).append(target)
+
+    # Named in the finding sentence outright, and true whatever else the switch
+    # also does: a backup taken insecurely is the finding, not half of one.
+    if insecure:
+        return False, '; '.join(insecure)
+    if not backing_up:
+        return False, (
+            f'`{"`/`".join(sorted(triggered))}` triggers on `{CONFIG_CHANGE_SYSLOG}` but '
+            'contains no action copying the running configuration anywhere, so a change is '
+            'noticed and not backed up'
+        )
+
+    # Everything below is a PASS. What it says is what the switch backs up to,
+    # and which of the Check Content's two supporting settings are missing.
+    destinations = ', '.join(f'`{target}`' for name in sorted(backing_up)
+                             for target in backing_up[name])
+    reason = (
+        f'backed up on change: EEM applet `{"`/`".join(sorted(backing_up))}` triggers on '
+        f'`{CONFIG_CHANGE_SYSLOG}` and copies the running configuration to {destinations}, '
+        'with no password in the destination - key authentication, per the Check Content'
+    )
+    notes = []
+    without_bypass = [name for name in sorted(backing_up)
+                      if not re.search(r'^\s*authorization bypass\b', triggered[name], re.M)]
+    if without_bypass:
+        notes.append(
+            f'no `authorization bypass` in `{"`/`".join(without_bypass)}`, which the Check '
+            'Content asks for so the applet executes under AAA')
+    if not re.search(r'^\s*file prompt quiet\b', cfg, re.M):
+        notes.append(
+            'no global `file prompt quiet`, which the Check Content asks for so the applet '
+            'does not time out')
+    if notes:
+        reason += (
+            '. ' + '; '.join(notes) + ' - the finding condition is only that backups are '
+            'absent or insecure, so these are reported rather than failed')
+    return True, reason
+
+
 # V-220621 (IOS) / V-220569 (IOS XE): the switch must run a release Cisco still
 # supports. The Check Content is `show version` plus a lookup on
 # cisco.com/c/en/us/support/ios-nx-os-software, so the rule was NOT AUTOMATED
@@ -1998,6 +2138,7 @@ else:
 
 IOS_XE_ONLY_CHECKS = {
     'V-220554': _ntp_auth_cryptographic_check,  # weaker than IOS V-220606, see the check
+    'V-220566': _config_backup_check,           # EEM applet; the IOS rule needs a server nothing here knows
     'V-220567': lambda cfg: _pki_trustpoint_check(cfg, approved_ca_hosts),  # no IOS L2S counterpart
     'V-220651': _qos_bandwidth_check,           # MQC; the IOS rule's `mls qos` cannot answer it
 }
