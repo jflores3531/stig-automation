@@ -354,10 +354,17 @@ def test_qos_bandwidth(tmpdir):
     partial = report_for(tmpdir, 'partialqos', running_config=strip_service_policy(
         fixtures.RUNNING_CONFIG, 'GigabitEthernet1/0/1'))
     line = verdict(partial, 'V-220651')
-    check('a port left out of the policy is a finding',
-          status(partial, 'V-220651') == 'FAIL', line)
-    check('and the port is named, like every other per-port rule here',
+    # A port left out used to fail this. The finding condition is one sentence
+    # - "If quality of service (QoS) has not been enabled, this is a finding" -
+    # and a switch running a valid policy on some of its ports has enabled QoS,
+    # so failing it invented a finding DISA did not write. Reported instead,
+    # the same way an uncovered traffic type is.
+    check('a port left out of the policy does not fail the rule',
+          status(partial, 'V-220651') == 'PASS', line)
+    check('but it is named, like every other per-port rule here',
           'GigabitEthernet1/0/1' in line, line)
+    check('and the reason says the port is unprotected rather than burying it',
+          'floodable' in line and '2 of 3' in line, line)
 
     renamed = fixtures.RUNNING_CONFIG
     for stig_name, local in (('C2_VOICE', 'SITE-C2'), ('VOICE', 'SITE-VOICE'),

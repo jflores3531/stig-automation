@@ -1393,7 +1393,11 @@ def _qos_bandwidth_check(cfg):
 
     attached, unattached = {}, []
     for name, block in sorted(switchports.items()):
-        m = re.search(r'^\s*service-policy output (\S+)', block, re.M)
+        # `type <something>` is optional and platform-dependent - a Catalyst
+        # writes `service-policy output NAME`, others `service-policy type
+        # queuing output NAME`. The rule is about the policy attached
+        # outbound, whatever the platform spells between the two words.
+        m = re.search(r'^\s*service-policy (?:type \S+ )?output (\S+)', block, re.M)
         if m:
             attached.setdefault(m.group(1), []).append(name)
         else:
@@ -1425,15 +1429,20 @@ def _qos_bandwidth_check(cfg):
             )
         reserving[policy_name] = reserved
 
-    if unattached:
-        return False, (
-            f'missing `service-policy output` on: {", ".join(unattached)} - '
-            f'`{"`/`".join(sorted(attached))}` reserves bandwidth on the other '
-            f'{len(switchports) - len(unattached)} switchport(s), leaving these unprotected'
-        )
-
     # Everything below is a PASS. What it says is which of the STIG's example
-    # traffic types this switch actually reserves for, matched by DSCP.
+    # traffic types this switch actually reserves for, matched by DSCP, and
+    # which switchports the policy does not reach.
+    #
+    # Ports left out used to fail the rule, on the reading that an uncovered
+    # port is as floodable as before and that the Fix Text applies the policy
+    # to every port in its example. That is a real argument, but it is not the
+    # rule's: the finding condition is one sentence - "If quality of service
+    # (QoS) has not been enabled, this is a finding" - and a switch with a
+    # valid policy on some of its ports has enabled QoS. Failing it invents a
+    # finding DISA did not write, which is the same mistake as failing a
+    # policy for using local class-map names, and the same treatment applies:
+    # said out loud on the PASS, where a reviewer transcribing the checklist
+    # sees it and can act on it.
     covered, uncovered = [], []
     for label, dscp in STIG_QOS_TRAFFIC_TYPES:
         value = _dscp_value(dscp)
@@ -1444,12 +1453,21 @@ def _qos_bandwidth_check(cfg):
             uncovered.append(f'{label} (dscp {dscp})')
     default_reserved = any('class-default' in reserved for reserved in reserving.values())
 
+    attached_count = len(switchports) - len(unattached)
+    scope = (f'all {len(switchports)}' if not unattached
+             else f'{attached_count} of {len(switchports)}')
     reason = (
-        f'QoS enabled: `service-policy output {"`/`".join(sorted(attached))}` on all '
-        f'{len(switchports)} switchport(s), reserving bandwidth for '
+        f'QoS enabled: `service-policy output {"`/`".join(sorted(attached))}` on {scope} '
+        f'switchport(s), reserving bandwidth for '
         f'{", ".join(covered) if covered else "locally defined classes"}'
         f'{" and class-default" if default_reserved else ""}'
     )
+    if unattached:
+        reason += (
+            f'. No `service-policy output` on: {", ".join(unattached)} - those port(s) are '
+            'as floodable as before, but the finding condition is only that QoS is not '
+            'enabled, so this is reported rather than failed'
+        )
     if uncovered:
         reason += (
             f'. Not reserved for: {", ".join(uncovered)} - the Check Content lists these as its '
