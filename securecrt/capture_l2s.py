@@ -383,13 +383,22 @@ def switch_table_rows(output):
     """({number: (model, release)}, whole_table) for `show version`'s switch
     table, every row of it and not only the active one.
 
-    `whole_table` is False when the walk stopped on a line that begins like a
-    member row and could not be read. Reading stops at the first line that is
-    not a row either way - that is how the end of the table is found - but the
-    two are not the same fact, and one caller badly needs to tell them apart:
-    a three-member stack whose second row this cannot parse yields exactly one
-    member, which is indistinguishable from a standalone switch unless the
-    partial read is reported as partial. See is_standalone."""
+    `whole_table` says the table was read all the way to something past its
+    end, which is a stronger claim than "reading stopped". One caller badly
+    needs the difference: a stack that yields exactly one member is
+    indistinguishable from a standalone switch unless a partial read is
+    reported as partial. See is_standalone. Two ways to read only part of it,
+    and both have been met on real hardware:
+
+      * a row this cannot parse. Reading stops at the first line that is not a
+        row either way - that is how the end of the table is found - but a
+        line opening with a member number is a row, not the end.
+      * the output ending mid-table. The switch table is the last thing
+        `show version` prints, so output cut short by a slow read loses its
+        tail first, and the members it loses are the ones it never got to.
+        Running out of text is therefore not proof of anything, which is why
+        `whole_table` starts False and is earned by reaching a line past the
+        table rather than by exhausting the output."""
     import re
     header = re.search(r'^\s*Switch\s+Ports\s+Model\s+SW\s+Version', output or '',
                        re.M | re.I)
@@ -399,7 +408,7 @@ def switch_table_rows(output):
     if rest == -1:
         return {}, False
     members = {}
-    whole_table = True
+    whole_table = False
     for line in output[rest + 1:].splitlines():
         if not line.strip() or set(line.strip()) <= set('- '):
             continue

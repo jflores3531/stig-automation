@@ -210,6 +210,18 @@ def test_short_commands_only(tmpdir):
     check('so the members it could not parse are still accounted for',
           len(csv_rows(tmpdir)) == 3, csv_rows(tmpdir))
 
+    # The other way to read only part of the table, and the likelier one: the
+    # switch table is the last thing `show version` prints, so output cut short
+    # by a slow read loses its tail first - and the members it loses are the
+    # ones it never reached. Running out of text is not the table ending.
+    cut = run_inventory(tmpdir, [('sw-cut', '10.20.0.5')],
+                        outputs={'show version': TRUNCATED_VERSION,
+                                 'show switch': SHOW_SWITCH,
+                                 'show license udi': SHOW_LICENSE_UDI})
+    check('output that ends mid-table is not read as the table ending',
+          cut.Screen.sent[1:] == ['show version', 'show switch', 'show license udi'],
+          cut.Screen.sent[1:])
+
 
 def test_writes_one_csv_and_nothing_else(tmpdir):
     print('\nthe run leaves a CSV and nothing else')
@@ -266,6 +278,36 @@ Switch/Slot Number    PID    VID    SN
 Switch 1             C9300-48P    V01    FOC1111X1XX
 Switch 2             C9300-24P    V01    FOC2222X2XX
 Switch 3             C9300-24P    V01    FOC3333X3XX"""
+
+# A stack whose `show version` was cut off partway through the switch table.
+# That table is the last thing the command prints, so a read that ends early
+# loses its tail first - leaving one member behind and no line past the table
+# to prove the rest was ever there.
+TRUNCATED_VERSION = """Cisco IOS XE Software, Version 17.12.04
+
+STACKSW01 uptime is 3 weeks, 2 days
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+*    1 48    C9300-48P          17.12.04          CAT9K_IOSXE           INSTALL"""
+
+# Verbatim column layout from a real WS-C3850-48U four-member stack, via the
+# ntc-templates parser corpus - a format this fleet actually runs, kept here so
+# the reader is pinned against captured output rather than against a shape
+# invented to match it.
+REAL_3850_STACK_VERSION = """Cisco IOS Software, IOS-XE Software, Catalyst L3 Switch \
+Software (CAT3K_CAA-UNIVERSALK9-M), Version 03.06.05E, RELEASE SOFTWARE (fc2)
+
+STACKSW01 uptime is 1 year, 30 weeks
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+*    1 56    WS-C3850-48U       03.06.05E         cat3k_caa-universalk9 INSTALL
+     2 56    WS-C3850-48U       03.06.05E         cat3k_caa-universalk9 INSTALL
+     3 56    WS-C3850-48U       03.06.05E         cat3k_caa-universalk9 INSTALL
+     4 56    WS-C3850-48U       03.06.05E         cat3k_caa-universalk9 INSTALL
+
+Configuration register is 0x102"""
 
 # A three-member stack whose second row this cannot read - the shape that made
 # every stack on a real fleet come back looking like a standalone switch. The
@@ -412,6 +454,25 @@ def test_not_a_switch_is_refused(tmpdir):
               'cisco' in rows[0]['comment'].lower(), rows[0])
 
 
+def test_reads_a_real_3850_stack_table():
+    """Pinned against captured output rather than a shape invented to match
+    the reader: the column layout below is verbatim from a WS-C3850-48U
+    four-member stack, a platform this fleet runs. The release column is the
+    one worth having a real sample of - `03.06.05E` is neither the `17.12.04`
+    of a 9300 nor a number the reader can assume the shape of."""
+    print('\nthe switch table of a real 3850 stack, column for column')
+    members, whole = capture_l2s.switch_table_rows(REAL_3850_STACK_VERSION)
+    check('all four members are read', sorted(members) == [1, 2, 3, 4], sorted(members))
+    check('and the table is seen through to its end', whole, whole)
+    check('never mistaken for a standalone switch',
+          not capture_l2s.is_standalone(REAL_3850_STACK_VERSION))
+    check('with the model and release off the row, not guessed',
+          members.get(1) == ('WS-C3850-48U', '03.06.05E'), members.get(1))
+    check('and the release normalised the way the audit normalises it',
+          capture_l2s.show_version_release(REAL_3850_STACK_VERSION) == '3.6.5E',
+          capture_l2s.show_version_release(REAL_3850_STACK_VERSION))
+
+
 def test_readers_agree_with_the_audit():
     """The inventory and the checklist beside it must not disagree about which
     release a switch runs. Both read `show version` through capture_l2s, so
@@ -432,6 +493,7 @@ def test_readers_agree_with_the_audit():
 
 if __name__ == '__main__':
     test_readers_agree_with_the_audit()
+    test_reads_a_real_3850_stack_table()
     for test in (test_short_commands_only,
                  test_stack_is_one_row_per_member,
                  test_writes_one_csv_and_nothing_else,
