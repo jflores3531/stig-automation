@@ -112,6 +112,100 @@ def _all_ports_explicit_mode(cfg):
     return True, f'all {total} switchport(s) have an explicit switchport mode (trunk or access)'
 
 
+# V-220645 (IOS) / V-220671 (IOS XE), identical text in both books: "If any of
+# the user-facing switch ports are configured as a trunk, this is a finding."
+#
+# _all_ports_explicit_mode above used to be the answer to this, and it is not
+# one. It asks whether every port has an explicit `switchport mode`, which
+# catches a port left negotiable - a real DTP risk, and the rule's spirit - but
+# it never fails an explicit trunk, which is the rule's letter. A switch with a
+# user-facing port configured `switchport mode trunk` passed it. That is the
+# shape of verdict this project exists to avoid: not a wrong answer, a
+# confident answer to a different question.
+#
+# The obstacle is that "user-facing" is not in the configuration. Two facts
+# about the site are, if the site declares them, and both live in
+# inventory.yaml beside the VLAN names and the management subnet:
+#
+#   core_switch_hostname_tags - substrings marking a hostname as core or
+#     distribution. Those switches have no user-facing ports at all, so the
+#     rule's population is empty and NOT APPLICABLE is the honest verdict.
+#   uplink_port_description_keywords - substrings marking a port's description
+#     as facing another switch, an AP, or a phone rather than a user.
+#
+# What this cannot do is call an unlabelled trunk a finding. Every access
+# switch needs at least one trunk - its uplink - so failing trunks outright
+# would fail every switch in a fleet for being wired correctly. An unlabelled
+# trunk is a port whose far end this cannot see, and the truthful verdict is
+# that a human has to look: NOT AUTOMATED, naming the ports, rather than a
+# PASS that quietly asserts they are fine.
+def _port_description(block):
+    match = re.search(r'^\s*description\s+(.+?)\s*$', block, re.M)
+    return match.group(1) if match else ''
+
+
+def _matching_tag(text, tags):
+    """The first declared tag `text` contains, case-insensitively, or None."""
+    lowered = (text or '').lower()
+    return next((tag for tag in tags if tag and tag.lower() in lowered), None)
+
+
+def _user_facing_trunk_check(cfg, core_tags=(), uplink_keywords=()):
+    hostname_match = re.search(r'^hostname (\S+)', cfg, re.M)
+    hostname = hostname_match.group(1) if hostname_match else ''
+
+    core_tag = _matching_tag(hostname, core_tags)
+    if core_tag:
+        return None, (
+            f'`{hostname}` is a core/distribution switch by the `{core_tag}` in its hostname '
+            '(core_switch_hostname_tags in inventory.yaml), so it has no user-facing ports for '
+            'this rule to be about'
+        )
+
+    switchports = dict(_switchport_blocks(cfg))
+    if not switchports:
+        return False, 'no switchports found in config'
+
+    # A port left negotiable belongs here with the trunks: it is not
+    # `switchport mode trunk`, but it will become a trunk the moment something
+    # on the other end asks, which on a user-facing port is the whole DTP
+    # VLAN-hopping problem this rule guards.
+    trunks, negotiable = {}, {}
+    for name, block in sorted(switchports.items()):
+        if re.search(r'^\s*switchport mode trunk\s*$', block, re.M):
+            trunks[name] = block
+        elif not re.search(r'^\s*switchport mode access\s*$', block, re.M):
+            negotiable[name] = block
+
+    if not trunks and not negotiable:
+        return True, (f'all {len(switchports)} switchport(s) are explicitly '
+                      '`switchport mode access`, so none of them is a trunk')
+
+    accounted, unaccounted = [], []
+    for name, block in list(trunks.items()) + list(negotiable.items()):
+        keyword = _matching_tag(_port_description(block), uplink_keywords)
+        kind = 'trunk' if name in trunks else 'negotiable (no explicit `switchport mode`)'
+        if keyword:
+            accounted.append(f'{name} ({kind}, described `{keyword}`)')
+        else:
+            unaccounted.append(f'{name} ({kind})')
+
+    if unaccounted:
+        return 'NOT AUTOMATED', (
+            'cannot tell from configuration whether these face users: '
+            + ', '.join(unaccounted)
+            + (f'. Accounted for by description: {", ".join(accounted)}' if accounted else '')
+            + '. A trunk to another switch is required on an access switch and is not a '
+            'finding, so these are not failed - name the far end in each port\'s '
+            '`description` using uplink_port_description_keywords, or tag this hostname in '
+            'core_switch_hostname_tags, and this answers itself'
+        )
+    return True, (
+        f'no user-facing trunk: every non-access port is described as an uplink - '
+        f'{", ".join(accounted)}'
+    )
+
+
 def _presence(cfg, pattern, flags=0, what=None):
     """PASS if pattern is found; reason shows the matched line, or what was
     searched for if it wasn't."""
@@ -1830,7 +1924,8 @@ CHECKS = {
     # checks every switchport-capable interface directly instead of the
     # access/trunk classification bucket, which was circular.
     'V-220642': lambda cfg: _all_access_ports_have(cfg, r'switchport access vlan (?!1\s*$)\d+', 'an explicit non-default access VLAN (not VLAN 1)'),
-    'V-220645': _all_ports_explicit_mode,
+    'V-220645': lambda cfg: _user_facing_trunk_check(
+        cfg, core_switch_tags, uplink_keywords),
     'V-220623': _dot1x_mab_check,
     'V-220632': lambda cfg: _all_access_ports_have(cfg, r'switchport block unicast', 'UUFB (`switchport block unicast`)'),
     'V-220634': lambda cfg: _all_access_ports_have(cfg, r'ip verify source', 'IP Source Guard (`ip verify source`)'),
@@ -1945,6 +2040,21 @@ parser.add_argument('--user-vlan-names', metavar='NAMES', dest='user_vlan_names'
                          '- army-xxx-abc-user1 on VLAN 800 here, army-yyy-def-user15 on VLAN 850 '
                          'there. The name wins over --non-user-vlans, so a switch whose user VLAN '
                          'is 10 is still checked even where 10 is the management VLAN.')
+parser.add_argument('--core-switch-tags', metavar='TAGS', dest='core_switch_tags',
+                    help='Comma-separated substrings marking a hostname as a core or distribution '
+                         "switch, overriding inventory.yaml's core_switch_hostname_tags. Those "
+                         'switches have no user-facing ports, so V-220645/671 reports NOT '
+                         'APPLICABLE on them. Matched case-insensitively anywhere in the hostname, '
+                         'so keep them tight: this direction exempts a switch from the rule '
+                         'entirely, and an over-broad tag costs a silent exemption rather than a '
+                         'noisy finding.')
+parser.add_argument('--uplink-keywords', metavar='WORDS', dest='uplink_keywords',
+                    help='Comma-separated substrings marking a port description as facing another '
+                         "switch, an AP or a phone, overriding inventory.yaml's "
+                         'uplink_port_description_keywords. A trunk described this way is not a '
+                         'user-facing trunk (V-220645/671); one that is not described at all is '
+                         'reported for review rather than failed, because every access switch '
+                         'needs an uplink.')
 parser.add_argument('--non-user-vlan-names', metavar='NAMES', dest='non_user_vlan_names',
                     help='Comma-separated VLAN names to treat as non-user, overriding '
                          "inventory.yaml's non_user_vlan_names. Matched exactly and case-"
@@ -2067,6 +2177,18 @@ else:
 # Names are a separate axis from IDs, so --non-user-vlan-names overrides only
 # the name list and leaves the ID exclusions above alone. A VLAN is non-user if
 # either matches.
+# Both are lists of substrings the site declares about itself, so they follow
+# --non-user-vlan-names' shape: a comma-separated override for a one-off run
+# against a switch inventory.yaml does not describe.
+if args.core_switch_tags is not None:
+    core_switch_tags = [tag.strip() for tag in args.core_switch_tags.split(',') if tag.strip()]
+else:
+    core_switch_tags = netauto.load_core_switch_hostname_tags()
+if args.uplink_keywords is not None:
+    uplink_keywords = [word.strip() for word in args.uplink_keywords.split(',') if word.strip()]
+else:
+    uplink_keywords = netauto.load_uplink_description_keywords()
+
 if args.non_user_vlan_names:
     non_user_vlan_names = [name.strip() for name in args.non_user_vlan_names.split(',') if name.strip()]
 else:

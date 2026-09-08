@@ -94,6 +94,37 @@ def load_user_vlan_names(path=INVENTORY_PATH):
     return inventory.get('user_vlan_names', [])
 
 
+def load_core_switch_hostname_tags(path=INVENTORY_PATH):
+    """Substrings that mark a hostname as a core or distribution switch.
+
+    V-220645/671 asks whether any *user-facing* port is a trunk, and nothing
+    in a configuration says which ports face users. A core or distribution
+    switch has none at all, so the rule's population is empty there and the
+    verdict is NOT APPLICABLE - but only the site knows which switches those
+    are, and on a fleet named to a convention the hostname is where it says
+    so. Matched case-insensitively as a substring. Empty by default: with
+    nothing declared, no switch is exempted from anything."""
+    with open(path) as f:
+        inventory = yaml.safe_load(f)
+    return inventory.get('core_switch_hostname_tags', [])
+
+
+def load_uplink_description_keywords(path=INVENTORY_PATH):
+    """Substrings that mark a port's `description` as facing something other
+    than a user - another switch, an AP, a phone.
+
+    The other half of V-220645/671. A trunk described as an uplink is not a
+    user-facing trunk, and an access switch needs at least one, so without
+    this every switch in a fleet would report its own uplink for review.
+    Matched case-insensitively as a substring, so `TO-CORE` catches
+    `description TO-CORE1 Gi1/0/49`. Empty by default, in which case every
+    trunk goes to a human - which is the honest answer when nothing says
+    where a port leads."""
+    with open(path) as f:
+        inventory = yaml.safe_load(f)
+    return inventory.get('uplink_port_description_keywords', [])
+
+
 def load_management_vlan_names(path=INVENTORY_PATH):
     """Load the management_vlan_names list from the YAML inventory - VLAN
     *names* carrying the switch's own management address, matched against the

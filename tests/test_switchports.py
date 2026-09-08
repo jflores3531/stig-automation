@@ -123,15 +123,20 @@ def test_name_is_not_the_signal(tmpdir):
           any(term in report for term in ('BPDU', 'UUFB', 'Source Guard')))
 
 
-def test_explicit_mode_rule(tmpdir):
-    """V-220645 scans interfaces itself rather than reusing parse_switchports'
-    buckets, so it needs the exclusion independently - otherwise it reports a
-    routed port as 'left in negotiated/dynamic mode', a mode it does not have."""
-    print('\nthe explicit-mode rule excludes them too, and still catches a real one')
+def test_user_facing_trunk_rule(tmpdir):
+    """V-220645/671 scans interfaces itself rather than reusing
+    parse_switchports' buckets, so it needs the Layer 3 exclusion
+    independently - otherwise it reports a routed port as one whose far end it
+    cannot see, when a routed port has no switchport mode to have."""
+    print('\nthe user-facing-trunk rule excludes them too, and still catches a real one')
     bare = 'interface GigabitEthernet1/0/2\n description no mode set\n!\n'
     report = report_for(tmpdir, 'mode', HARDENED_PORT + ROUTED_UPLINK + OOB_MANAGEMENT + bare)
-    line = _findings_naming(report, 'negotiated/dynamic mode')
-    check('the port with no switchport mode is reported', 'GigabitEthernet1/0/2' in line, line)
+    line = _findings_naming(report, 'cannot tell from configuration')
+    # A port with no explicit mode will trunk the moment something asks, which
+    # on a user-facing port is the DTP problem this rule is about - so it goes
+    # to a human with the trunks rather than passing quietly.
+    check('the port with no switchport mode goes to a human',
+          'GigabitEthernet1/0/2' in line, line)
     check('neither Layer 3 interface is', 'TenGigabitEthernet1/0/24' not in line
           and 'GigabitEthernet0/0' not in line, line)
 
@@ -144,7 +149,7 @@ if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmpdir:
         test_layer3_never_named(tmpdir)
         test_name_is_not_the_signal(tmpdir)
-        test_explicit_mode_rule(tmpdir)
+        test_user_facing_trunk_rule(tmpdir)
     print('\n' + ('ALL CHECKS PASSED' if not failures
                   else f'{len(failures)} FAILED: {", ".join(failures)}'))
     sys.exit(1 if failures else 0)

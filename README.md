@@ -6,12 +6,12 @@ Manually STIG-checking a single switch means working through ~65 rules by hand a
 
 | Platform | DISA Benchmarks | Rules | Automated checks |
 |---|---|---|---|
-| Cisco IOS XE Switch | L2S + NDM | 64 | 64 |
+| Cisco IOS XE Switch | L2S + NDM | 64 | 63 (64 with site declarations) |
 | Cisco IOS Switch | L2S + NDM | 65 | 62 |
 | Cisco NX-OS Switch | L2S + NDM | 64 | 57 |
 | Cisco IOS Router | NDM + RTR | 127 | 59 |
 
-Rules needing external infrastructure (a backup server, an NMS) or topology/policy judgment are reported **NOT AUTOMATED** rather than guessed at — a false pass on a compliance tool is worse than no answer. Every rule check is coded against the STIG's literal Check Text, and every fix against its Fix Text.
+Rules needing external infrastructure (a backup server, an NMS) or topology/policy judgment are reported **NOT AUTOMATED** rather than guessed at. One of them, `V-220671`, becomes answerable once the site declares two facts about itself in `inventory.yaml` — which hostnames are core/distribution switches, and which port descriptions mark an uplink — because "user-facing" is not something a configuration says — a false pass on a compliance tool is worse than no answer. Every rule check is coded against the STIG's literal Check Text, and every fix against its Fix Text.
 
 **Run against production hardware.** The read-only path — SecureCRT collection, the offline audit, the checklist export and the fleet inventory — has been exercised against Cisco Catalyst **3850s and 9300s on a production network**, including stacks. Several of the parsers here exist because that is where they were first proved wrong: the release and model on an image that prints no version banner, per-member serials on a stack, a domain line spaced unlike the manual's.
 

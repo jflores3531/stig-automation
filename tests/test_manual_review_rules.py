@@ -469,6 +469,85 @@ def test_config_backup(tmpdir):
           no_bypass)
 
 
+UPLINK_TRUNK = """interface GigabitEthernet1/0/48
+ description TO-CORE1 Gi1/0/1
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20
+!
+"""
+
+BARE_TRUNK = """interface GigabitEthernet1/0/47
+ switchport mode trunk
+ switchport trunk allowed vlan 10,20
+!
+"""
+
+
+def report_with(tmpdir, name, extra_interfaces='', hostname='TESTSW01',
+                core_tags='CORE,DIST', uplink_keywords='TO-CORE,UPLINK'):
+    """An IOS XE report for the fixture switch, optionally renamed, with extra
+    interfaces spliced in.
+
+    The two site facts this rule reads are passed on the command line rather
+    than read from inventory.yaml, the way every other suite here pins an
+    inventory-driven input - so what is asserted is the audit's behaviour and
+    not whatever the working tree's inventory happens to say."""
+    cfg = fixtures.RUNNING_CONFIG.replace('hostname TESTSW01', f'hostname {hostname}')
+    if extra_interfaces:
+        cfg = cfg.replace('\nend', '\n' + extra_interfaces + 'end')
+    outputs = dict(fixtures.OUTPUTS)
+    outputs['show running-config'] = cfg
+    path = capture.write(os.path.join(tmpdir, name + '.capture'), outputs)
+    result = subprocess.run(
+        [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
+         '--from-capture', path, '--non-user-vlans', '1,10,999,1000',
+         '--core-switch-tags', core_tags, '--uplink-keywords', uplink_keywords],
+        capture_output=True, text=True, cwd=PROJECT, timeout=120)
+    return result.stdout + result.stderr
+
+
+def test_user_facing_trunk(tmpdir):
+    """V-220671 (and its identical IOS twin V-220645) asks whether any
+    user-facing port is a trunk. Nothing in a configuration says which ports
+    face users, and the check that used to answer this - every port has an
+    explicit `switchport mode` - never failed an explicit trunk at all, so it
+    was a confident answer to a different question.
+
+    Two facts the site can declare make it answerable: which hostnames are
+    core/distribution switches, which have no user-facing ports at all, and
+    which port descriptions mark an uplink. What it must never do is fail an
+    unlabelled trunk: every access switch needs one, so that would fail a
+    fleet for being wired correctly."""
+    print('\nuser-facing trunks: what the site declares, and what it cannot')
+    core = report_with(tmpdir, 'core', UPLINK_TRUNK, hostname='SITE-CORE1')
+    line = verdict(core, 'V-220671')
+    check('a core switch has no user-facing ports, so the rule does not apply',
+          status(core, 'V-220671') == 'NOT APPLICABLE', line)
+    check('and the reason names the tag that said so', 'CORE' in line, line)
+
+    labelled = report_with(tmpdir, 'labelled', UPLINK_TRUNK)
+    line = verdict(labelled, 'V-220671')
+    check('an access switch whose trunk is described as an uplink passes',
+          status(labelled, 'V-220671') == 'PASS', line)
+
+    # The point of the whole design: an uplink is not a finding, so an
+    # unlabelled trunk cannot be one either - it is a port whose far end this
+    # cannot see, and that is a human's question.
+    unlabelled = report_with(tmpdir, 'unlabelled', BARE_TRUNK)
+    line = verdict(unlabelled, 'V-220671')
+    check('an unlabelled trunk goes to a human rather than becoming a finding',
+          status(unlabelled, 'V-220671') == 'NOT AUTOMATED', line)
+    check('and the port is named so the human knows where to look',
+          'GigabitEthernet1/0/47' in line, line)
+    check('never FAIL - every access switch needs a trunk',
+          'FAIL' not in status(unlabelled, 'V-220671'), line)
+
+    # With nothing declared, nothing is exempted and nothing is assumed.
+    nothing = report_with(tmpdir, 'nodecl', UPLINK_TRUNK, core_tags='', uplink_keywords='')
+    check('with no keywords declared, even a described uplink goes to review',
+          status(nothing, 'V-220671') == 'NOT AUTOMATED', verdict(nothing, 'V-220671'))
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
         test_persistent_logging(tmp)
@@ -476,6 +555,7 @@ if __name__ == '__main__':
         test_supported_release(tmp)
         test_qos_bandwidth(tmp)
         test_config_backup(tmp)
+        test_user_facing_trunk(tmp)
     print('\n' + ('ALL CHECKS PASSED' if not failures
                   else f'{len(failures)} FAILED: {", ".join(failures)}'))
     sys.exit(1 if failures else 0)

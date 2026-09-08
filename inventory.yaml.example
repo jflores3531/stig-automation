@@ -20,6 +20,8 @@
 
     "approved_ca_hosts": "Hosts a `crypto pki trustpoint`'s `enrollment url` may name, for V-220567 (IOS XE L2S) and V-215711 (router). The rule asks whether the switch enrolled with a DOD or DOD-approved CA, and the URL naming that CA is in running-config - so the audit answers it, and this list is what 'approved' means at your site. Matched against the URL's HOST (scheme, port and path stripped) exactly and case-insensitively, or as a glob when the entry has a wildcard. Defaults to *.mil when absent, which is where the DOD PKI lives. Every enrollment URL matching the list is a PASS; one that does not is a FAIL, since an unrecognised CA is precisely what the rule exists to surface - so add your CA here rather than leaving a real finding standing on a switch that is compliant. A trustpoint with no URL at all (`enrollment terminal`, `enrollment profile`) is NOT AUTOMATED whatever this says, because nothing in the config names its CA. Read by l2_stig_audit.py, and overridable per run with --approved-ca-hosts.",
 
+    "core_switch_hostname_tags": "Substrings that mark a hostname as a core or distribution switch, e.g. ['CORE', 'DIST'] - matched case-insensitively anywhere in the hostname. V-220645/523's IOS XE twin V-220671 asks whether any user-facing port is a trunk, and no configuration says which ports face users; a core or distribution switch has none, so the rule reports NOT APPLICABLE there. Empty by default, which exempts nothing. Read by l2_stig_audit.py.",
+    "uplink_port_description_keywords": "Substrings that mark a port description as facing another switch, an AP or a phone rather than a user, e.g. ['UPLINK', 'TO-CORE', 'AP-'] - matched case-insensitively, so 'TO-CORE' catches 'description TO-CORE1 Gi1/0/49'. A trunk described this way is not a user-facing trunk (V-220645/671). Every access switch needs an uplink trunk, so with nothing declared here every trunk goes to a human for review and the rule reports NOT AUTOMATED naming the ports. Read by l2_stig_audit.py.",
     "management_subnet": "The management network in CIDR form, e.g. 'x.x.x.0/24' - replace the x's with your real management network. More than one prefix is allowed, as a list ['x.x.x.0/24', 'y.y.y.0/24'] or one string separated by commas, for a site whose management network is several ranges - but declare what the management network actually is, not whatever the vty ACL already permits: the check only means something because the two are declared independently. Used to verify that vty access-class ACLs are actually scoped to the management network rather than permitting any source (V-220575). If this is absent, V-220575 reports FAIL with reason 'no management_subnet configured in inventory.yaml' on every device audited - not NOT AUTOMATED, so a fleet-wide run shows a finding on every switch. Read by ios_router_audit.py and l2_stig_audit.py.",
 
     "automation_host": "IP address of the host that runs these scripts. It is the sole permitted source in the vty ACL that ios_router_stig_harden_acl.py and l2_stig_harden_acl.py build for V-220575. Set this before running either harden script - getting it wrong locks you out of the device.",
@@ -60,6 +62,8 @@
   "approved_ca_hosts": ["*.mil"],
 
   "management_subnet": "x.x.x.0/24",
+  "core_switch_hostname_tags": [],
+  "uplink_port_description_keywords": [],
   "automation_host": "x.x.x.x",
 
   "unused_vlan": null,
