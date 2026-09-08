@@ -401,6 +401,25 @@ def switch_table_members(output):
     return members
 
 
+def is_standalone(version_output):
+    """Whether `show version`'s switch table names exactly one chassis.
+
+    What it is for: `show switch` and `show license udi` exist to account for
+    the members `show version` does not describe, and a switch that is its own
+    whole stack has none. Asking anyway is two round trips per switch spent
+    confirming what the first command already said, which on a fleet of
+    hundreds is the difference between an inventory somebody re-runs whenever
+    they want to know what is out there and one they plan an evening around.
+
+    Deliberately false when the table is missing altogether, rather than
+    treating "no table" as "one switch". A release that prints no switch table
+    is exactly the case where `show version` is least able to answer for the
+    hardware - see show_version_model - and where `show license udi` is the
+    fallback that names the model and serial. Skipping it there would save two
+    commands and lose the row's data."""
+    return len(switch_table_members(version_output)) == 1
+
+
 def version_member_serials(output):
     """{number: serial} from `show version`'s own per-member `Switch NN`
     sections. The fallback when `show license udi` is unavailable - it names

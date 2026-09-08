@@ -160,16 +160,40 @@ def test_short_commands_only(tmpdir):
     """The reason this is not the STIG walk with a flag. `show running-config`
     is the slow command, and an inventory does not need it - so a fleet that
     takes hours to audit takes minutes to count, and can be re-run whenever
-    somebody wants to know what is out there."""
-    print('three short commands per switch, not the audit\'s seven')
+    somebody wants to know what is out there.
+
+    And a standalone switch does not need the two that describe a stack: they
+    exist to account for the members `show version` does not describe, and it
+    has none. That is two round trips a switch, on a walk whose whole point is
+    being short enough to re-run."""
+    print('one short command on a standalone switch, three on a stack')
     fake = run_inventory(tmpdir, [('sw-a', '10.20.0.1')])
     check('paging is disabled first', fake.Screen.sent[0] == 'terminal length 0',
           fake.Screen.sent)
-    check('then `show version` and the two that describe a stack',
-          fake.Screen.sent[1:] == ['show version', 'show switch', 'show license udi'],
-          fake.Screen.sent[1:])
+    check('`show version` answers a standalone switch by itself',
+          fake.Screen.sent[1:] == ['show version'], fake.Screen.sent[1:])
     check('the slow one is never sent',
           'show running-config' not in fake.Screen.sent, fake.Screen.sent)
+
+    stacked = run_inventory(tmpdir, [('sw-stack', '10.20.0.2')],
+                            outputs={'show version': STACK_VERSION,
+                                     'show switch': SHOW_SWITCH,
+                                     'show license udi': SHOW_LICENSE_UDI})
+    check('a stack is still asked the two that describe its members',
+          stacked.Screen.sent[1:] == ['show version', 'show switch', 'show license udi'],
+          stacked.Screen.sent[1:])
+
+    # Not read as one switch: a release printing no table is where `show
+    # version` is least able to answer for the hardware, and where
+    # `show license udi` is the fallback that names the model and serial.
+    no_table = run_inventory(tmpdir, [('sw-old', '10.20.0.3')],
+                             outputs={'show version': 'Cisco IOS Software, Version 15.2\n'
+                                                      'SW01 uptime is 1 day',
+                                      'show switch': '% Invalid input',
+                                      'show license udi': SHOW_LICENSE_UDI})
+    check('a switch that prints no table is still asked, rather than assumed alone',
+          no_table.Screen.sent[1:] == ['show version', 'show switch', 'show license udi'],
+          no_table.Screen.sent[1:])
 
 
 def test_writes_one_csv_and_nothing_else(tmpdir):

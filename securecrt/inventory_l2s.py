@@ -4,8 +4,9 @@
 """Inventory every saved SecureCRT session: one CSV row per switch, unattended.
 
 Run this from SecureCRT (Script > Run...). For each saved session it connects
-using the credentials SecureCRT already holds, sends three short show commands,
-reads what the switch is off them, and disconnects. It writes one file:
+using the credentials SecureCRT already holds, sends one to three short show
+commands, reads what the switch is off them, and disconnects. It writes one
+file:
 
     inventory_<stamp>.csv
 
@@ -14,9 +15,11 @@ reads what the switch is off them, and disconnects. It writes one file:
 
 A stack is one row per chassis. Each member is its own asset with its own
 serial on its own property record, and `show version` names only the active
-one - so the walk also asks `show switch` for the members and their roles and
-`show license udi` for each member's model and serial, and joins the three on
-the member number.
+one - so where its switch table names more than one chassis the walk also asks
+`show switch` for the members and their roles and `show license udi` for each
+member's model and serial, and joins the three on the member number. A
+standalone switch has no members to account for, so it is not asked: one round
+trip, and the same row built from `show version` alone.
 
 Nothing is configured on any device, no capture or checklist is written, and
 the only non-show command sent is `terminal length 0`, which is session-scoped.
@@ -24,10 +27,12 @@ the only non-show command sent is `terminal length 0`, which is session-scoped.
 WHY THIS IS SEPARATE FROM capture_l2s_bulk.py
 That script audits: it collects seven commands per switch, of which
 `show running-config` is much the slowest, and produces a STIG Viewer checklist
-per device. This one asks three short ones, so a fleet that takes hours to
-audit takes minutes to inventory - which is what makes it something you can
-re-run whenever you want to know what is out there, rather than a job you plan
-an evening around. The two answer different questions and are kept apart so
+per device. This one asks between one and three short ones - `show version`
+alone answers a standalone switch, and the two that describe a stack are asked
+only when its switch table names more than one chassis - so a fleet that takes
+hours to audit takes minutes to inventory, which is what makes it something you
+can re-run whenever you want to know what is out there, rather than a job you
+plan an evening around. The two answer different questions and are kept apart so
 neither has to compromise for the other.
 
 A switch nobody could reach is a row, not a gap: its model, serial and release
@@ -84,10 +89,11 @@ STOP_FILE = 'STOP'
 # What this asks for. `terminal length 0` goes first so a stack's output cannot
 # come back truncated behind a pager prompt.
 #
-# `show version` alone would be one round trip rather than three, and would be
-# wrong on a stack: it names the active member's serial and no other, while an
-# inventory has to account for every chassis. The other two are short, so the
-# walk stays a walk - see capture_l2s.stack_members for how they join.
+# `show version` alone is one round trip, and is the whole answer on a
+# standalone switch. It would be wrong on a stack: it names the active member's
+# serial and no other, while an inventory has to account for every chassis. So
+# the other two are asked exactly when its switch table names more than one -
+# see capture_l2s.is_standalone, and stack_members for how the three join.
 INVENTORY_COMMAND = 'show version'
 MEMBER_COMMANDS = capture_l2s.STACK_COMMANDS
 
@@ -191,6 +197,17 @@ def read_inventory(prompt=None):
             'Not a Cisco switch')
 
     outputs = {INVENTORY_COMMAND: output}
+    # The other two exist to account for the members `show version` does not
+    # describe, so a switch whose table names one chassis has already answered
+    # them: its model, serial and release are in the output above, and the join
+    # builds the same single row from it either way. Two round trips a switch
+    # is what makes this a walk rather than an evening.
+    #
+    # A table missing altogether is not read as one switch - see
+    # capture_l2s.is_standalone. That is the case where `show version` is least
+    # able to answer for the hardware and `show license udi` is the fallback.
+    if capture_l2s.is_standalone(output):
+        return outputs
     # Unlike `show version`, these two are allowed to fail: a platform that is
     # not stackable answers `show switch` with an error, and some releases have
     # no `show license udi` at all. Neither is a reason to lose the row - the
