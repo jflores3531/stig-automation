@@ -108,15 +108,29 @@ def storm_control_command(interface_name):
 
 
 def shutdown_access_ports(cfg, access_names):
-    """The subset of access_names whose interface block has 'shutdown'.
+    """The subset of access_names that are administratively shut.
 
     Read from the template-expanded config, not the raw one: a port can be shut
     by the template it sources as easily as by its own block, and a shut port
-    this misses is a port V-220641 still finds."""
+    this misses is a port V-220641 still finds - the audit expands templates, so
+    it finds it either way.
+
+    An explicit `no shutdown` in the block wins over a `shutdown` the expansion
+    spliced in from a template, because that is what the switch does: the
+    interface's own line overrides the template's. Without that rule the
+    expansion turns into a way to push the unused VLAN onto a LIVE port - the
+    template says shut, the port says otherwise and is carrying traffic, and it
+    would be moved to the VLAN chosen for having nothing on it. IOS renders
+    `no shutdown` only where it is overriding something, so its presence is the
+    signal; a port that is simply up carries neither line."""
     shutdown = []
     for chunk in re.split(r'^(?=interface \S+)', cfg, flags=re.M):
         m = re.match(r'interface (\S+)', chunk)
-        if m and m.group(1) in access_names and re.search(r'^\s*shutdown\s*$', chunk, re.M):
+        if not m or m.group(1) not in access_names:
+            continue
+        if re.search(r'^\s*no shutdown\s*$', chunk, re.M):
+            continue
+        if re.search(r'^\s*shutdown\s*$', chunk, re.M):
             shutdown.append(m.group(1))
     return shutdown
 

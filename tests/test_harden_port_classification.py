@@ -64,6 +64,10 @@ interface GigabitEthernet1/0/8
 interface GigabitEthernet1/0/9
  source template PARKED
 !
+interface GigabitEthernet1/0/10
+ source template PARKED
+ no shutdown
+!
 interface TenGigabitEthernet1/1/1
  no switchport
  ip address 10.2.2.2 255.255.255.0
@@ -186,6 +190,12 @@ def test_only_shut_access_ports_get_the_unused_vlan():
     raw_access, _ = stig_common.switchport_names(CONFIG)
     check('off the raw config the template-shut port would have been missed',
           'GigabitEthernet1/0/9' not in module['shutdown_access_ports'](CONFIG, raw_access))
+
+    # The interface's own line beats the template's, because that is what the
+    # switch does. Without this rule the expansion becomes a way to push the
+    # unused VLAN onto a port that is carrying traffic.
+    check('a port whose own block says `no shutdown` is live, whatever its template says',
+          'GigabitEthernet1/0/10' not in shut, shut)
 
     check('a templated shut port is reported as having its template overridden',
           module['templated_ports'](CONFIG, shut) == ['GigabitEthernet1/0/9'],
