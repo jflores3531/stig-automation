@@ -314,6 +314,13 @@ def test_sshv2_is_read_from_show_ip_ssh_when_the_config_will_not_say(tmpdir):
     check('SSH Disabled is not accepted either',
           'FAIL' in verdict(off, 'V-220555'), verdict(off, 'V-220555'))
 
+    # running-config is intent; `show ip ssh` is what the switch is running.
+    # Where they disagree the running switch wins, or a stale line outvotes
+    # live output saying SSHv1 is still answered.
+    stale = report_for(tmpdir, 'sshstale', ip_ssh='SSH Enabled - version 1.99\n')
+    check('the config line does not outvote live output that contradicts it',
+          'FAIL' in verdict(stale, 'V-220555'), verdict(stale, 'V-220555'))
+
     # The config line still stands on its own, for switches that do write it.
     classic = report_for(tmpdir, 'sshclassic', ip_ssh='')
     check('a config carrying the line passes with no `show ip ssh` at all',

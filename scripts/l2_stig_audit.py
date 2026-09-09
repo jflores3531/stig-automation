@@ -1388,20 +1388,33 @@ def _sshv2_evidence(cfg, ssh_status_output):
     Version 1.99 is deliberately NOT accepted. That is IOS reporting
     compatibility mode, where the switch still answers SSHv1; reading it as v2
     would be the false PASS this whole file is written against. `SSH Disabled`
-    is not accepted either, for the obvious reason."""
-    if re.search(r'^ip ssh version 2\s*$', cfg, re.M):
-        return True, '`ip ssh version 2`'
+    is not accepted either, for the obvious reason.
+
+    `show ip ssh` is consulted FIRST and settles it on its own where it answers.
+    running-config is a statement of intent; `show ip ssh` is what the switch is
+    actually running, and where the two disagree the running switch is the one
+    an assessor cares about. Ordering it the other way round let a stale or
+    ineffective `ip ssh version 2` line outvote live output saying the switch
+    was still answering SSHv1 - a false PASS reachable from a real config."""
     status = ssh_status_output or ''
     m = re.search(r'SSH\s+Enabled\s*-\s*version\s*(\d+(?:\.\d+)?)', status, re.I)
     if m:
         if m.group(1).split('.')[0] == '2':
             return True, '`show ip ssh`: SSH Enabled - version {0}'.format(m.group(1))
         return False, ('`show ip ssh` reports version {0} - compatibility mode, so the switch '
-                       'still answers SSHv1'.format(m.group(1)))
+                       'still answers SSHv1, whatever running-config says'
+                       .format(m.group(1)))
     if re.search(r'SSH\s+Disabled', status, re.I):
-        return False, '`show ip ssh` reports SSH Disabled'
+        return False, '`show ip ssh` reports SSH Disabled, whatever running-config says'
+    # Nothing usable from the switch itself - fall back to the config line,
+    # which is what this check read before `show ip ssh` was ever collected.
+    if re.search(r'^ip ssh version 2\s*$', cfg, re.M):
+        return True, ('`ip ssh version 2` in running-config'
+                      + (' (`show ip ssh` gave no readable version)'
+                         if status.strip() else ''))
     if status.strip():
-        return False, '`show ip ssh` did not report an SSH version'
+        return False, ('`show ip ssh` did not report an SSH version, and there is no '
+                       '`ip ssh version 2` in running-config')
     return False, ('no `ip ssh version 2` in running-config, and no `show ip ssh` in this '
                    'capture to check instead')
 

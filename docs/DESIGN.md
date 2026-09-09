@@ -230,6 +230,8 @@ V-220555 and V-220556 both print `ip ssh version 2` in their Check Content, and 
 
 Neither rule's finding sentence asks for the line. They ask whether the session is protected with FIPS-validated HMAC and a FIPS-approved cipher. So `_sshv2_evidence` accepts either source and the report says which one it used.
 
+`show ip ssh` is consulted **first** and settles it on its own wherever it answers. running-config is a statement of intent; `show ip ssh` is what the switch is actually running, and where the two disagree the running switch is the one an assessor cares about. Ordered the other way round, a stale or ineffective `ip ssh version 2` line outvoted live output saying the switch was still answering SSHv1 — a false PASS reachable from a real config, and the reason the fallback is a fallback rather than the first test.
+
 Two readings are refused, because getting them wrong is worse than the false FAIL. `SSH Enabled - version 1.99` is IOS reporting compatibility mode, where the switch still answers SSHv1; counting it as v2 would be a false PASS on a switch that accepts the very protocol the rule exists to eliminate. `SSH Disabled` is refused for the obvious reason.
 
 `show ip ssh` joins `OPTIONAL_COMMANDS_L2S` rather than the required list. That tuple's usual rule is that a missing optional command costs an empty field in the asset block, never a verdict — and this one does feed a verdict, which is worth being explicit about. Absence here does not answer a rule against empty output; it falls back to the running-config line, which is exactly what the check did before the command was collected. No capture taken before this existed is refused, and no verdict is reached on nothing.
