@@ -105,6 +105,22 @@ Keeping them in one script meant every access-port fix inherited the trunk half'
 
 The port classifier moved to `stig_common.py` in the process, which fixed something separate. The harden side had its own copy that classified by interface name alone, while the audit's excluded Layer 3 interfaces by block contents. That divergence was a false FAIL on the audit side and worse on the hardening side: `switchport mode access` sent to a routed port converts it and takes its address with it. One classifier now answers both, so a port the audit judges as access and a port the hardening configures as access are the same port.
 
+### A port's real configuration may not be in its own block
+`l2_stig_audit.py` has expanded `source template <name>` since interface templates showed up in the fleet, because a port audited on its own three-line block draws findings against configuration nobody read. The harden scripts did not, and the consequence there is worse than a wrong verdict.
+
+A port whose block is only `source template UPLINK` carries no `switchport mode trunk` line. Classified off the raw config it lands in the access bucket, and the access pass sends it `switchport mode access` and `spanning-tree portfast` — collapsing the uplink, and putting PortFast on a port that receives BPDUs as a matter of course, which is the exact condition BPDU Guard exists to shut down. The trunk pass has the quieter mirror of the same bug: it skips that uplink and reports a clean run on a switch whose trunks were never touched.
+
+Both now read the templates off the switch (`stig_common.read_interface_templates`, one `show template interface source user <name>` per distinct template, nothing at all for a switch that uses none) and splice them in before classifying. `tests/test_harden_port_classification.py` pins it, including the raw-config behaviour it corrects, so the bug cannot come back unnoticed.
+
+The Ansible role still classifies with regex against the raw running-config and has not been fixed. It carries a warning at the top of its interface tasks saying so.
+
+### Access VLANs are assigned deliberately, not in bulk
+V-220642 (host-facing ports off the default VLAN) and V-220641 (disabled ports on an unused VLAN) are no longer pushed by anything. A port's access VLAN says what the thing plugged into it can reach, and moving a port needs the new VLAN to be right for that device — an SVI, a DHCP scope, a route out. Bulk-assigning it moved the lab's own management port and cut the session pushing the change (2026-08-28), and the guard added afterwards — skip ports that already carry an explicit VLAN — could not see a VLAN that came from a template.
+
+Template expansion fixes that reading, but not the underlying point: a port genuinely still on VLAN 1 is a port with something live on it. Both rules are printed as deliberate unpushed findings on every run, and the audit reports them as findings, which is the honest outcome. V-220641 is the lower-risk of the two by a distance — a shut port forwards nothing whatever VLAN it is on — and is out only because these scripts no longer set access VLANs at all.
+
+V-220642 also came out of the access script's `SIDE_EFFECT_RULES`, where it had been listed as satisfied by the access-VLAN push. Leaving it there would have been the script's own output claiming a pass it no longer earns.
+
 ### 802.1x is a deployment, not a line in a bulk pass
 V-220623 was pushed per-port by the interface script, skipping access ports on non-user VLANs. That skip was added after `authentication port-control auto` landed on the lab's own management port and blocked the supplicant-less host mid-push (2026-08-28) — and it was the wrong shape of fix. What locked out that one port locks out every port on a switch with no 802.1x infrastructure behind it: with no RADIUS authenticator reachable and no supplicant on the endpoint, a port set to `port-control auto` authenticates nobody and forwards nothing. On an access switch full of user devices that is not a lockout of the automation host, it is a lockout of the floor.
 

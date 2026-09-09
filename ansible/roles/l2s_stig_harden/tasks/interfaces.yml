@@ -40,53 +40,27 @@
   set_fact:
     access_ports: "{{ all_switchports | difference(trunk_ports) }}"
 
-# V-220641a: access ports that are already administratively shut get parked on
-# the designated unused VLAN instead of the normal default access VLAN.
+# NO ACCESS VLAN IS SET BY THIS ROLE - V-220641 and V-220642 both stay findings.
 #
-# Detection is pure running-config here, unlike the NX-OS role's V-220690, which
-# needs a `show interface status` round trip on top. That is not an oversight in
-# either direction - it is the platforms differing. IOS renders `shutdown` in the
-# interface block and that is sufficient; NX-OS does not render enough state
-# there to distinguish an administratively shut port from other down states,
-# which is why its equivalent reads the status table and cross-checks.
-# `shutdown_access_ports()` in l2_stig_harden_access_ports.py uses exactly this
-# running-config test.
+# Matching l2_stig_harden_access_ports.py. A port's access VLAN says what the
+# thing plugged into it can reach, and neither this role nor that script knows
+# what is plugged in. Bulk-assigning it moved the lab's own management port and
+# cut the session pushing the change (2026-08-28).
 #
-# Matching `\n[ \t]*shutdown[ \t]*\n` rather than bare 'shutdown' so a `no
-# shutdown` line cannot satisfy it, and [ \t] rather than \s because \s matches
-# newlines and would let the match wander into the following interface's block.
-- name: Administratively-shut access ports (V-220641a)
-  set_fact:
-    disabled_ports: >-
-      {{
-        running_config_result.stdout[0]
-        | regex_findall('(?ms)^interface ((?:GigabitEthernet|FastEthernet|TenGigabitEthernet|TwoGigabitEthernet|FiveGigabitEthernet|TwentyFiveGigE|FortyGigabitEthernet|HundredGigE|TwoHundredGigE|FourHundredGigE|Ethernet|Port-channel)\S*)\n(?:(?!^interface \S).)*?\n[ \t]*shutdown[ \t]*\n')
-        | intersect(access_ports)
-      }}
-  when: unused_vlan | string | length > 0
+# It could not reliably tell which ports already had one either: an access VLAN
+# can come from a sourced interface template rather than the interface's own
+# block, and the regex facts below read the block. A templated port therefore
+# read as unassigned, and would have had the default VLAN written over the one
+# its template gives it.
+#
+# WARNING, not yet fixed here: that same blindness applies to the trunk/access
+# classification above. A port whose block is only `source template UPLINK` has
+# no `switchport mode trunk` line of its own, so this role reads it as an access
+# port and would send it `switchport mode access` and `spanning-tree portfast
+# edge`, collapsing the uplink. The Python scripts now expand templates before
+# classifying (stig_common.read_interface_templates); this role does not.
+# Do not run it against a switch that uses interface templates.
 
-# Access ports that already carry an explicit access VLAN other than 1. These
-# were assigned deliberately and keep their VLAN - V-220642 only requires
-# host-facing ports off VLAN 1, not on any particular VLAN, and the Python's
-# unassigned_access_ports() applies the same rule. The rule earned its place
-# on the rebuilt lab (2026-08-28): re-VLANing every access port moved S1's
-# Gi0/0 - the management uplink to the automation host - and cut the very
-# session pushing the change.
-- name: Access ports with a deliberate VLAN assignment (kept as-is)
-  set_fact:
-    assigned_ports: >-
-      {{
-        running_config_result.stdout[0]
-        | regex_findall('(?ms)^interface ((?:GigabitEthernet|FastEthernet|TenGigabitEthernet|TwoGigabitEthernet|FiveGigabitEthernet|TwentyFiveGigE|FortyGigabitEthernet|HundredGigE|TwoHundredGigE|FourHundredGigE|Ethernet|Port-channel)\S*)\n(?:(?!^interface \S).)*?^[ \t]*switchport access vlan (?!1[ \t]*$)\d+[ \t]*$')
-        | intersect(access_ports)
-      }}
-
-# Disabled ports are excluded from this loop and handled by their own task
-# below. The Python pushes the default access VLAN and then overrides it for
-# the disabled subset, which is harmless there because Netmiko never diffs -
-# but in Ansible those two tasks would fight, each reporting changed forever
-# and genuinely re-writing the VLAN twice on every run. Removing them here
-# reaches the same end state without the churn.
 - name: >-
     Common access-port fixes: access mode (V-220645),
     PortFast (V-220630b, required for BPDU Guard to activate)
@@ -100,45 +74,8 @@
       # re-pushed on every access port every run. The other two lines here were
       # already matching; this one line was the whole difference.
       - spanning-tree portfast edge
-  loop: "{{ access_ports | difference(disabled_ports | default([])) }}"
-  when: access_ports | difference(disabled_ports | default([])) | length > 0
-
-# The default VLAN only lands on ports still on VLAN 1 - explicitly or by
-# having no 'switchport access vlan' line at all (V-220642).
-#
-# The default_access_vlan guard is not decoration. This role's own defaults set
-# it to "" (see defaults/main.yml: an unset value means skip the feature, the
-# same convention the Python scripts use), and every other task that
-# interpolates a VLAN ID checks for that - V-220641a via disabled_ports, which
-# is only computed when unused_vlan is set, and the trunk native-VLAN task
-# inline. This one did not, so an inventory that left default_access_vlan unset
-# would push a bare `switchport access vlan` to every unassigned access port on
-# the device. Nothing in the lab hit it because the group_vars always carried a
-# value; emptying that file to keep site numbering out of the repo is exactly
-# the case it was waiting for.
-- name: "V-220642 - move unassigned access ports off the default VLAN"
-  cisco.ios.ios_config:
-    parents: "interface {{ item }}"
-    lines:
-      - "switchport access vlan {{ default_access_vlan }}"
-  loop: "{{ access_ports | difference(disabled_ports | default([])) | difference(assigned_ports) }}"
-  when:
-    - default_access_vlan | string | length > 0
-    - access_ports | difference(disabled_ports | default([])) | difference(assigned_ports) | length > 0
-
-# Same three lines as the task above, but landing on unused_vlan rather than
-# default_access_vlan. Kept as a separate task rather than a conditional inside
-# the loop above because ios_config takes one `lines:` list per task - the
-# duplication is the cost of not re-writing the VLAN twice per run.
-- name: "V-220641a - park administratively-shut access ports on the unused VLAN"
-  cisco.ios.ios_config:
-    parents: "interface {{ item }}"
-    lines:
-      - switchport mode access
-      - "switchport access vlan {{ unused_vlan }}"
-      - spanning-tree portfast edge
-  loop: "{{ disabled_ports | default([]) }}"
-  when: disabled_ports | default([]) | length > 0
+  loop: "{{ access_ports }}"
+  when: access_ports | length > 0
 
 # V-220632/623: confirmed live (see the project vault's Bugs/README.md) that UUFB and
 # 802.1x/MAB are both rejected/nonfunctional on this lab's vios_l2 image

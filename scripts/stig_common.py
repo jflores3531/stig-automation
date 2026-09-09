@@ -9,6 +9,7 @@ import json
 import os
 import re
 
+import capture
 import netauto
 
 SEVERITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
@@ -917,6 +918,25 @@ def switchport_blocks(cfg):
         if is_layer3_interface(chunk):
             continue
         yield m.group(1), chunk
+
+
+def read_interface_templates(net_connect, running_config):
+    """{template name: [config lines]} for every template this config sources.
+
+    One `show template interface source user <name>` per distinct template, and
+    nothing at all for a switch that uses none - which commands to ask for is a
+    fact about the config, so the config has to be in hand first.
+
+    Hardening needs this as much as auditing does, and for a sharper reason. An
+    interface whose block is only `source template UPLINK` carries no
+    `switchport mode trunk` line of its own, so classified off the raw config it
+    lands in the access bucket - and the access pass would send
+    `switchport mode access` and `spanning-tree portfast` to an uplink,
+    collapsing the trunk and putting PortFast on a port that receives BPDUs as a
+    matter of course. Expand first, then classify."""
+    return {name: parse_interface_template(
+                str(net_connect.send_command(capture.template_command(name))))
+            for name in capture.sourced_template_names(running_config)}
 
 
 def classify_switchports(cfg):

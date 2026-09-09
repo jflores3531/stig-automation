@@ -97,7 +97,17 @@ if net_connect is None:
 root_ports = stig_common.discover_root_port_interfaces(net_connect)
 
 running_config = str(net_connect.send_command('show running-config'))
-access_ports, trunk_ports = stig_common.switchport_names(running_config)
+
+# Interface templates are expanded before anything is classified. A port whose
+# block is only `source template UPLINK` carries no `switchport mode trunk` line
+# of its own, so off the raw config it reads as an access port - which here
+# means the trunk fixes silently skip a real uplink and the run reports a clean
+# pass on a switch whose uplinks were never touched. It is the mirror of the
+# access script's version of this bug, and quieter: nothing breaks, the work
+# just does not happen.
+template_bodies = stig_common.read_interface_templates(net_connect, running_config)
+effective_config = stig_common.expand_interface_templates(running_config, template_bodies)
+access_ports, trunk_ports = stig_common.switchport_names(effective_config)
 root_guard_ports = [name for name in trunk_ports if name not in root_ports]
 
 # Both exclusions below are read even though this script pushes neither VLAN:
@@ -179,6 +189,11 @@ if trunk_ports and not allowed_trunk_vlans:
           'database besides VLAN 1/unused_vlan/native_vlan.')
 if trunk_ports and not native_vlan_id:
     print('\nSkipped V-220646 (native VLAN) - add native_vlan to inventory.yaml to include it.')
+
+if template_bodies:
+    print(f'\n{len(template_bodies)} interface template(s) read and expanded before classifying '
+          f'ports: {", ".join(sorted(template_bodies))}. A trunk that gets its mode from a '
+          'template is a trunk here, not an access port that quietly got skipped.')
 
 print(f'\n{len(access_ports)} access port(s) were classified and deliberately left alone. '
       'Run l2_stig_harden_access_ports.py for V-220630b/632/636/641 and the access mode/VLAN.')
