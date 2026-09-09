@@ -224,6 +224,16 @@ The same reading of a real report against the switch that produced it found two 
 - `V-220650` (VTP): `show vtp password` has three wordings, and the one the fleet answers with — `VTP Password is configured`, set but not disclosed — matched neither the `VTP Password: <value>` form nor the "not set" form, so it fell through to "unexpected output" and FAILed a switch that has a VTP password.
 - `V-220523` (management ACL): the check read only `permit ip <source> any`, the shape DISA's own fix text builds. An ACL written to let the management network reach SSH and nothing else says `permit tcp <source> <wildcard> any eq 22 log` — *narrower* than what the rule asks for — and was read as an ACL with no permit entries at all. Any protocol is accepted now; the rule is about the source, and that is still checked against `management_subnet`. A source that cannot be resolved from config text at all (`object-group MGMT`) is reported as needing review by hand rather than as a source outside the subnet, which would be a claim the audit cannot support.
 
+## A rule's evidence is not always in running-config
+
+V-220555 and V-220556 both print `ip ssh version 2` in their Check Content, and a Catalyst 9300 or 3850 never writes that line. SSHv1 is gone on those trains, so v2-only is not a non-default setting and IOS XE renders nothing for it; `show ip ssh` reports `SSH Enabled - version 2.0` instead. Grepping the config for the line failed both rules on a switch doing exactly what they ask — a false FAIL across a fleet of 9300s, and the recognition-side mirror of the Fix Text false FAILs this project already fixed.
+
+Neither rule's finding sentence asks for the line. They ask whether the session is protected with FIPS-validated HMAC and a FIPS-approved cipher. So `_sshv2_evidence` accepts either source and the report says which one it used.
+
+Two readings are refused, because getting them wrong is worse than the false FAIL. `SSH Enabled - version 1.99` is IOS reporting compatibility mode, where the switch still answers SSHv1; counting it as v2 would be a false PASS on a switch that accepts the very protocol the rule exists to eliminate. `SSH Disabled` is refused for the obvious reason.
+
+`show ip ssh` joins `OPTIONAL_COMMANDS_L2S` rather than the required list. That tuple's usual rule is that a missing optional command costs an empty field in the asset block, never a verdict — and this one does feed a verdict, which is worth being explicit about. Absence here does not answer a rule against empty output; it falls back to the running-config line, which is exactly what the check did before the command was collected. No capture taken before this existed is refused, and no verdict is reached on nothing.
+
 ## Rules that stopped needing a login
 
 `NOT AUTOMATED` is an honest verdict, but it is also a task: someone has to go to the switch and answer the rule by hand. Reading one real IOS XE report line by line against the switch that produced it showed that four of them were answerable already — three from config text the audit had in front of it, one from a command it was one line away from running. What each of them actually needed was a closer reading of the Check Content.
