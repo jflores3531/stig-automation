@@ -80,6 +80,10 @@ COMMANDS = (
     'show snmp user',
     'show version',
     'show ip interface brief',
+    # V-220555/220556: a 9300 does not render `ip ssh version 2` in
+    # running-config - SSHv1 is gone on that train, so v2-only is not a setting
+    # any more - and this is where it says `SSH Enabled - version 2.0`.
+    'show ip ssh',
 )
 
 # And then one more per interface template the config turns out to use. An

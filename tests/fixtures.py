@@ -240,6 +240,22 @@ Authentication Protocol: SHA
 Privacy Protocol: AES128
 Group-name: STIGGRP"""
 
+# What a Catalyst 9300 answers when SSHv2 is running. Note what is NOT in its
+# running-config: `ip ssh version 2`. SSHv1 is gone on that train, so v2-only is
+# not a non-default setting and the line is never rendered - which is why
+# V-220555/220556 must read this rather than grep the config for a line the
+# switch will not write.
+SHOW_IP_SSH = """SSH Enabled - version 2.0
+Authentication methods:publickey,keyboard-interactive,password
+Authentication Publickey Algorithms:x509v3-ssh-rsa,ssh-rsa
+Hostkey Algorithms:x509v3-ssh-rsa,rsa-sha2-512,rsa-sha2-256,ssh-rsa
+Encryption Algorithms:aes256-gcm,aes256-ctr
+MAC Algorithms:hmac-sha2-512,hmac-sha2-256
+Authentication timeout: 60 secs; Authentication retries: 3
+Minimum expected Diffie Hellman key size : 2048 bits
+IOS Keys in SECSH format(ssh-rsa, base64 encoded): SW01.example.mil"""
+
+
 OUTPUTS = {
     'show running-config': RUNNING_CONFIG,
     'show vlan brief': VLAN_BRIEF,
@@ -248,4 +264,5 @@ OUTPUTS = {
     'show snmp user': SNMP_USER,
     'show version': SHOW_VERSION,
     'show ip interface brief': IP_INTERFACE_BRIEF,
+    'show ip ssh': SHOW_IP_SSH,
 }

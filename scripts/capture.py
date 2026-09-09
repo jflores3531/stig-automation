@@ -59,8 +59,23 @@ AUDIT_COMMANDS_L2S = (
 # missing command here costs an empty field in STIG Viewer's asset block, which
 # is visibly empty. Refusing a whole audit over it would be the worse trade,
 # and would invalidate every capture collected before this existed.
+#
+# `show ip ssh` is here for a different reason, and it does answer rules -
+# V-220555/220556, whose Check Content shows `ip ssh version 2` in the config.
+# A Catalyst 9300 (and a 3850) does not render that line: SSHv1 is gone on
+# those trains, so v2-only is not a non-default setting and running-config says
+# nothing about it. `show ip ssh` reports `SSH Enabled - version 2.0`, and the
+# rules' own finding sentences ask whether the switch protects the session, not
+# whether a particular line is present. Requiring the line failed both rules on
+# a switch that was compliant.
+#
+# Optional rather than required because absence costs nothing: the check falls
+# back to the config line, which is exactly what it did before this existed. No
+# rule is answered against empty output, and no capture taken before this is
+# refused.
 OPTIONAL_COMMANDS_L2S = (
     'show ip interface brief',
+    'show ip ssh',
 )
 
 # Commands whose empty output is an answer rather than a failed read. Refusing

@@ -60,12 +60,15 @@ INSIDE_HOST = '192.0.2.25'
 OUTSIDE = '203.0.113.0'          # a different documentation range - never inside MANAGEMENT
 
 
-def report_for(tmpdir, name, running_config=None, vtp_password=None, management=None):
+def report_for(tmpdir, name, running_config=None, vtp_password=None, management=None,
+               ip_ssh=None):
     outputs = dict(fixtures.OUTPUTS)
     if running_config is not None:
         outputs['show running-config'] = running_config
     if vtp_password is not None:
         outputs['show vtp password'] = vtp_password
+    if ip_ssh is not None:
+        outputs['show ip ssh'] = ip_ssh
     path = capture.write(os.path.join(tmpdir, name + '.capture'), outputs)
     result = subprocess.run(
         [sys.executable, os.path.join(PROJECT, 'scripts', 'l2_stig_audit.py'), 'TESTSW01',
@@ -275,6 +278,47 @@ def test_unreadable_source_is_not_reported_as_out_of_subnet(tmpdir):
           'cannot resolve' in line and 'object-group' in line, line)
 
 
+
+def test_sshv2_is_read_from_show_ip_ssh_when_the_config_will_not_say(tmpdir):
+    """V-220555/220556 print `ip ssh version 2` in their Check Content, and a
+    Catalyst 9300 or 3850 never writes that line: SSHv1 is gone on those trains,
+    so v2-only is not a non-default setting and running-config is silent about
+    it. `show ip ssh` says `SSH Enabled - version 2.0`.
+
+    Requiring the line failed both rules on a switch doing exactly what they
+    ask - a false FAIL on the whole fleet, since these are 9300s."""
+    print('\nSSHv2 is established from show ip ssh where the config will not say')
+    without_line = fixtures.RUNNING_CONFIG.replace('ip ssh version 2\n', '')
+    check('the fixture really has no `ip ssh version 2` left',
+          'ip ssh version 2' not in without_line)
+
+    report = report_for(tmpdir, 'ssh9300', running_config=without_line)
+    for rule in ('V-220555', 'V-220556'):
+        check(f'{rule} passes on the evidence the switch actually gives',
+              'PASS' in verdict(report, rule), verdict(report, rule))
+    check('and the report says which evidence it used',
+          'show ip ssh' in verdict(report, 'V-220555'), verdict(report, 'V-220555'))
+
+    # 1.99 is IOS reporting compatibility mode - the switch still answers
+    # SSHv1. Reading it as v2 would be the false PASS that matters more than
+    # the false FAIL this test exists for.
+    compat = report_for(tmpdir, 'sshcompat', running_config=without_line,
+                        ip_ssh='SSH Enabled - version 1.99\n')
+    check('version 1.99 is not accepted as SSHv2',
+          'FAIL' in verdict(compat, 'V-220555'), verdict(compat, 'V-220555'))
+    check('and the reason says why',
+          'compatibility' in verdict(compat, 'V-220555'), verdict(compat, 'V-220555'))
+
+    off = report_for(tmpdir, 'sshoff', running_config=without_line,
+                     ip_ssh='SSH Disabled - version 2.0\n')
+    check('SSH Disabled is not accepted either',
+          'FAIL' in verdict(off, 'V-220555'), verdict(off, 'V-220555'))
+
+    # The config line still stands on its own, for switches that do write it.
+    classic = report_for(tmpdir, 'sshclassic', ip_ssh='')
+    check('a config carrying the line passes with no `show ip ssh` at all',
+          'PASS' in verdict(classic, 'V-220555'), verdict(classic, 'V-220555'))
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmpdir:
         test_vtp_wordings(tmpdir)
@@ -284,6 +328,7 @@ if __name__ == '__main__':
         test_a_wildcard_this_cannot_read_is_not_a_finding(tmpdir)
         test_standard_acl_with_logging(tmpdir)
         test_unreadable_source_is_not_reported_as_out_of_subnet(tmpdir)
+        test_sshv2_is_read_from_show_ip_ssh_when_the_config_will_not_say(tmpdir)
     print('\n' + ('ALL CHECKS PASSED' if not failures
                   else f'{len(failures)} FAILED: {", ".join(failures)}'))
     sys.exit(1 if failures else 0)

@@ -23,7 +23,10 @@ import from the wider repository, and tests/test_securecrt_harden.py asserts
 the two copies are identical so they cannot drift.
 
 WHAT IT PUSHES
-Logging/audit, access control, and the SSH transport crypto (V-220555/220556).
+Logging/audit, access control, the SSH transport crypto (V-220555/220556) and
+the unnecessary-services block (V-220534/220586) - fifteen `no` lines, one of
+which is `no service call-home`; see the note at UNNECESSARY_SERVICES_FIX if any
+switch here reports its Smart Licensing through call-home.
 Nothing that changes how a switch forwards or converges: no spanning-tree mode,
 no VLAN database, no `no <service>` lines, nothing per-interface. See the
 netmiko script's docstring for the rule-by-rule breakdown.
@@ -113,6 +116,40 @@ SSH_CRYPTO_FIXES = [
     'ip ssh server algorithm encryption aes256-gcm aes256-ctr',
 ]
 
+# V-220534/220586: unnecessary and nonsecure services. DISA's Fix Text, in its
+# order, all fifteen. Identical to l2_stig_harden_global's
+# UNNECESSARY_SERVICES_FIX - one project disabling two different sets of
+# services for one rule is what an assessor asks about.
+#
+# Every one of these is a `no`, so a switch that never had the service is
+# unchanged and the whole block is idempotent. None of them touch forwarding.
+#
+# READ THE LAST ONE BEFORE RUNNING THIS. `no service call-home` is in DISA's
+# list and DISA's own Check Content carves out an exception for it: "Certain
+# legacy devices may require 'service call-home' be enabled to support Smart
+# Licensing as they do not support the newer smart transport configuration.
+# Those devices do not incur a finding for having call-home enabled for Smart
+# Licensing." A 9300 on a current train uses smart transport and does not care.
+# A switch that reports its licensing through call-home will stop doing so.
+# Delete that one line if any switch in the fleet is in the second group.
+UNNECESSARY_SERVICES_FIX = [
+    'no boot network',
+    'no ip boot server',
+    'no ip bootp server',
+    'no ip dns server',
+    'no ip identd',
+    'no ip finger',
+    'no ip http server',
+    'no ip rcmd rcp-enable',
+    'no ip rcmd rsh-enable',
+    'no service config',
+    'no service finger',
+    'no service tcp-small-servers',
+    'no service udp-small-servers',
+    'no service pad',
+    'no service call-home',
+]
+
 ARCHIVE_LOGGING_FIX = [
     'archive',
     'log config',
@@ -145,7 +182,7 @@ LOG_COLUMNS = ('hostname', 'ip_address', 'outcome', 'rejected', 'ssh', 'comment'
 def base_commands():
     """Everything that cannot change who may log in."""
     return list(LOGGING_FIXES) + list(ACCESS_CONTROL_FIXES) + list(SSH_CRYPTO_FIXES) \
-        + list(ARCHIVE_LOGGING_FIX) + list(CONSOLE_FIX)
+        + list(UNNECESSARY_SERVICES_FIX) + list(ARCHIVE_LOGGING_FIX) + list(CONSOLE_FIX)
 
 
 SYSLOG_MINIMUM = 2
@@ -287,23 +324,55 @@ def rejected_lines(transcript):
 
 
 def ssh_crypto_state(prompt):
-    """What `ip ssh` lines the switch actually has, read back after the push.
+    """What SSH the switch actually ended up with, read back after the push.
 
-    The three SSH lines are the ones most likely to be accepted by the parser
-    and still not be there afterwards - an image without `aes256-gcm` rejects
-    that whole line, and some IOS XE trains no longer render `ip ssh version 2`
-    at all because v1 is gone and v2-only is not a setting any more. Neither is
-    visible from the config block's own output, so the switch is asked."""
+    Two commands, because running-config alone cannot answer this. A Catalyst
+    9300 or 3850 never writes `ip ssh version 2`: SSHv1 is gone on those trains,
+    so v2-only is not a non-default setting and the line is not rendered. The
+    version comes from `show ip ssh`, which says `SSH Enabled - version 2.0`.
+    The two algorithm lines do live in running-config, and are the ones most
+    likely to be accepted by the parser and still not be there - an image
+    without `aes256-gcm` rejects that whole line and keeps the list it had.
+
+    Version 1.99 is NOT counted as v2. That is IOS reporting compatibility mode,
+    where the switch still answers SSHv1; recording it as v2 would put a false
+    pass in the run log."""
+    parts = []
     try:
-        output = capture_l2s.run_command('show running-config | include ^ip ssh', prompt)
+        status = capture_l2s.run_command('show ip ssh', prompt) or ''
+    except Exception as error:
+        status = ''
+        parts.append('show ip ssh not read: ' + bulk.first_line(str(error)))
+    version = re.search(r'SSH\s+Enabled\s*-\s*version\s*(\d+(?:\.\d+)?)', status, re.I)
+    try:
+        config = capture_l2s.run_command('show running-config | include ^ip ssh', prompt) or ''
     except Exception as error:
         return 'not read: ' + bulk.first_line(str(error))
-    lines = [line.strip() for line in (output or '').splitlines()
-             if line.strip().startswith('ip ssh')]
-    if not lines:
-        return 'NONE of the ip ssh lines are in running-config'
-    missing = [command for command in SSH_CRYPTO_FIXES if command not in lines]
-    found = '; '.join(lines)
+    lines = [line.strip() for line in config.splitlines() if line.strip().startswith('ip ssh')]
+
+    missing = []
+    if version and version.group(1).split('.')[0] == '2':
+        parts.append('SSHv2 (show ip ssh: version {0})'.format(version.group(1)))
+    elif version:
+        parts.append('SSH version {0} - compatibility mode, still answers v1'.format(
+            version.group(1)))
+        missing.append('SSHv2 only')
+    elif re.search(r'SSH\s+Disabled', status, re.I):
+        parts.append('SSH Disabled')
+        missing.append('SSHv2 only')
+    elif 'ip ssh version 2' in lines:
+        parts.append('`ip ssh version 2` in running-config')
+    else:
+        missing.append('SSHv2 could not be established from either command')
+
+    for command in SSH_CRYPTO_FIXES:
+        if command == 'ip ssh version 2':
+            continue
+        if command in lines:
+            parts.append(command)
+        else:
+            missing.append(command)
+    found = '; '.join(parts) if parts else 'nothing read back'
     return found if not missing else '{0} -- MISSING: {1}'.format(found, '; '.join(missing))
 
 

@@ -29,10 +29,14 @@ WHAT IT PUSHES, per access port
   switchport block unicast        V-220632 (UUFB). Rejected on the lab's
                                   vios_l2, kept for real hardware - netmiko does
                                   not treat a rejected command as fatal.
-  storm-control broadcast ...     V-220636, threshold scaled to ~2% of line
-                                  rate. FastEthernet ports are skipped entirely:
-                                  DISA's own Fix Text notes storm control is not
-                                  supported on most of them.
+  storm-control broadcast level 5.00
+  storm-control unicast level 5.00
+                                  V-220636. DISA's example shows both, and its
+                                  Note allows a percentage in place of a bps
+                                  rate - which is the same threshold on every
+                                  port speed. FastEthernet ports are skipped
+                                  entirely: DISA's own Fix Text notes storm
+                                  control is not supported on most of them.
 
 and on access ports that are already shut, and only those:
   switchport access vlan <unused> V-220641, from inventory.yaml's unused_vlan.
@@ -74,37 +78,34 @@ import re
 import netauto
 import stig_common
 
-# V-220636 broadcast thresholds in bps, keyed by the alphabetic part of the
-# interface name. DISA's Fix Text only enumerates ranges for Gigabit (10M-1G)
-# and 10-Gigabit (100M-10G) ports; the faster Catalyst 9000 types below carry
-# the same ~2%-of-line-rate rule forward rather than inventing a second one.
-# Anything not listed - Port-channel, plain Ethernet - takes the Gigabit-range
-# default, since a bundled or negotiated speed is not visible from the name.
-STORM_CONTROL_BPS = {
-    'TwoGigabitEthernet': 50000000,
-    'FiveGigabitEthernet': 100000000,
-    'TenGigabitEthernet': 200000000,
-    'TwentyFiveGigE': 500000000,
-    'FortyGigabitEthernet': 800000000,
-    'HundredGigE': 2000000000,
-    'TwoHundredGigE': 4000000000,
-    'FourHundredGigE': 8000000000,
-}
-STORM_CONTROL_BPS_DEFAULT = 20000000
+# V-220636. DISA's Check Content shows two: `storm-control unicast level bps ...`
+# and `storm-control broadcast level bps ...`, and its Note says "Bandwidth
+# percentage thresholds (via level parameter) can be used in lieu of PPS rate."
+# The percentage form is used here, at 5% of line rate for both.
+#
+# A percentage is the same threshold on every port speed, which is why the
+# bps table this used to carry is gone: bps had to be scaled per interface
+# type, and a Gigabit number pushed to a 10G port is a tenth of the intended
+# threshold rather than the same one.
+#
+# Only broadcast is required - the finding sentence reads "if storm control is
+# not enabled at a minimum for broadcast traffic". Unicast is pushed because
+# DISA's own example has it. Multicast is a third form of the command that
+# DISA's example does not show, and is not pushed.
+STORM_CONTROL_LEVEL = '5.00'
+STORM_CONTROL_KINDS = ('broadcast', 'unicast')
 
 
-def storm_control_command(interface_name):
-    """V-220636: DISA's own Fix Text notes storm control is not supported on
-    most FastEthernet interfaces - those are skipped entirely rather than given
-    a threshold that would likely just be rejected. Everything else gets a
-    threshold scaled to ~2% of link speed, looked up from the interface-name
-    prefix (see STORM_CONTROL_BPS)."""
+def storm_control_commands(interface_name):
+    """The storm-control lines for one port, or [] where they do not apply.
+
+    FastEthernet gets none: DISA's own Fix Text notes storm control is not
+    supported on most FastEthernet interfaces, so a threshold there would just
+    be rejected."""
     if interface_name.startswith('FastEthernet'):
-        return None
-    prefix_match = re.match(r'[A-Za-z-]+', interface_name)
-    prefix = prefix_match.group(0) if prefix_match else ''
-    bps = STORM_CONTROL_BPS.get(prefix, STORM_CONTROL_BPS_DEFAULT)
-    return f'storm-control broadcast level bps {bps}'
+        return []
+    return ['storm-control {0} level {1}'.format(kind, STORM_CONTROL_LEVEL)
+            for kind in STORM_CONTROL_KINDS]
 
 
 def shutdown_access_ports(cfg, access_names):
@@ -212,7 +213,8 @@ disabled_ports = shutdown_access_ports(effective_config, access_ports) if unused
 overridden_templates = templated_ports(running_config, disabled_ports)
 
 access_fixes = ['switchport mode access', 'spanning-tree portfast', 'switchport block unicast']
-storm_control_ports = {name: cmd for name in access_ports if (cmd := storm_control_command(name))}
+storm_control_ports = {name: commands for name in access_ports
+                       if (commands := storm_control_commands(name))}
 
 commands = []
 for name in access_ports:
@@ -221,7 +223,7 @@ for name in access_ports:
     if name in disabled_ports:
         commands.append(f'switchport access vlan {unused_vlan}')
     if name in storm_control_ports:
-        commands.append(storm_control_ports[name])
+        commands += storm_control_ports[name]
 
 applied_fixes = {}
 if access_ports:
@@ -234,9 +236,9 @@ if access_ports:
         'lab vios_l2, kept for real hardware)')
     if storm_control_ports:
         applied_fixes['V-220636 (storm control)'] = (
-            f'storm-control broadcast level bps ... (speed-scaled, on {len(storm_control_ports)} '
-            f'of {len(access_ports)} access port(s) - not supported on lab vios_l2, kept for '
-            'real hardware)')
+            f'storm-control broadcast/unicast level {STORM_CONTROL_LEVEL} (on '
+            f'{len(storm_control_ports)} of {len(access_ports)} access port(s) - not supported '
+            'on lab vios_l2, kept for real hardware)')
 if disabled_ports:
     applied_fixes['V-220641 (disabled ports to the unused VLAN)'] = (
         f'switchport access vlan {unused_vlan} (on {len(disabled_ports)} shut access port(s): '

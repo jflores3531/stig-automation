@@ -142,6 +142,42 @@ SSH_CRYPTO_FIXES = {
         'ip ssh server algorithm encryption aes256-gcm aes256-ctr',
 }
 
+# V-220534/220586: unnecessary and nonsecure services. DISA's Fix Text, in its
+# order, all fifteen. Identical to l2_stig_harden_global's
+# UNNECESSARY_SERVICES_FIX - one project disabling two different sets of
+# services for one rule is what an assessor asks about.
+#
+# Every one of these is a `no`, so a switch that never had the service is
+# unchanged and the whole block is idempotent. None of them touch forwarding.
+#
+# READ THE LAST ONE BEFORE RUNNING THIS. `no service call-home` is in DISA's
+# list and DISA's own Check Content carves out an exception for it: "Certain
+# legacy devices may require 'service call-home' be enabled to support Smart
+# Licensing as they do not support the newer smart transport configuration.
+# Those devices do not incur a finding for having call-home enabled for Smart
+# Licensing." A 9300 on a current train uses smart transport and does not care.
+# A switch that reports its licensing through call-home will stop doing so.
+# Delete that one line if any switch in the fleet is in the second group.
+UNNECESSARY_SERVICES_FIX = {
+    'V-220534/220586 (unnecessary and nonsecure services)': [
+        'no boot network',
+        'no ip boot server',
+        'no ip bootp server',
+        'no ip dns server',
+        'no ip identd',
+        'no ip finger',
+        'no ip http server',
+        'no ip rcmd rcp-enable',
+        'no ip rcmd rsh-enable',
+        'no service config',
+        'no service finger',
+        'no service tcp-small-servers',
+        'no service udp-small-servers',
+        'no service pad',
+        'no service call-home',
+    ],
+}
+
 # One block, eight rules - DISA reuses the same evidence for every one of them.
 #
 # The two trailing exits are not decoration. This descends two sub-modes -
@@ -277,12 +313,16 @@ syslog_servers = services.get('syslog_servers') or []
 applied_fixes = dict(LOGGING_FIXES)
 applied_fixes.update(ACCESS_CONTROL_FIXES)
 applied_fixes.update(SSH_CRYPTO_FIXES)
+applied_fixes.update({rule: '; '.join(lines)
+                      for rule, lines in UNNECESSARY_SERVICES_FIX.items()})
 applied_fixes['V-220519/520/521/522/530/545/559/561 (archive logging)'] = \
     '; '.join(ARCHIVE_LOGGING_FIX)
 applied_fixes['V-220544/220596 (console exec-timeout)'] = '; '.join(CONSOLE_FIX)
 
 commands = list(LOGGING_FIXES.values()) + list(ACCESS_CONTROL_FIXES.values())
 commands += list(SSH_CRYPTO_FIXES.values())
+for _service_commands in UNNECESSARY_SERVICES_FIX.values():
+    commands += _service_commands
 commands += ARCHIVE_LOGGING_FIX
 
 # DISA asks for two syslog servers, so one configured server is reported rather

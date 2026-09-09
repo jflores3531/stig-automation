@@ -1374,7 +1374,40 @@ def _pki_trustpoint_check(cfg, approved_hosts=APPROVED_CA_HOSTS):
     return None, reason
 
 
-def _ssh_algorithm_fips_check(cfg, algo_type, required_substring, algo_desc, unavailable_note=''):
+def _sshv2_evidence(cfg, ssh_status_output):
+    """(is SSHv2, how that was established) for V-220555/220556.
+
+    Both rules print `ip ssh version 2` in their Check Content, and on a
+    Catalyst 9300 or 3850 that line is never in running-config: SSHv1 is gone on
+    those trains, so v2-only is not a non-default setting and IOS XE does not
+    render it. `show ip ssh` says `SSH Enabled - version 2.0` instead. Failing
+    the rules for the missing line failed a switch that was doing exactly what
+    they ask - and their finding sentences ask whether the session is protected,
+    not whether a particular line is present.
+
+    Version 1.99 is deliberately NOT accepted. That is IOS reporting
+    compatibility mode, where the switch still answers SSHv1; reading it as v2
+    would be the false PASS this whole file is written against. `SSH Disabled`
+    is not accepted either, for the obvious reason."""
+    if re.search(r'^ip ssh version 2\s*$', cfg, re.M):
+        return True, '`ip ssh version 2`'
+    status = ssh_status_output or ''
+    m = re.search(r'SSH\s+Enabled\s*-\s*version\s*(\d+(?:\.\d+)?)', status, re.I)
+    if m:
+        if m.group(1).split('.')[0] == '2':
+            return True, '`show ip ssh`: SSH Enabled - version {0}'.format(m.group(1))
+        return False, ('`show ip ssh` reports version {0} - compatibility mode, so the switch '
+                       'still answers SSHv1'.format(m.group(1)))
+    if re.search(r'SSH\s+Disabled', status, re.I):
+        return False, '`show ip ssh` reports SSH Disabled'
+    if status.strip():
+        return False, '`show ip ssh` did not report an SSH version'
+    return False, ('no `ip ssh version 2` in running-config, and no `show ip ssh` in this '
+                   'capture to check instead')
+
+
+def _ssh_algorithm_fips_check(cfg, algo_type, required_substring, algo_desc, unavailable_note='',
+                              ssh_status_output=''):
     """V-220607/608: the old regexes (`algorithm mac\\s+\\S*hmac-sha2`,
     `algorithm encryption\\s+\\S*aes`) can't cross a space, so they only
     matched when the required algorithm happened to be listed FIRST in the
@@ -1387,14 +1420,15 @@ def _ssh_algorithm_fips_check(cfg, algo_type, required_substring, algo_desc, una
     offer a compliant algorithm at all, so the report distinguishes "the fix
     was never pushed" from "no acceptable value exists on this image" - the
     same distinction V-220606's permanent-finding wording draws."""
-    if 'ip ssh version 2' not in cfg:
-        return False, 'missing `ip ssh version 2`'
+    is_v2, how = _sshv2_evidence(cfg, ssh_status_output)
+    if not is_v2:
+        return False, 'SSHv2 not established: ' + how
     m = re.search(rf'^ip ssh server algorithm {algo_type}\s+(.+)$', cfg, re.M)
     if not m:
         return False, f'missing `ip ssh server algorithm {algo_type} ...`{unavailable_note}'
     algos = m.group(1).strip()
     if required_substring in algos:
-        return True, f'`ip ssh version 2` + FIPS-validated {algo_desc}: `ip ssh server algorithm {algo_type} {algos}`'
+        return True, f'SSHv2 ({how}) + FIPS-validated {algo_desc}: `ip ssh server algorithm {algo_type} {algos}`'
     return False, (
         f'`ip ssh server algorithm {algo_type} {algos}` does not include a FIPS-validated '
         f'({required_substring}) algorithm{unavailable_note}'
@@ -2029,7 +2063,7 @@ CHECKS = {
     # it for this rule anyway, so hmac-sha1 is deliberately not pushed and not
     # accepted as a PASS - there is no compliant value on such an image.
     'V-220607': lambda cfg: _ssh_algorithm_fips_check(
-        cfg, 'mac', 'hmac-sha2', 'MAC (HMAC integrity)',
+        cfg, 'mac', 'hmac-sha2', 'MAC (HMAC integrity)', ssh_status_output=ssh_status_output,
         unavailable_note=(
             ' - on classic IOS images offering only hmac-sha1/hmac-sha1-96 (confirmed via '
             '`ip ssh server algorithm mac ?`) this is a permanent finding, not an unpushed fix: '
@@ -2038,7 +2072,8 @@ CHECKS = {
             'sessions", so no algorithm this image supports can satisfy the rule'
         ),
     ),
-    'V-220608': lambda cfg: _ssh_algorithm_fips_check(cfg, 'encryption', 'aes', 'encryption algorithm'),
+    'V-220608': lambda cfg: _ssh_algorithm_fips_check(cfg, 'encryption', 'aes', 'encryption algorithm',
+                                                     ssh_status_output=ssh_status_output),
     # V-220620: matches "logging host x.x.x.x" or the bare legacy "logging x.x.x.x"
     # form. Deliberately excludes non-IP "logging ..." directives (buffered, trap,
     # on, console, etc.) by requiring the token after "logging"/"logging host" to
@@ -2242,6 +2277,11 @@ try:
     # collected before this command joined the list is audited without it and
     # says so, rather than being refused. See capture.OPTIONAL_COMMANDS_L2S.
     ip_interface_output = capture.optional_output(discovery_connect, 'show ip interface brief')
+    # V-220555/220556. Optional for the same reason as the line above, but note
+    # this one DOES feed a verdict: absence is not "answer the rule against
+    # empty output", it is "fall back to the running-config line", which is what
+    # the check did before this command was collected. See _sshv2_evidence.
+    ssh_status_output = capture.optional_output(discovery_connect, 'show ip ssh')
     vlan_brief_output = str(discovery_connect.send_command('show vlan brief'))
     # Read here rather than left to run_stig_audit's own read because the
     # template names are in it: which `show template interface source user`

@@ -167,16 +167,20 @@ class FakeCRT:
 VTY_RANGES = 'line vty 0 4\nline vty 5 15'
 
 # What `show running-config | include ^ip ssh` gives back after a clean push.
-SSH_LINES = ('ip ssh version 2\n'
-             'ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256\n'
+SSH_LINES = ('ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256\n'
              'ip ssh server algorithm encryption aes256-gcm aes256-ctr')
+
+# A 9300 answers the version question here, not in running-config.
+SHOW_IP_SSH = 'SSH Enabled - version 2.0\nAuthentication methods:publickey,password'
 
 
 def run_harden(tmpdir, sessions, behaviour=None, with_vty=False, reject=(),
-               vty_output=VTY_RANGES, syslog='', ssh_output=SSH_LINES, inventory=None):
+               vty_output=VTY_RANGES, syslog='', ssh_output=SSH_LINES, inventory=None,
+               show_ip_ssh=SHOW_IP_SSH):
     outputs = dict(OUTPUTS)
     outputs['show running-config | include ^line vty'] = vty_output
     outputs['show running-config | include ^ip ssh'] = ssh_output
+    outputs['show ip ssh'] = show_ip_ssh
     fake = FakeCRT(tmpdir, behaviour or {}, outputs, with_vty, reject, syslog)
     harden.crt = capture_l2s.crt = bulk.crt = fake
     original = bulk.find_sessions
@@ -226,6 +230,10 @@ def test_commands_match_the_netmiko_script():
     check('ssh crypto fixes, in order',
           harden.SSH_CRYPTO_FIXES == list(other['SSH_CRYPTO_FIXES'].values()),
           f"securecrt={harden.SSH_CRYPTO_FIXES}\n       netmiko={list(other['SSH_CRYPTO_FIXES'].values())}")
+    check('the unnecessary-services block, in DISA\'s order',
+          harden.UNNECESSARY_SERVICES_FIX
+          == list(other['UNNECESSARY_SERVICES_FIX'].values())[0],
+          harden.UNNECESSARY_SERVICES_FIX)
     check('the archive block, including its two closing exits',
           harden.ARCHIVE_LOGGING_FIX == other['ARCHIVE_LOGGING_FIX'],
           harden.ARCHIVE_LOGGING_FIX)
@@ -249,6 +257,8 @@ def test_the_default_run_touches_no_vty_line(tmpdir):
           all(command in sent for command in harden.LOGGING_FIXES), sent)
     check('and the ssh crypto lines',
           all(command in sent for command in harden.SSH_CRYPTO_FIXES), sent)
+    check('and the fifteen `no` service lines',
+          all(command in sent for command in harden.UNNECESSARY_SERVICES_FIX), sent)
     check('so was the archive block, with its exits',
           sent.count('exit') >= 2 and 'hidekeys' in sent, sent)
     check('and the console timeout', 'line con 0' in sent, sent)
@@ -345,29 +355,38 @@ def test_the_ssh_lines_are_read_back_off_the_switch(tmpdir):
     fake = run_harden(tmpdir, [('node-a/sw-1', '10.0.8.1')])
     check('the switch is asked what it actually has',
           'show running-config | include ^ip ssh' in fake.Screen.sent, fake.Screen.sent)
+    check('and the version question goes to `show ip ssh`, not the config',
+          'show ip ssh' in fake.Screen.sent, fake.Screen.sent)
     row = log_rows(tmpdir)[0]
-    check('a clean push records all three lines',
-          row['ssh'].count('ip ssh') == 3 and 'MISSING' not in row['ssh'], row['ssh'])
+    check('a 9300 that never writes `ip ssh version 2` still records SSHv2',
+          'SSHv2' in row['ssh'] and 'MISSING' not in row['ssh'], row['ssh'])
     check('and the outcome is a plain harden', row['outcome'] == 'hardened', row)
 
-    # The reported symptom: everything else lands, `ip ssh version 2` does not.
+    # An image without aes256-gcm rejects that whole line and keeps what it had.
     partial = run_harden(
         tmpdir, [('node-b/sw-2', '10.0.8.2')],
-        ssh_output=('ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256\n'
-                    'ip ssh server algorithm encryption aes256-gcm aes256-ctr'))
+        ssh_output='ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256')
     row = [r for r in log_rows(tmpdir) if r['session'] == 'node-b/sw-2'][0]
     check('a line that did not land is named in the row',
-          'MISSING' in row['ssh'] and 'ip ssh version 2' in row['ssh'].split('MISSING')[1],
+          'MISSING' in row['ssh'] and 'aes256-gcm' in row['ssh'].split('MISSING')[1],
           row['ssh'])
     check('and the outcome says so rather than reading as a clean harden',
           'ssh crypto incomplete' in row['outcome'], row)
-    check('the other two are still recorded as present',
+    check('the line that did land is still recorded as present',
           'hmac-sha2-512' in row['ssh'].split('MISSING')[0], row['ssh'])
 
-    none = run_harden(tmpdir, [('node-c/sw-3', '10.0.8.3')], ssh_output='')
+    # 1.99 is compatibility mode - the switch still answers SSHv1. Recording it
+    # as v2 would put a false pass in the run log.
+    compat = run_harden(tmpdir, [('node-c/sw-3', '10.0.8.3')],
+                        show_ip_ssh='SSH Enabled - version 1.99')
     row = [r for r in log_rows(tmpdir) if r['session'] == 'node-c/sw-3'][0]
-    check('a switch with no ip ssh lines at all is flagged, not passed',
-          row['ssh'].startswith('NONE') and 'ssh crypto incomplete' in row['outcome'], row)
+    check('version 1.99 is not recorded as SSHv2',
+          'compatibility mode' in row['ssh'] and 'ssh crypto incomplete' in row['outcome'], row)
+
+    none = run_harden(tmpdir, [('node-d/sw-4', '10.0.8.4')], ssh_output='', show_ip_ssh='')
+    row = [r for r in log_rows(tmpdir) if r['session'] == 'node-d/sw-4'][0]
+    check('a switch answering neither command is flagged, not passed',
+          'MISSING' in row['ssh'] and 'ssh crypto incomplete' in row['outcome'], row)
 
 
 def test_every_config_command_is_read_before_the_next_is_sent(tmpdir):

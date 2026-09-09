@@ -153,10 +153,18 @@ def test_the_copies_answer_the_same_as_the_originals():
               == stig_common.parse_interface_template(output),
               access.parse_interface_template(output))
 
-    check('the storm-control table matches, including the FastEthernet skip',
-          all(access.storm_control_command(port) == other['storm_control_command'](port)
+    check('the storm-control lines match, including the FastEthernet skip',
+          all(access.storm_control_commands(port) == other['storm_control_commands'](port)
               for port in ('GigabitEthernet1/0/1', 'FastEthernet0/1', 'TenGigabitEthernet1/1/1',
                            'HundredGigE1/0/1', 'Port-channel1', 'Ethernet0/0')))
+    check('both kinds are pushed, at the same percentage on every port speed',
+          access.storm_control_commands('GigabitEthernet1/0/1')
+          == ['storm-control broadcast level 5.00', 'storm-control unicast level 5.00']
+          and access.storm_control_commands('TenGigabitEthernet1/1/1')
+          == access.storm_control_commands('GigabitEthernet1/0/1'),
+          access.storm_control_commands('GigabitEthernet1/0/1'))
+    check('and FastEthernet still gets none of it',
+          access.storm_control_commands('FastEthernet0/1') == [])
     check('the access fixes are the same three commands, in order',
           access.ACCESS_FIXES == ['switchport mode access', 'spanning-tree portfast',
                                   'switchport block unicast'],
@@ -215,8 +223,9 @@ def test_the_unused_vlan_lands_on_shut_ports_only():
     check('FastEthernet gets no storm control',
           not any('storm-control' in line for line in blocks['FastEthernet0/1']),
           blocks['FastEthernet0/1'])
-    check('a gigabit port does', any('storm-control' in line
-                                     for line in blocks['GigabitEthernet1/0/1']))
+    check('a gigabit port gets both kinds',
+          sum('storm-control' in line for line in blocks['GigabitEthernet1/0/1']) == 2,
+          blocks['GigabitEthernet1/0/1'])
     check('with no unused VLAN, no port gets a VLAN line',
           not any('switchport access vlan' in c
                   for c in access.port_commands(access_ports, shut, None)))

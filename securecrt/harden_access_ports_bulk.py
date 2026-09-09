@@ -38,9 +38,13 @@ WHAT IT PUSHES, per access port
                                   PortFast, so without this that command is
                                   present and inert everywhere: a false PASS
   switchport block unicast        V-220632 (UUFB)
-  storm-control broadcast ...     V-220636, scaled to ~2% of line rate.
-                                  FastEthernet ports are skipped entirely -
-                                  DISA's own Fix Text says most do not support it
+  storm-control broadcast level 5.00
+  storm-control unicast level 5.00
+                                  V-220636. DISA's example shows both, and its
+                                  Note allows a percentage in place of a bps
+                                  rate. FastEthernet ports are skipped entirely
+                                  - DISA's own Fix Text says most do not
+                                  support it
 
 and on access ports that are ALREADY SHUT, and only those:
   switchport access vlan <unused> V-220641, from inventory.yaml's unused_vlan,
@@ -98,17 +102,15 @@ ACCESS_FIXES = [
     'switchport block unicast',
 ]
 
-STORM_CONTROL_BPS = {
-    'TwoGigabitEthernet': 50000000,
-    'FiveGigabitEthernet': 100000000,
-    'TenGigabitEthernet': 200000000,
-    'TwentyFiveGigE': 500000000,
-    'FortyGigabitEthernet': 800000000,
-    'HundredGigE': 2000000000,
-    'TwoHundredGigE': 4000000000,
-    'FourHundredGigE': 8000000000,
-}
-STORM_CONTROL_BPS_DEFAULT = 20000000
+# V-220636. DISA's Check Content shows two - `storm-control unicast level bps
+# ...` and `storm-control broadcast level bps ...` - and its Note says
+# "Bandwidth percentage thresholds (via level parameter) can be used in lieu of
+# PPS rate." The percentage form is used, at 5% for both, because a percentage
+# is the same threshold on every port speed while a bps figure has to be scaled
+# per interface type. Only broadcast is required by the finding sentence;
+# unicast is here because DISA's example has it.
+STORM_CONTROL_LEVEL = '5.00'
+STORM_CONTROL_KINDS = ('broadcast', 'unicast')
 
 TEMPLATE_COMMAND_PREFIX = 'show template interface source user '
 _TEMPLATE_METADATA = re.compile(r'[A-Z][A-Za-z ]{0,30}:')
@@ -221,16 +223,16 @@ def read_interface_templates(running_config, prompt):
     return bodies
 
 
-def storm_control_command(interface_name):
-    """V-220636, scaled to ~2% of line rate from the interface-name prefix.
-    FastEthernet ports get nothing: DISA's own Fix Text notes storm control is
-    not supported on most of them, so a threshold there would just be rejected."""
+def storm_control_commands(interface_name):
+    """The storm-control lines for one port, or [] where they do not apply.
+
+    FastEthernet gets none: DISA's own Fix Text notes storm control is not
+    supported on most FastEthernet interfaces, so a threshold there would just
+    be rejected."""
     if interface_name.startswith('FastEthernet'):
-        return None
-    prefix_match = re.match(r'[A-Za-z-]+', interface_name)
-    prefix = prefix_match.group(0) if prefix_match else ''
-    bps = STORM_CONTROL_BPS.get(prefix, STORM_CONTROL_BPS_DEFAULT)
-    return 'storm-control broadcast level bps {0}'.format(bps)
+        return []
+    return ['storm-control {0} level {1}'.format(kind, STORM_CONTROL_LEVEL)
+            for kind in STORM_CONTROL_KINDS]
 
 
 def shutdown_access_ports(cfg, access_names):
@@ -272,9 +274,7 @@ def port_commands(access_ports, shut_ports, unused_vlan):
         commands += ACCESS_FIXES
         if unused_vlan and name in shut_ports:
             commands.append('switchport access vlan {0}'.format(unused_vlan))
-        storm = storm_control_command(name)
-        if storm:
-            commands.append(storm)
+        commands += storm_control_commands(name)
     return commands
 
 
