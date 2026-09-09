@@ -114,10 +114,12 @@ Both now read the templates off the switch (`stig_common.read_interface_template
 
 The Ansible role still classifies with regex against the raw running-config and has not been fixed. It carries a warning at the top of its interface tasks saying so.
 
-### Access VLANs are assigned deliberately, not in bulk
-V-220642 (host-facing ports off the default VLAN) and V-220641 (disabled ports on an unused VLAN) are no longer pushed by anything. A port's access VLAN says what the thing plugged into it can reach, and moving a port needs the new VLAN to be right for that device — an SVI, a DHCP scope, a route out. Bulk-assigning it moved the lab's own management port and cut the session pushing the change (2026-08-28), and the guard added afterwards — skip ports that already carry an explicit VLAN — could not see a VLAN that came from a template.
+### The default access VLAN is assigned deliberately, not in bulk
+V-220642 (host-facing ports off the default VLAN) is no longer pushed by anything. A port's access VLAN says what the thing plugged into it can reach, and moving a port needs the new VLAN to be right for that device — an SVI, a DHCP scope, a route out. Bulk-assigning it moved the lab's own management port and cut the session pushing the change (2026-08-28), and the guard added afterwards — skip ports that already carry an explicit VLAN — could not see a VLAN that came from a template.
 
-Template expansion fixes that reading, but not the underlying point: a port genuinely still on VLAN 1 is a port with something live on it. Both rules are printed as deliberate unpushed findings on every run, and the audit reports them as findings, which is the honest outcome. V-220641 is the lower-risk of the two by a distance — a shut port forwards nothing whatever VLAN it is on — and is out only because these scripts no longer set access VLANs at all.
+Template expansion fixes that reading, but not the underlying point: a port genuinely still on VLAN 1 is a port with something live on it. The rule is printed as a deliberate unpushed finding on every run, and the audit reports it as a finding, which is the honest outcome.
+
+V-220641 (disabled ports on an unused VLAN) is a different case and **is** pushed. A shut port forwards nothing whatever VLAN it is on, so it is the one access-VLAN assignment that does not depend on knowing what is plugged in — there is nothing plugged in that is working. It lands on shut ports only, and `shutdown` is read from the expanded config, since a port can be shut by the template it sources as easily as by its own block. Where the shut port is templated, the explicit VLAN line overrides its template and outlives the shutdown, so the run names those ports rather than doing it quietly.
 
 V-220642 also came out of the access script's `SIDE_EFFECT_RULES`, where it had been listed as satisfied by the access-VLAN push. Leaving it there would have been the script's own output claiming a pass it no longer earns.
 

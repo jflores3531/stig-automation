@@ -34,16 +34,23 @@ WHAT IT PUSHES, per access port
                                   DISA's own Fix Text notes storm control is not
                                   supported on most of them.
 
-IT NEVER SETS AN ACCESS VLAN
-Neither V-220642's default access VLAN nor V-220641's unused VLAN is pushed -
-see UNPUSHED_RULES. A port's VLAN says what the thing plugged into it can reach,
-and this pass does not know what is plugged in. It cannot even reliably tell
-which ports already have one: an access VLAN can come from a sourced interface
-template rather than the interface's own block, so a port configured by a
-template reads as unassigned and would have had the default VLAN written over
-the template's. Templates are expanded before anything is classified now, which
-fixes the reading - but a port genuinely on VLAN 1 is still a port with
-something live on it, and moving it is a design decision, not a bulk push.
+and on access ports that are already shut, and only those:
+  switchport access vlan <unused> V-220641, from inventory.yaml's unused_vlan.
+
+THE ONLY ACCESS VLAN IT SETS IS ON PORTS THAT ARE ALREADY SHUT
+V-220641: an access port carrying `shutdown` is parked on inventory.yaml's
+`unused_vlan`. A shut port forwards nothing whatever VLAN it is on, so this is
+the one VLAN assignment a bulk pass can make without knowing what is plugged in
+- there is nothing plugged in that is working.
+
+V-220642's default access VLAN is NOT pushed - see UNPUSHED_RULES. That one
+lands on live ports, and a port still on VLAN 1 has something on it that moves
+with it, needing the new VLAN to be right for that device. Bulk-assigning it
+moved the lab's own management port and cut the session pushing the change.
+
+Both readings depend on templates being expanded first (below): an access VLAN
+can come from a sourced template rather than the interface's own block, and so
+can `shutdown`.
 
 INTERFACE TEMPLATES ARE EXPANDED BEFORE CLASSIFICATION
 An interface whose block is only `source template UPLINK` carries no
@@ -100,6 +107,35 @@ def storm_control_command(interface_name):
     return f'storm-control broadcast level bps {bps}'
 
 
+def shutdown_access_ports(cfg, access_names):
+    """The subset of access_names whose interface block has 'shutdown'.
+
+    Read from the template-expanded config, not the raw one: a port can be shut
+    by the template it sources as easily as by its own block, and a shut port
+    this misses is a port V-220641 still finds."""
+    shutdown = []
+    for chunk in re.split(r'^(?=interface \S+)', cfg, flags=re.M):
+        m = re.match(r'interface (\S+)', chunk)
+        if m and m.group(1) in access_names and re.search(r'^\s*shutdown\s*$', chunk, re.M):
+            shutdown.append(m.group(1))
+    return shutdown
+
+
+def templated_ports(cfg, names):
+    """Which of `names` source an interface template, read from the RAW config.
+
+    Pushing an explicit `switchport access vlan` to one of these overrides its
+    template for that port permanently - re-enabling the port later will not
+    give it the template's VLAN back. Worth naming in the output rather than
+    doing quietly."""
+    sourced = []
+    for chunk in re.split(r'^(?=interface \S+)', cfg, flags=re.M):
+        m = re.match(r'interface (\S+)', chunk)
+        if m and m.group(1) in names and re.search(r'^\s*source template \S+\s*$', chunk, re.M):
+            sourced.append(m.group(1))
+    return sourced
+
+
 # Rules this script could push a command for and does not. Printed on every
 # run: an unpushed fix the operator does not know about is one they find out
 # about from an assessor.
@@ -117,11 +153,6 @@ UNPUSHED_RULES = [
      'that device - an SVI, a DHCP scope, a route. Bulk-assigning it moved the lab\'s '
      'own management port and cut the session pushing the change (2026-08-28). '
      'Assign these deliberately, then re-audit.'),
-    ('V-220641 (disabled ports on an unused VLAN)',
-     'no `switchport access vlan <unused>` is pushed to shut ports either. The port '
-     'forwards nothing while it is shut, so this one is far lower risk than V-220642 '
-     'above - it is out because this script does not set access VLANs at all, not '
-     'because it is dangerous. Say so and it can come back on its own.'),
 ]
 
 # Rules satisfied as a side effect of the explicit `switchport mode access`
@@ -157,6 +188,15 @@ template_bodies = stig_common.read_interface_templates(net_connect, running_conf
 effective_config = stig_common.expand_interface_templates(running_config, template_bodies)
 access_ports, trunk_ports = stig_common.switchport_names(effective_config)
 
+# V-220641: access ports already administratively shut get parked on the
+# designated unused VLAN. The VLAN's own database entry is created by
+# l2_stig_harden_global.py, not here.
+unused_vlan = netauto.load_unused_vlan()
+disabled_ports = shutdown_access_ports(effective_config, access_ports) if unused_vlan else []
+# Named in the output rather than done quietly: an explicit VLAN line on a
+# templated port outlives the shutdown it was pushed for.
+overridden_templates = templated_ports(running_config, disabled_ports)
+
 access_fixes = ['switchport mode access', 'spanning-tree portfast', 'switchport block unicast']
 storm_control_ports = {name: cmd for name in access_ports if (cmd := storm_control_command(name))}
 
@@ -164,6 +204,8 @@ commands = []
 for name in access_ports:
     commands.append(f'interface {name}')
     commands += access_fixes
+    if name in disabled_ports:
+        commands.append(f'switchport access vlan {unused_vlan}')
     if name in storm_control_ports:
         commands.append(storm_control_ports[name])
 
@@ -181,6 +223,10 @@ if access_ports:
             f'storm-control broadcast level bps ... (speed-scaled, on {len(storm_control_ports)} '
             f'of {len(access_ports)} access port(s) - not supported on lab vios_l2, kept for '
             'real hardware)')
+if disabled_ports:
+    applied_fixes['V-220641 (disabled ports to the unused VLAN)'] = (
+        f'switchport access vlan {unused_vlan} (on {len(disabled_ports)} shut access port(s): '
+        f'{", ".join(disabled_ports)})')
 output = net_connect.send_config_set(commands) if commands else ''
 net_connect.disconnect()
 netauto.log_push('l2_stig_harden_access_ports.py', device_name, username, commands)
@@ -201,6 +247,16 @@ if not access_ports:
 elif not storm_control_ports:
     print("\nSkipped V-220636 (storm control) - every access port is FastEthernet, not "
           "supported per the STIG's own Fix Text note.")
+if not unused_vlan:
+    print('\nSkipped V-220641 (unused VLAN) - add unused_vlan to inventory.yaml to include it. '
+          'Shut access ports keep whatever VLAN they are on, and the rule stays a finding.')
+elif not disabled_ports:
+    print('\nNo shut access ports found - nothing to reassign for V-220641.')
+if overridden_templates:
+    print(f'\nV-220641 wrote an explicit access VLAN onto {len(overridden_templates)} port(s) '
+          f'that source an interface template: {", ".join(overridden_templates)}. That line '
+          'overrides the template for those ports and outlives the shutdown - re-enabling one '
+          'later will not give it the template\'s VLAN back until the explicit line is removed.')
 if template_bodies:
     print(f'\n{len(template_bodies)} interface template(s) read and expanded before classifying '
           f'ports: {", ".join(sorted(template_bodies))}. A port configured by a template is '

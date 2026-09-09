@@ -23,6 +23,7 @@ access-VLAN reading the same expansion fixes - a templated port's VLAN comes
 from the template, so off the raw config it looks like a port with no VLAN at
 all."""
 
+import io
 import os
 import sys
 
@@ -55,6 +56,14 @@ interface GigabitEthernet1/0/3
 interface GigabitEthernet1/0/24
  source template UPLINK
 !
+interface GigabitEthernet1/0/8
+ switchport mode access
+ switchport access vlan 30
+ shutdown
+!
+interface GigabitEthernet1/0/9
+ source template PARKED
+!
 interface TenGigabitEthernet1/1/1
  no switchport
  ip address 10.2.2.2 255.255.255.0
@@ -69,6 +78,8 @@ BODIES = {
     'USER-PORT': ['switchport mode access', 'switchport access vlan 55',
                   'spanning-tree portfast'],
     'UPLINK': ['switchport mode trunk', 'switchport nonegotiate'],
+    # A port shut by the template it sources, not by its own block.
+    'PARKED': ['switchport mode access', 'switchport access vlan 55', 'shutdown'],
 }
 
 
@@ -106,8 +117,8 @@ def test_a_templated_trunk_is_not_an_access_port():
     access, trunk = stig_common.switchport_names(
         stig_common.expand_interface_templates(config, bodies))
 
-    check('both templates were read off the switch, once each',
-          sorted(bodies) == ['UPLINK', 'USER-PORT']
+    check('every sourced template was read off the switch, once each',
+          sorted(bodies) == ['PARKED', 'UPLINK', 'USER-PORT']
           and connection.asked.count('show template interface source user UPLINK') == 1,
           connection.asked)
     check('the templated uplink is classified as a trunk',
@@ -144,6 +155,43 @@ def test_a_templated_ports_vlan_is_not_missing():
           vlan_of(expanded, 'GigabitEthernet1/0/1') == '30')
 
 
+def test_only_shut_access_ports_get_the_unused_vlan():
+    """V-220641. A shut port forwards nothing whatever VLAN it is on, which is
+    what makes this the one access-VLAN assignment a bulk pass can make - and
+    the reason it must land on shut ports ONLY. A live port that got it would
+    have whatever is plugged into it moved to a VLAN chosen for having nothing
+    on it."""
+    print('\nthe unused VLAN lands on shut access ports, and only those')
+    src = io.open(os.path.join(PROJECT, 'scripts', 'l2_stig_harden_access_ports.py'),
+                  encoding='utf-8').read().split('parser = argparse.ArgumentParser')[0]
+    module = {'__name__': 'probe'}
+    exec(compile(src, 'l2_stig_harden_access_ports.py', 'exec'), module)
+
+    expanded = stig_common.expand_interface_templates(CONFIG, BODIES)
+    access, trunk = stig_common.switchport_names(expanded)
+    shut = module['shutdown_access_ports'](expanded, access)
+
+    check('the port shut in its own block is found',
+          'GigabitEthernet1/0/8' in shut, shut)
+    check('so is the one shut by the template it sources',
+          'GigabitEthernet1/0/9' in shut, shut)
+    check('and no live access port is in the list',
+          not {'GigabitEthernet1/0/1', 'GigabitEthernet1/0/2',
+               'GigabitEthernet1/0/3'} & set(shut), shut)
+    check('nor is the trunk, however it got its mode',
+          'GigabitEthernet1/0/24' not in shut, shut)
+
+    # Read off the raw config the templated shut port is invisible, which is
+    # what the expansion is for.
+    raw_access, _ = stig_common.switchport_names(CONFIG)
+    check('off the raw config the template-shut port would have been missed',
+          'GigabitEthernet1/0/9' not in module['shutdown_access_ports'](CONFIG, raw_access))
+
+    check('a templated shut port is reported as having its template overridden',
+          module['templated_ports'](CONFIG, shut) == ['GigabitEthernet1/0/9'],
+          module['templated_ports'](CONFIG, shut))
+
+
 def test_a_switch_with_no_templates_asks_nothing_extra():
     print('\na switch that sources no template is asked for none')
     plain = 'interface GigabitEthernet1/0/1\n switchport mode access\n!\n'
@@ -158,6 +206,7 @@ def test_a_switch_with_no_templates_asks_nothing_extra():
 if __name__ == '__main__':
     test_a_templated_trunk_is_not_an_access_port()
     test_a_templated_ports_vlan_is_not_missing()
+    test_only_shut_access_ports_get_the_unused_vlan()
     test_a_switch_with_no_templates_asks_nothing_extra()
     print('\n' + ('ALL CHECKS PASSED' if not failures
                   else f'{len(failures)} FAILED: {", ".join(failures)}'))
