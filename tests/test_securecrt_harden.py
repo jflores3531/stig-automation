@@ -127,7 +127,8 @@ class FakeDialog:
         if 'scope' in title.lower():
             return ''
         if 'syslog' in title.lower():
-            return self.crt.syslog
+            self.crt.syslog_default = default
+            return default if self.crt.syslog is None else self.crt.syslog
         return self.crt.output_dir
 
     def MessageBox(self, message, title='', flags=0):
@@ -141,6 +142,7 @@ class FakeCRT:
     def __init__(self, output_dir, behaviour, outputs, with_vty=False, reject=(), syslog=''):
         self.output_dir = output_dir
         self.syslog = syslog
+        self.syslog_default = None
         self.behaviour = behaviour
         self.with_vty = with_vty
         self.attempts = []
@@ -354,6 +356,48 @@ def test_syslog_servers_are_two_or_none(tmpdir):
           any('10.1.1.256' in message for _, message in typo.messages), typo.messages)
 
 
+def test_syslog_servers_come_off_inventory_yaml_when_it_is_there(tmpdir):
+    """Retyping two addresses that are already written down is how one of them
+    ends up with a digit wrong. Nothing in securecrt/ may import from the
+    repository, but inventory.yaml is JSON, so reading it costs nothing and is
+    empty-handed rather than broken when the folder has been copied away."""
+    print('\nthe syslog box fills itself from inventory.yaml')
+    good = os.path.join(tmpdir, 'good.yaml')
+    io.open(good, 'w', encoding='utf-8').write(
+        '{"services": {"syslog_servers": ["10.2.2.1", "10.2.2.2"], "ntp_servers": []}}')
+    check('both collectors are read back',
+          harden.inventory_syslog_servers(good) == ['10.2.2.1', '10.2.2.2'],
+          harden.inventory_syslog_servers(good))
+
+    placeholder = os.path.join(tmpdir, 'placeholder.yaml')
+    io.open(placeholder, 'w', encoding='utf-8').write(
+        '{"services": {"syslog_servers": ["x.x.x.x"]}}')
+    check('the shipped x.x.x.x placeholder is not offered as an address',
+          harden.inventory_syslog_servers(placeholder) == [],
+          harden.inventory_syslog_servers(placeholder))
+
+    check('a missing file is an empty list, not an exception',
+          harden.inventory_syslog_servers(os.path.join(tmpdir, 'nope.yaml')) == [])
+    unparseable = os.path.join(tmpdir, 'bad.yaml')
+    io.open(unparseable, 'w', encoding='utf-8').write('devices:\n  - not json\n')
+    check('and so is a file this cannot parse',
+          harden.inventory_syslog_servers(unparseable) == [])
+
+    # End to end: with the file readable, pressing OK on the prefilled box is
+    # enough - no retyping, and the collectors still land on the switch.
+    original = harden.inventory_path
+    harden.inventory_path = lambda: good
+    try:
+        fake = run_harden(tmpdir, [('node-a/sw-1', '10.0.7.1')], syslog=None)
+    finally:
+        harden.inventory_path = original
+    check('the box is offered both addresses as its default',
+          fake.syslog_default == '10.2.2.1, 10.2.2.2', fake.syslog_default)
+    check('and accepting it configures them',
+          'logging host 10.2.2.1' in fake.Screen.sent
+          and 'logging host 10.2.2.2' in fake.Screen.sent, fake.Screen.sent)
+
+
 def test_the_confirmation_says_what_it_will_do(tmpdir):
     """This writes to running-config on a fleet. Whoever presses Begin should
     have read the commands and the count first."""
@@ -387,6 +431,7 @@ if __name__ == '__main__':
                  test_a_rejected_command_is_recorded_not_fatal,
                  test_unreachable_switches_are_rows,
                  test_syslog_servers_are_two_or_none,
+                 test_syslog_servers_come_off_inventory_yaml_when_it_is_there,
                  test_the_confirmation_says_what_it_will_do):
         with tempfile.TemporaryDirectory() as tmpdir:
             test(tmpdir)

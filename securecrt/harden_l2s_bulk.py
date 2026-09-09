@@ -55,6 +55,7 @@ there leaves eleven more answering on a switch whose row claims a five-session
 limit.
 """
 
+import json
 import os
 import os.path
 import re
@@ -155,6 +156,33 @@ _IPV4 = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$')
 def _is_ipv4(text):
     match = _IPV4.match(text)
     return bool(match) and all(0 <= int(part) <= 255 for part in match.groups())
+
+
+def inventory_path():
+    """The repository's inventory.yaml, if this folder is still inside it."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'inventory.yaml')
+
+
+def inventory_syslog_servers(path=None):
+    """The syslog collectors already written down in inventory.yaml, or [].
+
+    Nothing in this folder may import from the wider repository - it gets
+    copied to machines that do not have one - but inventory.yaml is written as
+    JSON, so reading it takes the standard library and nothing else, and a
+    missing file is just an empty list. The netmiko script takes these from the
+    same place; asking someone to retype two addresses they have already
+    written down is how one of them ends up with a digit wrong.
+
+    Only real addresses come back. The file ships with `x.x.x.x` placeholders,
+    and a placeholder offered as a default is worse than an empty box."""
+    try:
+        with open(path or inventory_path(), encoding='utf-8') as handle:
+            services = json.load(handle).get('services') or {}
+    except Exception:
+        return []
+    return [str(entry) for entry in (services.get('syslog_servers') or [])
+            if _is_ipv4(str(entry))]
 
 
 def syslog_fixes(answer):
@@ -291,12 +319,17 @@ def main():
                               'Cannot write there')
         return
 
+    known = inventory_syslog_servers()
     syslog_answer = crt.Dialog.Prompt(
         'Syslog server IP addresses, separated by commas. Leave blank to skip.\n\n'
         'DISA asks for two collectors (V-220568/220620), and one is not a partial pass,\n'
-        'so a single address is not pushed. The netmiko script reads these from\n'
-        'inventory.yaml; nothing in this folder can, so they are asked for here.',
-        'Harden - syslog servers', '', False)
+        'so a single address is not pushed.\n\n'
+        + ('Filled in from inventory.yaml. Edit or clear it as you like.'
+           if len(known) >= SYSLOG_MINIMUM else
+           'inventory.yaml lists {0} usable address(es), so there is nothing to fill in\n'
+           'from it - add a second collector there and this box fills itself next time.'
+           .format(len(known))),
+        'Harden - syslog servers', ', '.join(known), False)
     if syslog_answer is None:
         return
     syslog_commands, syslog_servers, not_addresses = syslog_fixes(syslog_answer)
