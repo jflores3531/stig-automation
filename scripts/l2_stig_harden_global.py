@@ -50,8 +50,9 @@ BASE_FIXES = {
     # policy-map, and service-policy on interfaces). Expect this one line to be
     # rejected on an IOS XE switch; Netmiko does not treat a rejected command
     # as fatal, so the rest of the batch still lands. Kept because it is
-    # correct for classic IOS. IOS XE's V-220651 is deliberately NOT AUTOMATED
-    # in the audit rather than answered by this - see ios_xe_rule_map.EXCLUDED.
+    # correct for classic IOS. IOS XE's V-220651 is not answered by this at
+    # all: it has its own check, l2_stig_audit._qos_bandwidth_check, which
+    # reads the MQC shape the IOS XE book actually asks for.
     'V-220625 (QoS enabled, IOS only - rejected on IOS XE)': 'mls qos',
     'V-220595a (password encryption)': 'service password-encryption',
     'V-220600 (audit failure alert)': 'logging trap critical',

@@ -77,6 +77,21 @@ Auditing stays outside the loop. Running it per switch inside the collector woul
 
 Both files are copied together: the bulk script imports the guards, the command list and the capture format from `capture_l2s.py` rather than restating them, so the two cannot drift.
 
+### `securecrt/harden_l2s_bulk.py` — the one script in `securecrt/` that configures
+Every other file in that folder is read-only and says so in its docstring. This one writes to running-config on a whole fleet, so it is a separate file with a separate name rather than a flag, for the same reason `capture_l2s_bulk.py` is separate from `capture_l2s.py`: the approval it needs is not the approval the read-only walks got.
+
+It exists because `scripts/l2_stig_harden_logging_access.py` cannot run where these switches are reachable from. That script needs netmiko, netmiko cannot be installed on that machine, and that single fact is why `securecrt/` exists at all. Same fixes, same order, different transport.
+
+The command lists are duplicated rather than imported, because nothing in `securecrt/` may import from the wider repository — the folder is copied to a machine that does not have the repository on it. Duplicated constants drift, and drift here would mean two tools that both claim to apply the same STIG fixes and quietly do not, so `tests/test_securecrt_harden.py` executes the netmiko script's constant section and asserts the two copies are equal.
+
+**It never writes startup-config.** That is the escape hatch and it is deliberate: until someone runs `copy running-config startup-config`, a reload puts every switch back exactly as it was. Harden, re-audit, then save — the same order the rest of the repo runs in, and here the reason is that the audit is the only thing that can tell you the push landed as intended on an image nobody tested it against.
+
+**The vty block is opt-in and its range is read, not assumed.** Everything else this pushes is reversible from any session that can still reach the switch. The vty lines decide how many sessions there can be, which makes a mistake in them the one mistake that takes away the means of fixing itself — so the run asks, defaulting to No. When it is included, the highest line comes off the switch: IOS XE ships `line vty 0 4` *and* `line vty 5 15`, and closing only the first leaves eleven lines answering while the run log records a two-session limit. A switch whose range could not be read has the block **skipped and flagged for a human**, not applied against a fallback — writing a fix whose reach is a guess and a row that reads as complete is the false PASS this repo treats as worse than a false FAIL, moved one step upstream into the remediation record.
+
+**The syslog collectors are asked for, and only in pairs.** The netmiko script reads them from `inventory.yaml`, which nothing here can. Fewer than two, or anything that is not an IPv4 address, stops the run before a single switch is touched rather than dropping the entry quietly: a typo that silently costs a collector leaves V-220568/220620 a finding across the whole fleet, on a run whose log says it hardened them.
+
+Nothing that changes forwarding is in it. No spanning-tree mode, no VLAN database, no `no <service>` lines, nothing per-interface — so it needs no change window for convergence behaviour, which is what makes an unattended fleet-wide push defensible in the first place.
+
 ### Trunk ports and DHCP snooping
 `l2_stig_harden_global.py` sets both `ip dhcp snooping trust` and `ip arp inspection trust` on trunk ports. DHCP snooping bindings are learned per-switch only, so trunk and uplink ports carrying transit traffic from other switches need both trusted — otherwise DAI drops that traffic against this switch's own incomplete binding table.
 

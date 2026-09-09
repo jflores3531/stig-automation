@@ -18,7 +18,9 @@ matching on titles paired them with each other's rules.
 
 A mapping is a claim that one predicate answers both rules. Where that claim
 does not hold, the rule is left out and reported NOT AUTOMATED, which is an
-honest verdict rather than a wrong one. See EXCLUDED below.
+honest verdict rather than a wrong one. EXCLUDED below holds those; it is
+currently empty, because every rule that once sat in it now has a check of its
+own in l2_stig_audit.IOS_XE_ONLY_CHECKS.
 
 One pair needed the books read against each other rather than each on its own.
 V-220670 (IOS XE) and V-220644 (IOS) share a title - "must not use the default
