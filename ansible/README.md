@@ -387,7 +387,7 @@ injected: 59 genuinely disabled ports detected, the injected
 `spare disabled bay` / `connected` row correctly excluded, and `suspended` and
 `err-disabled` ports correctly not matched.
 
-**Why the L2S role reorders its own tasks.** `l2_stig_harden_interfaces.py`
+**Why the L2S role reorders its own tasks.** `l2_stig_harden_access_ports.py`/`l2_stig_harden_trunk_ports.py`
 pushes the default access VLAN to every access port and then overrides it for
 the disabled subset. That is harmless with Netmiko, which never diffs, but two
 Ansible tasks written that way fight each other - both report `changed` forever

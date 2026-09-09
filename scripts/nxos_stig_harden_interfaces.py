@@ -59,7 +59,7 @@ unused_vlan-assigned ports from that requirement for the same reason.
 V-220680 (Root Guard): pushed to every trunk-classified port except this
 switch's own live-detected STP root port(s), via the shared
 stig_common.discover_root_port_interfaces() (same function L2S's
-l2_stig_harden_interfaces.py uses) - guarding the root port would force it
+l2_stig_harden_trunk_ports.py uses) - guarding the root port would force it
 into root-inconsistent (blocking) state, a real outage risk. Reuses the
 connection this script already keeps open rather than opening a second one.
 

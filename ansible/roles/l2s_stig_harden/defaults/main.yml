@@ -18,7 +18,7 @@ ntp_auth_key_value: ""
 
 # V-220636 broadcast thresholds in bps, keyed by the alphabetic part of the
 # interface name - the Ansible half of STORM_CONTROL_BPS in
-# l2_stig_harden_interfaces.py, and it must stay in step with it. DISA's Fix
+# l2_stig_harden_access_ports.py, and it must stay in step with it. DISA's Fix
 # Text only enumerates ranges for Gigabit (10M-1G) and 10-Gigabit (100M-10G)
 # ports; the faster Catalyst 9000 types carry the same ~2%-of-line-rate rule
 # forward. Anything unlisted - Port-channel, plain Ethernet - takes the default,

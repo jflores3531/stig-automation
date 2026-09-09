@@ -30,60 +30,15 @@ IOS_XE_CHECKLIST_PATH = os.path.join(netauto.PROJECT_ROOT, 'checklists', 'IOS-XE
 # internal port to the switch's app-hosting container, not an external attack
 # surface, and access-port hardening there would disrupt app hosting rather than
 # protect anything.
-SWITCHPORT_PREFIXES = (
-    'GigabitEthernet', 'FastEthernet', 'TenGigabitEthernet', 'TwoGigabitEthernet',
-    'FiveGigabitEthernet', 'TwentyFiveGigE', 'FortyGigabitEthernet', 'HundredGigE',
-    'TwoHundredGigE', 'FourHundredGigE', 'Ethernet', 'Port-channel',
-)
-
-
-# A switchport-capable interface *name* is not the same thing as a switchport.
-# A routed port carries 'no switchport', and a Catalyst's out-of-band management
-# port (GigabitEthernet0/0, in Mgmt-vrf) is not switchport-capable hardware at
-# all, so IOS XE emits no switchport line for it in either direction. Both match
-# SWITCHPORT_PREFIXES by name. Left in the access bucket they produce findings
-# against ports that cannot take a switchport command: on a Catalyst-shaped
-# config, a routed uplink and a Mgmt-vrf port drew FAILs from BPDU Guard, UUFB,
-# IP Source Guard, storm control, 802.1x, the access-VLAN rule and the explicit-
-# mode rule at once. That is the recognition-side mirror of the Fix Text false
-# FAILs - the rule is right, the port is just not one it governs.
-#
-# Excluding by name is not an option: the lab's vios_l2 image carries a real
-# switchport called GigabitEthernet0/0. The block's own contents decide it.
-# Anything ambiguous stays a switchport, so the error falls on the strict side.
-def _is_layer3_interface(block):
-    if re.search(r'^\s*no switchport\s*$', block, re.M):
-        return True
-    if re.search(r'^\s*switchport\b', block, re.M):
-        return False
-    return bool(re.search(r'^\s*(?:ip|ipv6) address\b|^\s*vrf forwarding\b', block, re.M))
-
-
-def _switchport_blocks(cfg):
-    """Yield (name, block) for every interface that is a switchport: the name
-    is a switchport-capable type and the block is not a Layer 3 interface."""
-    for chunk in re.split(r'^(?=interface \S+)', cfg, flags=re.M):
-        m = re.match(r'interface (\S+)', chunk)
-        if not m or not m.group(1).startswith(SWITCHPORT_PREFIXES):
-            continue
-        if _is_layer3_interface(chunk):
-            continue
-        yield m.group(1), chunk
-
-
-def parse_switchports(cfg):
-    """Classify every switchport as trunk or host-facing/access: an interface
-    counts as trunk only if its block has 'switchport mode trunk'; anything else
-    (access mode, unset mode, dynamic negotiation) is host-facing. Layer 3
-    interfaces are excluded from both - see _is_layer3_interface.
-    Returns (access_blocks, trunk_blocks), each {interface_name: block_text}."""
-    access, trunk = {}, {}
-    for name, chunk in _switchport_blocks(cfg):
-        if re.search(r'^\s*switchport mode trunk\s*$', chunk, re.M):
-            trunk[name] = chunk
-        else:
-            access[name] = chunk
-    return access, trunk
+# Switchport classification lives in stig_common, so the ports this file judges
+# and the ports the harden scripts configure are the same ports - including the
+# Layer 3 exclusions, which on the audit side prevent a false FAIL from every
+# per-access-port rule at once and on the hardening side prevent
+# `switchport mode access` converting a routed port out from under its address.
+SWITCHPORT_PREFIXES = stig_common.SWITCHPORT_PREFIXES
+_is_layer3_interface = stig_common.is_layer3_interface
+_switchport_blocks = stig_common.switchport_blocks
+parse_switchports = stig_common.classify_switchports
 
 
 # V-220645: user-facing/untrusted ports must be *explicitly* configured as

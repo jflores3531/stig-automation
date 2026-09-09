@@ -29,7 +29,7 @@
       }}
 
 # Excludes VLAN 1, unused_vlan AND native_vlan, matching
-# l2_stig_harden_interfaces.py's trunk_vlan_exclude. native_vlan was missing
+# l2_stig_harden_trunk_ports.py's trunk_vlan_exclude. native_vlan was missing
 # here: it used to share an ID with unused_vlan, so excluding one covered
 # both, and the two were later split (999/1000) without this being updated -
 # leaving 999 swept into the allowed-list once it existed in the database.

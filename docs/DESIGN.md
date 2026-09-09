@@ -40,6 +40,8 @@ So the order is: **push → audit → confirm → save.** On NX-OS this matters 
 
 `l2_stig_harden_global.py` runs **first**. It establishes DHCP snooping and puts ports into access mode, which the other `l2_stig_harden_*.py` scripts depend on.
 
+`l2_stig_harden_access_ports.py` and `l2_stig_harden_trunk_ports.py` are two runs, not one, and the trunk one wants its own change window. See below.
+
 `l2_stig_harden_aaa.py` runs **last**. The password policy commands (V-220590-594) need `aaa new-model` already active, so they can't be folded into the bulk pass. The enable secret is pushed and confirmed working before any AAA command is sent, since the rest of the script depends on it.
 
 `netauto.py`'s `connect()` escalates to privileged EXEC automatically using `secrets.yaml`'s `enable_secret` if one is set — a no-op if the session is already privileged. This became necessary once `aaa new-model` governs login on a device.
@@ -91,6 +93,22 @@ The command lists are duplicated rather than imported, because nothing in `secur
 **The syslog collectors are asked for, and only in pairs.** The netmiko script reads them from `inventory.yaml`, which nothing here can. Fewer than two, or anything that is not an IPv4 address, stops the run before a single switch is touched rather than dropping the entry quietly: a typo that silently costs a collector leaves V-220568/220620 a finding across the whole fleet, on a run whose log says it hardened them.
 
 Nothing that changes forwarding is in it. No spanning-tree mode, no VLAN database, no `no <service>` lines, nothing per-interface — so it needs no change window for convergence behaviour, which is what makes an unattended fleet-wide push defensible in the first place.
+
+### `l2_stig_harden_access_ports.py` / `l2_stig_harden_trunk_ports.py` — one file split by blast radius
+These were one script, `l2_stig_harden_interfaces.py`. The two halves shared a `show running-config` and a port classifier and nothing else — different rules, different commands, and, the reason they are now separate files, completely different consequences for being wrong.
+
+An access port serves one endpoint. A bad push there costs one desk, and the session that made the mistake is still up to fix it. That half can go out on a working day.
+
+A trunk port is the uplink, and the session pushing to it is usually riding it. Two of its fixes decide whether it keeps forwarding: `switchport trunk allowed vlan <list>` replaces the allowed list outright, so a management VLAN not in the discovered list is pruned off the uplink the moment it lands; `switchport trunk native vlan <id>` changes what untagged frames land in at both ends, and a neighbour still on the old native VLAN is a mismatch. Root Guard is a third, and is the one already handled rather than warned about — V-220629 on this switch's own root port forces it into root-inconsistent/blocking and takes out the path to the root bridge, so the root port is discovered live and excluded.
+
+Keeping them in one script meant every access-port fix inherited the trunk half's change window. Splitting them costs a second connection when you run both, and buys the ability to run the safe half whenever you like — the same trade `l2_stig_harden_acl.py`, `_ipsg.py` and `_dai.py` already make.
+
+The port classifier moved to `stig_common.py` in the process, which fixed something separate. The harden side had its own copy that classified by interface name alone, while the audit's excluded Layer 3 interfaces by block contents. That divergence was a false FAIL on the audit side and worse on the hardening side: `switchport mode access` sent to a routed port converts it and takes its address with it. One classifier now answers both, so a port the audit judges as access and a port the hardening configures as access are the same port.
+
+### 802.1x is a deployment, not a line in a bulk pass
+V-220623 was pushed per-port by the interface script, skipping access ports on non-user VLANs. That skip was added after `authentication port-control auto` landed on the lab's own management port and blocked the supplicant-less host mid-push (2026-08-28) — and it was the wrong shape of fix. What locked out that one port locks out every port on a switch with no 802.1x infrastructure behind it: with no RADIUS authenticator reachable and no supplicant on the endpoint, a port set to `port-control auto` authenticates nobody and forwards nothing. On an access switch full of user devices that is not a lockout of the automation host, it is a lockout of the floor.
+
+Nothing per-port pushes any part of it now, in the Python or the Ansible role. The rule is reported as a deliberate unpushed finding on every run rather than half-applied, and the audit's check is unchanged and still reports it. `l2_stig_harden_aaa.py` still pushes the global prerequisites, which are inert on their own: with no port set to authenticate, nothing authenticates against them.
 
 ### Trunk ports and DHCP snooping
 `l2_stig_harden_global.py` sets both `ip dhcp snooping trust` and `ip arp inspection trust` on trunk ports. DHCP snooping bindings are learned per-switch only, so trunk and uplink ports carrying transit traffic from other switches need both trusted — otherwise DAI drops that traffic against this switch's own incomplete binding table.

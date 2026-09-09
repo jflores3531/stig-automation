@@ -869,6 +869,83 @@ def describe_template_expansion(cfg, template_bodies):
     return 'Interface templates read and expanded into the interfaces sourcing them:\n' + '\n'.join(lines)
 
 
+# Interface types that take switchport commands. VLAN SVIs, loopbacks and the
+# like are excluded: `switchport mode trunk` can never appear in their blocks,
+# so by name alone they would land in the access bucket. The multigigabit and
+# 25G-and-up names are IOS XE (Catalyst 9000) forms with no equivalent on the
+# lab's vios_l2 image; leaving them out does not error, it silently skips those
+# ports, which reads exactly like a clean run. AppGigabitEthernet is
+# deliberately excluded: it is the internal port to the switch's app-hosting
+# container, not an external attack surface, and access-port hardening there
+# would disrupt app hosting rather than protect anything.
+SWITCHPORT_PREFIXES = (
+    'GigabitEthernet', 'FastEthernet', 'TenGigabitEthernet', 'TwoGigabitEthernet',
+    'FiveGigabitEthernet', 'TwentyFiveGigE', 'FortyGigabitEthernet', 'HundredGigE',
+    'TwoHundredGigE', 'FourHundredGigE', 'Ethernet', 'Port-channel',
+)
+
+
+# A switchport-capable interface *name* is not the same thing as a switchport.
+# A routed port carries 'no switchport', and a Catalyst's out-of-band management
+# port (GigabitEthernet0/0, in Mgmt-vrf) is not switchport-capable hardware at
+# all, so IOS XE emits no switchport line for it in either direction. Both match
+# SWITCHPORT_PREFIXES by name.
+#
+# On the audit side, leaving them in the access bucket drew a false FAIL from
+# every per-access-port rule at once. On the hardening side the same mistake is
+# worse than a wrong verdict: `switchport mode access` sent to a routed port
+# converts it, taking its address with it.
+#
+# Excluding by name is not an option - the lab's vios_l2 image carries a real
+# switchport called GigabitEthernet0/0 - so the block's own contents decide it.
+# Anything ambiguous stays a switchport, so the error falls on the strict side.
+def is_layer3_interface(block):
+    if re.search(r'^\s*no switchport\s*$', block, re.M):
+        return True
+    if re.search(r'^\s*switchport\b', block, re.M):
+        return False
+    return bool(re.search(r'^\s*(?:ip|ipv6) address\b|^\s*vrf forwarding\b', block, re.M))
+
+
+def switchport_blocks(cfg):
+    """Yield (name, block) for every interface that is a switchport: the name
+    is a switchport-capable type and the block is not a Layer 3 interface."""
+    for chunk in re.split(r'^(?=interface \S+)', cfg, flags=re.M):
+        m = re.match(r'interface (\S+)', chunk)
+        if not m or not m.group(1).startswith(SWITCHPORT_PREFIXES):
+            continue
+        if is_layer3_interface(chunk):
+            continue
+        yield m.group(1), chunk
+
+
+def classify_switchports(cfg):
+    """Classify every switchport as trunk or host-facing/access: an interface
+    counts as trunk only if its block has 'switchport mode trunk'; anything
+    else (access mode, unset mode, dynamic negotiation) is host-facing.
+
+    Returns (access_blocks, trunk_blocks), each {interface_name: block_text}.
+    Callers that only want the names use switchport_names()."""
+    access, trunk = {}, {}
+    for name, chunk in switchport_blocks(cfg):
+        if re.search(r'^\s*switchport mode trunk\s*$', chunk, re.M):
+            trunk[name] = chunk
+        else:
+            access[name] = chunk
+    return access, trunk
+
+
+def switchport_names(cfg):
+    """classify_switchports() as two lists of names, in config order.
+
+    The harden scripts want names; the audit wants the blocks to read rules
+    out of. One classifier answers both, because a port the audit judges as
+    access and a port the hardening configures as access have to be the same
+    port."""
+    access, trunk = classify_switchports(cfg)
+    return list(access), list(trunk)
+
+
 def discover_root_port_interfaces(net_connect):
     """Return the set of interface names that are the STP root port in any VLAN
     instance, parsed from `show spanning-tree`. Used by V-220629 (Root Guard):

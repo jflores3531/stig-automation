@@ -11,7 +11,7 @@
 # V-220641a (disabled ports -> unused VLAN) WAS in that list and is now
 # implemented below - the per-port shutdown state it needs turned out to be
 # readable from the running-config this role already gathers, no extra round
-# trip required. Ported from l2_stig_harden_interfaces.py's
+# trip required. Ported from l2_stig_harden_access_ports.py's
 # shutdown_access_ports().
 
 - name: Gather show running-config for interface classification
@@ -49,7 +49,7 @@
 # interface block and that is sufficient; NX-OS does not render enough state
 # there to distinguish an administratively shut port from other down states,
 # which is why its equivalent reads the status table and cross-checks.
-# `shutdown_access_ports()` in l2_stig_harden_interfaces.py uses exactly this
+# `shutdown_access_ports()` in l2_stig_harden_access_ports.py uses exactly this
 # running-config test.
 #
 # Matching `\n[ \t]*shutdown[ \t]*\n` rather than bare 'shutdown' so a `no
@@ -148,21 +148,16 @@
 # line, the same way the global BASE_FIXES batch did with mls qos (ios_config
 # treats a rejected command as fatal, unlike Netmiko's send_config_set()).
 #
-# Correction to an earlier claim here that 802.1x is wholly rejected on
-# vios_l2: `dot1x pae authenticator`/`mab` are rejected, but `authentication
-# port-control auto` alone is accepted AND enforced - it blocked the rebuilt
-# S1's management port live (2026-08-28). So the 802.1x/MAB lines skip access
-# ports on non-user VLANs (management/infrastructure per inventory), same rule
-# as the Python's mgmt_vlan_ports exemption. The audit's V-220623 stays strict
-# and reports those ports as a known/accepted finding.
-- name: Access ports on non-user VLANs (802.1x would lock out the management host)
-  set_fact:
-    mgmt_vlan_ports: >-
-      {{
-        running_config_result.stdout[0]
-        | regex_findall('(?ms)^interface ((?:GigabitEthernet|FastEthernet|TenGigabitEthernet|TwoGigabitEthernet|FiveGigabitEthernet|TwentyFiveGigE|FortyGigabitEthernet|HundredGigE|TwoHundredGigE|FourHundredGigE|Ethernet|Port-channel)\S*)\n(?:(?!^interface \S).)*?^[ \t]*switchport access vlan (?:' ~ (non_user_vlans | map('string') | join('|')) ~ ')[ \t]*$')
-        | intersect(access_ports)
-      }}
+# V-220623 (802.1x/MAB) is NOT pushed here, matching
+# l2_stig_harden_access_ports.py. It used to be, skipping access ports on
+# non-user VLANs after `authentication port-control auto` blocked the rebuilt
+# S1's management port live (2026-08-28) - accepted and enforced even on
+# vios_l2, where `dot1x pae authenticator`/`mab` are rejected. That skip
+# treated a fleet-wide problem as a management-port problem: with no reachable
+# RADIUS authenticator and no supplicant on the endpoint, port-control auto
+# blocks every port it lands on, which on an access switch full of user devices
+# is an outage rather than a hardening step. The audit's V-220623 stays strict
+# and reports it as a finding, which is the honest outcome.
 
 - name: "V-220632 (UUFB) - rejected on lab vios_l2, kept for real hardware"
   cisco.ios.ios_config:
@@ -171,19 +166,6 @@
       - switchport block unicast
   loop: "{{ access_ports }}"
   when: access_ports | length > 0
-  ignore_errors: true
-
-- name: >-
-    V-220623 (802.1x/MAB) - never on non-user-VLAN ports; port-control auto
-    is enforced even where dot1x pae/mab are rejected
-  cisco.ios.ios_config:
-    parents: "interface {{ item }}"
-    lines:
-      - authentication port-control auto
-      - dot1x pae authenticator
-      - mab
-  loop: "{{ access_ports | difference(mgmt_vlan_ports) }}"
-  when: access_ports | difference(mgmt_vlan_ports) | length > 0
   ignore_errors: true
 
 - name: >-

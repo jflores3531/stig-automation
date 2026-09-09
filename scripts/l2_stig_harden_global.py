@@ -3,9 +3,12 @@
 Cisco IOS Switch L2S STIG to a device. Interface-scoped fixes (UUFB, storm
 control, PortFast/BPDU Guard, 802.1x/MAB, trunk trust/allowed-vlan/native
 VLAN, Root Guard, disabled-port unused-VLAN reassignment) live in the
-companion script l2_stig_harden_interfaces.py - run this script first
-(it creates the native/unused/default-access VLANs in the database and
-enables DHCP snooping globally), then run l2_stig_harden_interfaces.py.
+companion scripts l2_stig_harden_access_ports.py and
+l2_stig_harden_trunk_ports.py - run this script first (it creates the
+native/unused/default-access VLANs in the database and enables DHCP snooping
+globally), then those two. They are separate because a mistake on an access
+port costs one desk while a mistake on a trunk port costs the uplink the
+session is riding, so the trunk half wants its own change window.
 V-220634 (IP Source Guard) is pushed separately by l2_stig_harden_ipsg.py,
 and V-220635 (DAI) separately by l2_stig_harden_dai.py - both split out
 because they only trust the DHCP snooping binding table, so a statically-
@@ -188,7 +191,8 @@ vlan_ids = stig_common.discover_user_vlans(net_connect, exclude=netauto.load_non
 
 # V-220641's unused VLAN and V-220646's native VLAN come from inventory.yaml -
 # only their VLAN-database entries are created here, the per-port
-# assignment/trust is pushed by the companion l2_stig_harden_interfaces.py.
+# assignment/trust is pushed by l2_stig_harden_access_ports.py (unused VLAN on
+# disabled ports) and l2_stig_harden_trunk_ports.py (native VLAN, trunk trust).
 unused_vlan = netauto.load_unused_vlan()
 native_vlan_id = netauto.load_native_vlan()
 
@@ -371,6 +375,9 @@ print('V-220587/617 (AAA new-model + RADIUS auth) is pushed separately by l2_sti
 print('V-220623a/b (dot1x system-auth-control + AAA method) is pushed separately by l2_stig_harden_aaa.py.')
 
 print(
-    '\nNext: run l2_stig_harden_interfaces.py to push the interface-scoped fixes '
-    '(V-220629/630/632/633b/635b/636/640/641a/643/646/623b, plus V-220642/645 as a side effect).'
+    '\nNext: run l2_stig_harden_access_ports.py for the host-facing ports '
+    '(V-220630b/632/636/641a, plus V-220642/645 as a side effect) - safe on a working day.\n'
+    'Then, in its own change window, l2_stig_harden_trunk_ports.py for the uplinks '
+    '(V-220629/633b/635b/640/643/646): those commands decide what the trunk carries, '
+    'and the session pushing them is usually riding one.'
 )
