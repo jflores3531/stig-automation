@@ -183,8 +183,6 @@ TRUNK_PORT_FIXES = [
     'ip arp inspection trust',
 ]
 
-# Rules satisfied as a side effect of the access-port mode/VLAN push, not by
-# a dedicated command of their own (see module docstring)
 # Rules this script could push a command for and does not. Printed on every
 # run: an unpushed fix the operator does not know about is one they find out
 # about from an assessor.
@@ -198,6 +196,8 @@ UNPUSHED_RULES = [
      'while no port is set to authenticate.'),
 ]
 
+# Rules satisfied as a side effect of the access-port mode/VLAN push, not by
+# a dedicated command of their own (see module docstring)
 SIDE_EFFECT_RULES = [
     'V-220642 (no default VLAN on host ports)',
     'V-220645 (user-facing ports as access)',
