@@ -48,9 +48,11 @@ Everything else here is reversible from any session that can still reach the
 switch. The vty block decides how many sessions there can be, so a mistake in
 it is the one mistake that takes away the means of fixing itself. The run asks
 before including it, defaulting to no, and the range is read off each switch
-rather than assumed: IOS XE ships `line vty 0 4` AND `line vty 5 15`, and
-closing only the first range leaves eleven lines answering while claiming a
-two-session limit.
+rather than assumed. What caps inbound sessions is how many vty lines answer,
+so a limit of 5 means vty 0-4 answer and everything above them does not. IOS XE
+ships `line vty 0 4` AND `line vty 5 15`: configuring only the first range
+there leaves eleven more answering on a switch whose row claims a five-session
+limit.
 """
 
 import os
@@ -109,7 +111,11 @@ ARCHIVE_LOGGING_FIX = [
 
 CONSOLE_FIX = ['line con 0', 'exec-timeout 5 0']
 
-CONCURRENT_SESSIONS = 2
+# The organization-defined number the rest of this project pushes. DISA's
+# example says 2; the rule says "organization-defined" and its finding sentence
+# only asks that a limit exist. Kept equal to the netmiko script's, which the
+# test pins.
+CONCURRENT_SESSIONS = 5
 EXEC_TIMEOUT = 'exec-timeout 5 0'
 
 # IOS answers a bad command with a line starting '%'. Collected per switch and
@@ -161,16 +167,21 @@ def vty_fixes(highest_vty, sessions=CONCURRENT_SESSIONS):
 
     `highest_vty` is read off the switch, not assumed - see highest_vty_line."""
     last_open = sessions - 1
-    commands = [
+    if last_open >= highest_vty:
+        # Every line the switch has is inside the allowed count: nothing to
+        # take out of service, and no second range to enter. On a switch with
+        # only `line vty 0 4` and a limit of 5, this is DISA's own example.
+        return [_line_range(0, highest_vty), 'session-limit {0}'.format(sessions),
+                EXEC_TIMEOUT, 'transport input ssh']
+    return [
         _line_range(0, highest_vty),
         'session-limit {0}'.format(sessions),
         EXEC_TIMEOUT,
         _line_range(0, last_open),
         'transport input ssh',
+        _line_range(last_open + 1, highest_vty),
+        'transport input none',
     ]
-    if last_open < highest_vty:
-        commands += [_line_range(last_open + 1, highest_vty), 'transport input none']
-    return commands
 
 
 def highest_vty_line(prompt):
@@ -299,9 +310,10 @@ def main():
     with_vty = crt.Dialog.MessageBox(
         'Also limit concurrent sessions on the vty lines?\n\n'
         'This closes every vty line above the first {0}, so the switch will accept only {0} '
-        'SSH session(s) afterwards and refuse a third - including yours, if two are already '
-        'open. The range is read from each switch, so `line vty 5 15` is closed too where it '
-        'exists.\n\n'
+        'SSH session(s) afterwards and refuse the next one - including yours, if {0} are '
+        'already open. The range is read from each switch, so `line vty 5 15` is closed too '
+        'where it exists; on a switch whose only range is `line vty 0 4` there is nothing '
+        'above it to close.\n\n'
         'Everything else in this run is reversible from any session that can reach the switch. '
         'This is not.\n\n'
         'No is the safe answer, and leaves V-220518/220570 a finding.'

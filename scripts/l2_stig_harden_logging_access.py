@@ -47,12 +47,14 @@ that is run - said in the output rather than left to the next audit. The
 console exec-timeout is pushed either way; it can strand nobody, and an un-set
 console line sits at IOS's 10-minute default forever.
 
-THE SESSION LIMIT, AND WHY IT IS NOT JUST `session-limit 2`
+THE SESSION LIMIT, AND WHY IT IS 5 RATHER THAN DISA'S 2
 The rule is "an organization-defined number", and its finding sentence is only
 "If the switch is not configured to limit the number of concurrent management
 sessions, this is a finding" - so 2 is the number DISA's own example uses, not
-a maximum the STIG imposes. It is still the right number to push, because it is
-what an assessor reads in the Fix Text.
+a maximum the STIG imposes. The number here is 5, which is what
+l2_stig_harden_global, ios_router_stig_harden_global and
+nxos_stig_harden_global have always pushed; this script pushing 2 for the same
+requirement was an inconsistency, not a stricter reading.
 
 DISA gives three mechanisms and this pushes two of them:
 
@@ -61,21 +63,24 @@ DISA gives three mechanisms and this pushes two of them:
   is a number attached to nothing. The audit accepts it, which is how it ended
   up in the bulk script; that does not make it a control.
 
-  `session-limit 2` under `line vty 0 4` is pushed, because the Fix Text shows
+  `session-limit 5` under `line vty 0 4` is pushed, because the Fix Text shows
   it and an assessor will look for it. Worth knowing what it actually does:
   on IOS this limits the sessions a user *on that line* may open outward, not
   the number of inbound management sessions. It satisfies the rule as written.
 
   Reducing the usable vty lines is what actually caps concurrent inbound
-  sessions, and it is the method DISA's Fix Text leads with: vty 0-1 answer
-  SSH, vty 2-4 answer nothing. Two lines, two sessions, enforced by the switch
-  rather than by a per-line counter.
+  sessions, and it is the method DISA's Fix Text leads with. At a limit of 5
+  that means vty 0-4 answer SSH and anything above them answers nothing: five
+  lines, five sessions, enforced by the switch rather than by a per-line
+  counter. On a switch whose only vty range is 0-4 there is nothing above them,
+  and what gets pushed is DISA's first example verbatim.
 
 With --with-vty both are pushed, in that order, so the switch is compliant by
 the letter and limited in fact. The risk is worth stating plainly: after that,
-the switch accepts two SSH sessions. A third is refused - including yours, if
-two are already open. That is the intended behaviour of the rule, and the
-reason it is not the default.
+the switch accepts 5 SSH sessions and refuses a sixth - including yours, if
+five are already open. That is the intended behaviour of the rule, and the
+reason it is not the default, though it is a far smaller trap at 5 than at the
+2 this script pushed before.
 """
 
 import argparse
@@ -126,10 +131,15 @@ ARCHIVE_LOGGING_FIX = [
     'exit',
 ]
 
-# The number DISA's example uses. Not a maximum the STIG imposes - the rule
-# says "organization-defined" - but the number an assessor reads in the Fix
-# Text, so the one to push absent a local decision to the contrary.
-CONCURRENT_SESSIONS = 2
+# The organization-defined number, which is what the rule actually asks for:
+# its finding sentence is only "if the switch is not configured to limit the
+# number of concurrent management sessions". The 2 in DISA's example is an
+# example. 5 is the number the rest of this project already pushes -
+# l2_stig_harden_global, ios_router_stig_harden_global and
+# nxos_stig_harden_global all use `line vty 0 4` / `session-limit 5` - and one
+# project pushing two different limits for the same requirement is the kind of
+# inconsistency an assessor asks about.
+CONCURRENT_SESSIONS = 5
 
 # exec-timeout must be nonzero and <= 5 minutes: `0 0` disables the timeout
 # entirely, which is non-compliant rather than exempt. The console line needs
@@ -148,27 +158,34 @@ def vty_fixes(highest_vty, sessions=CONCURRENT_SESSIONS):
     --with-vty.
 
     `highest_vty` is read off the switch rather than assumed, and that is the
-    whole reason this takes an argument. A switch does not have five vty lines
-    because DISA's example configures five: IOS XE ships `line vty 0 4` AND
-    `line vty 5 15`, so a script that hardens 0-4 and stops leaves eleven more
-    answering SSH and its own claim of a two-session limit is false. Whatever
-    the highest configured line is, everything above the allowed count is taken
-    out of service.
+    whole reason this takes an argument. What actually caps inbound management
+    sessions is how many vty lines will answer, so a limit of 5 means five
+    lines answering and the rest out of service. IOS XE ships `line vty 0 4`
+    AND `line vty 5 15`: a script that configures 0-4 and stops leaves eleven
+    more answering, and its claim of a five-session limit is false on a switch
+    that will hold sixteen. Whatever the highest configured line is, everything
+    above the allowed count is taken out of service.
 
     `session-limit` goes on the full range first, so it is on every line an
     assessor looks at, and the split follows - which means no line is ever left
     without one."""
     last_open = sessions - 1
-    commands = [
+    if last_open >= highest_vty:
+        # Every line the switch has is inside the allowed count, so there is
+        # nothing to take out of service and no second range to enter. On a
+        # switch with only `line vty 0 4` and a limit of 5, this is DISA's
+        # first example verbatim.
+        return [_line_range(0, highest_vty), f'session-limit {sessions}', EXEC_TIMEOUT,
+                'transport input ssh']
+    return [
         _line_range(0, highest_vty),
         f'session-limit {sessions}',
         EXEC_TIMEOUT,
         _line_range(0, last_open),
         'transport input ssh',
+        _line_range(last_open + 1, highest_vty),
+        'transport input none',
     ]
-    if last_open < highest_vty:
-        commands += [_line_range(last_open + 1, highest_vty), 'transport input none']
-    return commands
 
 
 def highest_vty_line(net_connect):

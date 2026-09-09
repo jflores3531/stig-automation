@@ -813,6 +813,16 @@ def _admin_activity_logged(cfg):
 # state - `no ip http server` is pushed by the hardening scripts - because then
 # `ip http max-connections` is configuration for a service that is not running,
 # and the vty lines are the only thing actually limiting anything.
+#
+# The number is never the verdict. "Organization-defined" means DISA wrote no
+# number to test against, and its finding sentence asks only whether a limit is
+# configured - so any `session-limit <n>` passes, whatever n is, and a switch
+# with more lines answering than the local number gets a warning rather than a
+# FAIL. Failing it would be inventing a finding DISA did not write, which is
+# the one thing this file may not do.
+ORGANIZATION_DEFINED_SESSIONS = 5
+
+
 def _vty_line_states(cfg):
     """(open, closed) counts of vty lines, by what their `transport input` says.
 
@@ -868,8 +878,10 @@ def _session_limit_check(cfg):
     # another answers is the shape that reads as compliant and is not, and the
     # only way a reviewer sees it is if the count is in front of them.
     return True, (f'{", ".join(found)}; {open_lines} vty line(s) can still answer'
-                  + (' - check that is the organization-defined number, since ranges beyond '
-                     '`line vty 0 4` are configured separately' if open_lines > 5 else ''))
+                  + (f' - more than the {ORGANIZATION_DEFINED_SESSIONS} this project hardens '
+                     'to, since ranges beyond `line vty 0 4` are configured separately. Not a '
+                     'finding: the rule leaves the number to the organization'
+                     if open_lines > ORGANIZATION_DEFINED_SESSIONS else ''))
 
 
 # V-220589/590/591/592/593/594: password complexity, each is one sub-command

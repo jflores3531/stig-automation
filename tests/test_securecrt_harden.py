@@ -15,9 +15,10 @@ different in kind:
     mean two tools that both claim to apply the same STIG fixes and do not.
 
   * that the vty block is off unless asked for, and that when it is asked for
-    the range comes off the switch. IOS XE ships `line vty 0 4` AND
-    `line vty 5 15`; closing only the first leaves eleven lines answering while
-    the run reports a two-session limit.
+    the range comes off the switch. What caps inbound sessions is how many vty
+    lines answer, so a limit of 5 means vty 0-4 answer and nothing above them
+    does. IOS XE ships `line vty 0 4` AND `line vty 5 15`; configuring only the
+    first leaves eleven answering under a row claiming a five-session limit.
 
   * that a switch which rejects a command is recorded as such and does not take
     the rest of the fleet down with it.
@@ -238,21 +239,22 @@ def test_the_default_run_touches_no_vty_line(tmpdir):
 
 
 def test_vty_range_comes_off_the_switch(tmpdir):
-    """IOS XE ships `line vty 0 4` AND `line vty 5 15`. Closing only the first
-    leaves eleven lines answering while the run reports a two-session limit -
-    the same false claim the netmiko script made before it read the range."""
+    """IOS XE ships `line vty 0 4` AND `line vty 5 15`. Configuring only the
+    first leaves eleven lines answering while the run reports a five-session
+    limit - the same false claim the netmiko script made before it read the
+    range."""
     print('\nwith the vty block asked for, the range is read from the switch')
     fake = run_harden(tmpdir, [('node-a/sw-1', '10.0.1.1')], with_vty=True)
     sent = fake.Screen.sent
     check('it asked the switch which vty lines it has',
           'show running-config | include ^line vty' in sent, sent)
-    check('the closing range covers vty 5-15, not just 2-4',
-          'line vty 2 15' in sent, [c for c in sent if c.startswith('line vty')])
-    check('the first two lines are left answering ssh',
-          'line vty 0 1' in sent and 'transport input ssh' in sent, sent)
+    check('the closing range is vty 5-15, the lines above the allowed 5',
+          'line vty 5 15' in sent, [c for c in sent if c.startswith('line vty')])
+    check('the first five lines are left answering ssh',
+          'line vty 0 4' in sent and 'transport input ssh' in sent, sent)
     check('and the rest answer nothing', 'transport input none' in sent, sent)
     check('the log says which lines were left open',
-          'vty 0-1' in log_rows(tmpdir)[0]['comment'], log_rows(tmpdir))
+          'vty 0-4' in log_rows(tmpdir)[0]['comment'], log_rows(tmpdir))
 
     # A switch that answers the question with nothing must not be assumed to
     # have only vty 0-4: that assumption is what leaves lines answering.
@@ -268,6 +270,24 @@ def test_vty_range_comes_off_the_switch(tmpdir):
           unread.Screen.sent)
     check('and the row says so rather than reading as a full harden',
           row['outcome'] == 'hardened - vty skipped', row)
+
+
+def test_a_five_line_switch_gets_disas_example_verbatim(tmpdir):
+    """The limit is 5 and a switch with only `line vty 0 4` has exactly five
+    lines, so there is nothing above them to take out of service. What is left
+    is DISA's first Check Content example with the organization's number in
+    it - and no `transport input none`, which would be closing lines that are
+    inside the limit."""
+    print('\na switch whose only range is vty 0-4 needs nothing closed')
+    fake = run_harden(tmpdir, [('node-a/sw-1', '10.0.6.1')], with_vty=True,
+                      vty_output='line vty 0 4')
+    sent = fake.Screen.sent
+    check('the range is entered once, not twice',
+          sent.count('line vty 0 4') == 1, [c for c in sent if c.startswith('line vty')])
+    check('the limit and ssh transport are set on it',
+          'session-limit 5' in sent and 'transport input ssh' in sent, sent)
+    check('and no line is taken out of service, because none is above the limit',
+          'transport input none' not in sent, sent)
 
 
 def test_a_rejected_command_is_recorded_not_fatal(tmpdir):
@@ -358,6 +378,7 @@ if __name__ == '__main__':
     test_commands_match_the_netmiko_script()
     for test in (test_the_default_run_touches_no_vty_line,
                  test_vty_range_comes_off_the_switch,
+                 test_a_five_line_switch_gets_disas_example_verbatim,
                  test_a_rejected_command_is_recorded_not_fatal,
                  test_unreachable_switches_are_rows,
                  test_syslog_servers_are_two_or_none,
