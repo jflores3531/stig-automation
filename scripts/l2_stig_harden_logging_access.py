@@ -8,9 +8,8 @@ database entries, `vtp mode transparent`, SNMPv3, NTP and fifteen `no <service>`
 lines. Every one of those can change how a switch forwards, converges or
 answers, and on a production fleet that is a change window and a rollback plan.
 Nothing here touches the data plane at all: it writes log destinations, log
-content, and the terms under which a session may be opened to the switch. The
-worst case is a session limit set too tight, which is why the vty lines are
-handled the way they are below.
+content, and - only when asked - the terms under which a session may be opened
+to the switch.
 
 WHAT IT PUSHES - rule numbers are IOS XE first, then the IOS book's
 
@@ -28,8 +27,9 @@ WHAT IT PUSHES - rule numbers are IOS XE first, then the IOS book's
 
   Access control
     V-220524/220576   lock out after 3 failed attempts in 120s, for 900s
-    V-220518/220570   limit concurrent management sessions - see below
-    V-220544/220596   exec-timeout on vty AND console
+    V-220544/220596   exec-timeout on the console line
+    V-220518/220570   limit concurrent management sessions, and the vty half
+                      of V-220544/220596 - only with --with-vty, see below
 
 WHAT IT DELIBERATELY LEAVES OUT
 `service password-encryption`, the SSH cipher/MAC lines, and the vty management
@@ -37,6 +37,15 @@ ACL. The first two are credential and transport protection rather than either
 of the areas asked for; the ACL is its own script on purpose, because an
 access-class that omits the automation host locks this machine out of every
 future run.
+
+THE VTY LINES ARE OFF BY DEFAULT
+Everything above is reversible from any session that can reach the switch.
+The vty block is not: it decides how many sessions there can be, so a mistake
+there is the one mistake this script could make that takes away the means of
+fixing it. It is behind --with-vty, and V-220518/220570 stays a finding until
+that is run - said in the output rather than left to the next audit. The
+console exec-timeout is pushed either way; it can strand nobody, and an un-set
+console line sits at IOS's 10-minute default forever.
 
 THE SESSION LIMIT, AND WHY IT IS NOT JUST `session-limit 2`
 The rule is "an organization-defined number", and its finding sentence is only
@@ -62,10 +71,11 @@ DISA gives three mechanisms and this pushes two of them:
   SSH, vty 2-4 answer nothing. Two lines, two sessions, enforced by the switch
   rather than by a per-line counter.
 
-Both are pushed, in that order, so the switch is compliant by the letter and
-limited in fact. The risk is real and worth stating plainly: after this, the
-switch accepts two SSH sessions. A third is refused - including yours, if two
-are already open. That is the intended behaviour of the rule.
+With --with-vty both are pushed, in that order, so the switch is compliant by
+the letter and limited in fact. The risk is worth stating plainly: after that,
+the switch accepts two SSH sessions. A third is refused - including yours, if
+two are already open. That is the intended behaviour of the rule, and the
+reason it is not the default.
 """
 
 import argparse
@@ -128,7 +138,8 @@ EXEC_TIMEOUT = 'exec-timeout 5 0'
 
 
 def vty_fixes(sessions=CONCURRENT_SESSIONS):
-    """The vty and console lines, in the order they must be sent.
+    """The vty lines, in the order they must be sent. Off by default - see
+    --with-vty.
 
     `session-limit` first, on the full range, so it is on every line an
     assessor looks at. Then the range is split: the first `sessions` lines
@@ -148,8 +159,15 @@ def vty_fixes(sessions=CONCURRENT_SESSIONS):
             f'line vty {last_open + 1} 4' if last_open + 1 < 4 else 'line vty 4',
             'transport input none',
         ]
-    commands += ['line con 0', EXEC_TIMEOUT]
     return commands
+
+
+# The console line is not the vty lines and is not held back with them. An
+# exec-timeout here can strand nobody: it ends an idle session at the physical
+# console, which is the one place a locked-out switch is recovered from. Left
+# un-set it sits at IOS's 10-minute default forever, which is the whole of
+# V-220544's finding on that line.
+CONSOLE_FIX = ['line con 0', EXEC_TIMEOUT]
 
 
 parser = argparse.ArgumentParser(
@@ -160,14 +178,23 @@ parser.add_argument('--sessions', type=int, default=CONCURRENT_SESSIONS, metavar
                          "DISA's own example). The rule is an organization-defined number, so "
                          'raise it if your organization defined a different one - but the switch '
                          'will refuse the N+1th SSH session, including yours.')
+parser.add_argument('--with-vty', action='store_true', dest='with_vty',
+                    help='Also push the vty session limit and vty exec-timeout (V-220518/220570 '
+                         'and the vty half of V-220544/220596). OFF by default, because it is the '
+                         'only part of this script that decides who may log in afterwards: it '
+                         'leaves the switch answering on two vty lines, so a third SSH session is '
+                         'refused. Run it with console access to hand, or a second known-good path '
+                         'to the switch. Everything else here is reversible from any session.')
 parser.add_argument('--dry-run', action='store_true',
-                    help='Print the commands and exit without connecting to anything. Worth doing '
-                         'first: the vty changes below decide who can log in afterwards.')
+                    help='Print the commands and exit without connecting to anything.')
 args = parser.parse_args()
 
 if not 1 <= args.sessions <= 5:
     raise SystemExit(f'--sessions must be between 1 and 5 (there are 5 vty lines, 0-4); '
                      f'got {args.sessions}')
+if args.sessions != CONCURRENT_SESSIONS and not args.with_vty:
+    raise SystemExit('--sessions only means anything with --with-vty, which is off by default; '
+                     'without it no vty line is touched at all.')
 
 services = netauto.load_services()
 syslog_servers = services.get('syslog_servers') or []
@@ -176,8 +203,7 @@ applied_fixes = dict(LOGGING_FIXES)
 applied_fixes.update(ACCESS_CONTROL_FIXES)
 applied_fixes['V-220519/520/521/522/530/545/559/561 (archive logging)'] = \
     '; '.join(ARCHIVE_LOGGING_FIX)
-applied_fixes['V-220518/220570 + V-220544/220596 (session limit + exec-timeout)'] = \
-    '; '.join(vty_fixes(args.sessions))
+applied_fixes['V-220544/220596 (console exec-timeout)'] = '; '.join(CONSOLE_FIX)
 
 commands = list(LOGGING_FIXES.values()) + list(ACCESS_CONTROL_FIXES.values())
 commands += ARCHIVE_LOGGING_FIX
@@ -189,17 +215,37 @@ if len(syslog_servers) >= 2:
     applied_fixes['V-220568/220620 (dual syslog servers)'] = \
         '; '.join(f'logging host {ip}' for ip in syslog_servers)
 
+commands += CONSOLE_FIX
+
 # Last, because everything above is reversible from any session and this
 # decides which sessions there can be.
-commands += vty_fixes(args.sessions)
+if args.with_vty:
+    commands += vty_fixes(args.sessions)
+    applied_fixes['V-220518/220570 + V-220544/220596 (vty session limit + exec-timeout)'] = \
+        '; '.join(vty_fixes(args.sessions))
+
+# What is left undone by not pushing the vty lines, said here rather than
+# discovered in the next audit. Both rules stay findings until they are run:
+# V-220518 has nothing else that could satisfy it, and V-220544 asks for the
+# timeout on vty as well as console.
+UNADDRESSED_WITHOUT_VTY = (
+    'V-220518/220570 (concurrent session limit) - nothing else satisfies it',
+    'V-220544/220596 (exec-timeout) - console only; the vty half is still a finding',
+)
 
 if args.dry_run:
     print('Dry run - nothing was connected to and nothing was pushed.\n')
     print('Commands that would be sent:')
     for command in commands:
         print('  ' + command)
-    print(f'\nAfter this the switch would accept {args.sessions} concurrent SSH session(s) '
-          f'on vty 0-{args.sessions - 1}; vty {args.sessions}-4 would answer nothing.')
+    if args.with_vty:
+        print(f'\nAfter this the switch would accept {args.sessions} concurrent SSH session(s) '
+              f'on vty 0-{args.sessions - 1}; vty {args.sessions}-4 would answer nothing.')
+    else:
+        print('\nNo vty line is touched, so nothing here can change who may log in.')
+        print('Still a finding afterwards, until --with-vty is run:')
+        for rule in UNADDRESSED_WITHOUT_VTY:
+            print('  ' + rule)
     raise SystemExit(0)
 
 all_devices = netauto.load_inventory()
@@ -221,14 +267,22 @@ if len(syslog_servers) < 2:
     print(f'\nSkipped V-220568/220620 (dual syslog servers) - {len(syslog_servers)} configured in '
           "inventory.yaml's services section, and the rule asks for two.")
 
-print(f'\nThe switch now accepts {args.sessions} concurrent SSH session(s): vty '
-      f'0-{args.sessions - 1} answer SSH, vty {args.sessions}-4 answer nothing. A further '
-      'session is refused - verify you can still open a new one before closing this session.')
+if args.with_vty:
+    print(f'\nThe switch now accepts {args.sessions} concurrent SSH session(s): vty '
+          f'0-{args.sessions - 1} answer SSH, vty {args.sessions}-4 answer nothing. A further '
+          'session is refused - verify you can still open a new one before closing this session.')
+else:
+    print('\nNo vty line was touched, so who may log in is exactly as it was.')
+    print('Still a finding, until this is re-run with --with-vty:')
+    for rule in UNADDRESSED_WITHOUT_VTY:
+        print('  ' + rule)
+
 print('\nNothing here was written to startup-config. Re-audit first, then run save_config.py.')
 
-# Left open deliberately. If the session limit locked something out, the way
-# back is a session that already exists - closing this one first would take
-# that away.
-print(f'\nThe connection to {device_name} is still open for that reason; close it yourself once '
-      'a new session has been proved to work.')
+# Left open deliberately when the vty lines were touched: if the session limit
+# locked something out, the way back is a session that already exists, and
+# closing this one first would take that away.
+if args.with_vty:
+    print(f'\nThe connection to {device_name} is still open for that reason; close it yourself '
+          'once a new session has been proved to work.')
 net_connect.disconnect()
