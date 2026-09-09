@@ -73,6 +73,7 @@ class FakeScreen:
         self.prompt = 'TESTSW01#'
         self.sent = []
         self._pending = ''
+        self.events = []
         self.CurrentRow = 5
         self.CurrentColumn = len(self.prompt) + 1
 
@@ -84,6 +85,7 @@ class FakeScreen:
         if not command:
             return
         self.sent.append(command)
+        self.events.append(('send', command))
         if command == 'terminal length 0':
             self._pending += f'{command}\r\n'
             return
@@ -94,6 +96,7 @@ class FakeScreen:
         self._pending += f'{command}\r\n{body}\r\n'
 
     def ReadString(self, _terminator, timeout=None):
+        self.events.append(('read', _terminator))
         pending, self._pending = self._pending, ''
         return pending
 
@@ -127,6 +130,7 @@ class FakeDialog:
         if 'scope' in title.lower():
             return ''
         if 'syslog' in title.lower():
+            self.crt.syslog_prompted = True
             self.crt.syslog_default = default
             return default if self.crt.syslog is None else self.crt.syslog
         return self.crt.output_dir
@@ -143,6 +147,7 @@ class FakeCRT:
         self.output_dir = output_dir
         self.syslog = syslog
         self.syslog_default = None
+        self.syslog_prompted = False
         self.behaviour = behaviour
         self.with_vty = with_vty
         self.attempts = []
@@ -161,19 +166,29 @@ class FakeCRT:
 
 VTY_RANGES = 'line vty 0 4\nline vty 5 15'
 
+# What `show running-config | include ^ip ssh` gives back after a clean push.
+SSH_LINES = ('ip ssh version 2\n'
+             'ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256\n'
+             'ip ssh server algorithm encryption aes256-gcm aes256-ctr')
+
 
 def run_harden(tmpdir, sessions, behaviour=None, with_vty=False, reject=(),
-               vty_output=VTY_RANGES, syslog=''):
+               vty_output=VTY_RANGES, syslog='', ssh_output=SSH_LINES, inventory=None):
     outputs = dict(OUTPUTS)
     outputs['show running-config | include ^line vty'] = vty_output
+    outputs['show running-config | include ^ip ssh'] = ssh_output
     fake = FakeCRT(tmpdir, behaviour or {}, outputs, with_vty, reject, syslog)
     harden.crt = capture_l2s.crt = bulk.crt = fake
     original = bulk.find_sessions
+    original_inventory = harden.inventory_path
+    if inventory is not None:
+        harden.inventory_path = lambda: inventory
     bulk.find_sessions = lambda _filter='': list(sessions)
     try:
         harden.main()
     finally:
         bulk.find_sessions = original
+        harden.inventory_path = original_inventory
         harden.crt = capture_l2s.crt = bulk.crt = None
     return fake
 
@@ -317,6 +332,62 @@ def test_a_rejected_command_is_recorded_not_fatal(tmpdir):
           rows.get('node-a/sw-2', {}).get('outcome', '').startswith('hardened'), rows)
 
 
+def test_the_ssh_lines_are_read_back_off_the_switch(tmpdir):
+    """A line the parser accepted is not the same as a line in running-config.
+
+    `ip ssh version 2` is the one this bit on: some IOS XE trains no longer
+    render it (v1 is gone, so v2-only is not a setting any more), and an image
+    without `aes256-gcm` rejects that whole line and keeps the list it had.
+    Neither shows up in the config block's own output, and a run that reports
+    `hardened` for a switch missing all three SSH lines is the false clean
+    result this project exists to avoid."""
+    print('\nthe ip ssh lines are read back, not assumed')
+    fake = run_harden(tmpdir, [('node-a/sw-1', '10.0.8.1')])
+    check('the switch is asked what it actually has',
+          'show running-config | include ^ip ssh' in fake.Screen.sent, fake.Screen.sent)
+    row = log_rows(tmpdir)[0]
+    check('a clean push records all three lines',
+          row['ssh'].count('ip ssh') == 3 and 'MISSING' not in row['ssh'], row['ssh'])
+    check('and the outcome is a plain harden', row['outcome'] == 'hardened', row)
+
+    # The reported symptom: everything else lands, `ip ssh version 2` does not.
+    partial = run_harden(
+        tmpdir, [('node-b/sw-2', '10.0.8.2')],
+        ssh_output=('ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256\n'
+                    'ip ssh server algorithm encryption aes256-gcm aes256-ctr'))
+    row = [r for r in log_rows(tmpdir) if r['session'] == 'node-b/sw-2'][0]
+    check('a line that did not land is named in the row',
+          'MISSING' in row['ssh'] and 'ip ssh version 2' in row['ssh'].split('MISSING')[1],
+          row['ssh'])
+    check('and the outcome says so rather than reading as a clean harden',
+          'ssh crypto incomplete' in row['outcome'], row)
+    check('the other two are still recorded as present',
+          'hmac-sha2-512' in row['ssh'].split('MISSING')[0], row['ssh'])
+
+    none = run_harden(tmpdir, [('node-c/sw-3', '10.0.8.3')], ssh_output='')
+    row = [r for r in log_rows(tmpdir) if r['session'] == 'node-c/sw-3'][0]
+    check('a switch with no ip ssh lines at all is flagged, not passed',
+          row['ssh'].startswith('NONE') and 'ssh crypto incomplete' in row['outcome'], row)
+
+
+def test_every_config_command_is_read_before_the_next_is_sent(tmpdir):
+    """Flow control, not politeness. The walk sets Screen.Synchronous for its
+    whole run, and in synchronous mode SecureCRT holds the incoming stream until
+    the script consumes it. Sending the whole block and reading once at the end
+    left twenty-odd command echoes backing up behind a buffer nothing was
+    emptying - the same mechanism that lost the DoD banner in read_prompt, and
+    here it loses commands: they go out, and the line is not on the switch."""
+    print('\nevery config line is read back before the next one is sent')
+    fake = run_harden(tmpdir, [('node-a/sw-1', '10.0.9.1')])
+    sends = [event for event in fake.Screen.events if event[0] == 'send']
+    reads = [event for event in fake.Screen.events if event[0] == 'read']
+    check('there is a read for every send, not one at the end',
+          len(reads) >= len(sends), (len(sends), len(reads)))
+    pairs = list(zip(fake.Screen.events, fake.Screen.events[1:]))
+    unread = [a[1] for a, b in pairs if a[0] == 'send' and b[0] == 'send']
+    check('no command is sent while the previous one is still unread', not unread, unread)
+
+
 def test_unreachable_switches_are_rows(tmpdir):
     print('\na switch nobody could reach is a row, not a gap')
     run_harden(tmpdir, [('node-a/10.0.3.1 - b100-52', '10.0.3.1'), ('node-a/sw-2', '10.0.3.2')],
@@ -383,19 +454,28 @@ def test_syslog_servers_come_off_inventory_yaml_when_it_is_there(tmpdir):
     check('and so is a file this cannot parse',
           harden.inventory_syslog_servers(unparseable) == [])
 
-    # End to end: with the file readable, pressing OK on the prefilled box is
-    # enough - no retyping, and the collectors still land on the switch.
-    original = harden.inventory_path
-    harden.inventory_path = lambda: good
-    try:
-        fake = run_harden(tmpdir, [('node-a/sw-1', '10.0.7.1')], syslog=None)
-    finally:
-        harden.inventory_path = original
-    check('the box is offered both addresses as its default',
-          fake.syslog_default == '10.2.2.1, 10.2.2.2', fake.syslog_default)
-    check('and accepting it configures them',
+    # End to end: with the file readable the box does not appear at all. Being
+    # asked each run for two addresses that are written down is how a digit
+    # gets typed wrong on switch four hundred; the confirmation still lists the
+    # `logging host` lines, so nothing goes out unseen.
+    fake = run_harden(tmpdir, [('node-a/sw-1', '10.0.7.1')], syslog=None, inventory=good)
+    check('the run does not ask for what the file already answers',
+          fake.syslog_prompted is False)
+    check('and both collectors are configured from it',
           'logging host 10.2.2.1' in fake.Screen.sent
           and 'logging host 10.2.2.2' in fake.Screen.sent, fake.Screen.sent)
+    check('the confirmation says where they came from',
+          any('inventory.yaml' in message for title, message in fake.messages
+              if 'confirm' in title.lower()), fake.messages)
+
+    # A file that cannot answer still gets a box, and the box names the path it
+    # looked at - the difference between "wrong folder" and "wrong contents".
+    asked = run_harden(tmpdir, [('node-a/sw-1', '10.0.7.1')], syslog='', inventory=placeholder)
+    check('an unusable file still prompts', asked.syslog_prompted is True)
+    check('and the prompt names the path it looked at',
+          any(placeholder in message for title, message in asked.messages
+              if 'syslog' in title.lower())
+          or asked.syslog_default == '', asked.messages)
 
 
 def test_the_confirmation_says_what_it_will_do(tmpdir):
@@ -429,6 +509,8 @@ if __name__ == '__main__':
                  test_vty_range_comes_off_the_switch,
                  test_a_five_line_switch_gets_disas_example_verbatim,
                  test_a_rejected_command_is_recorded_not_fatal,
+                 test_the_ssh_lines_are_read_back_off_the_switch,
+                 test_every_config_command_is_read_before_the_next_is_sent,
                  test_unreachable_switches_are_rows,
                  test_syslog_servers_are_two_or_none,
                  test_syslog_servers_come_off_inventory_yaml_when_it_is_there,

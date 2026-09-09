@@ -138,7 +138,7 @@ EXEC_TIMEOUT = 'exec-timeout 5 0'
 # knowing about and is not a reason to abandon the other fixes that landed.
 ERROR_MARKER = '%'
 
-LOG_COLUMNS = ('hostname', 'ip_address', 'outcome', 'rejected', 'comment',
+LOG_COLUMNS = ('hostname', 'ip_address', 'outcome', 'rejected', 'ssh', 'comment',
                'session', 'timestamp')
 
 
@@ -240,30 +240,71 @@ def highest_vty_line(prompt):
     return (max(numbers), True) if numbers else (4, False)
 
 
+# Every config-mode prompt ends in '#' - `(config)#`, `(config-line)#`,
+# `(config-archive)#`, `(config-archive-log-cfg)#` - and so does the base
+# prompt `end` returns to. Reading to '#' therefore works in every mode this
+# script enters, which is what makes a read after each command possible.
+CONFIG_PROMPT = '#'
+
+
 def send_config(commands, prompt):
-    """Send a config block and return what the switch said back.
+    """Send a config block one command at a time, reading after each.
 
-    One read at the end rather than one per command: the prompt changes as
-    sub-modes are entered - `(config)#`, `(config-line)#` - so waiting for the
-    base prompt after each line would hang on the first one. `end` returns to
-    it, and everything the switch said arrives together."""
-    crt.Screen.Send('configure terminal\r')
-    for command in commands:
+    Returns [(command, what the switch said)], in order.
+
+    The read after every line is flow control, not politeness. The walk sets
+    Screen.Synchronous for its whole run, and in synchronous mode SecureCRT
+    holds the incoming stream until the script consumes it. The first version
+    of this sent the whole block and read once at the end, which left twenty-odd
+    command echoes backing up behind a buffer nothing was emptying - the same
+    mechanism that lost the DoD banner in read_prompt, and here it loses
+    commands: they go out, the switch never gets them intact, and the run
+    reports a clean push of a line that is not on the switch.
+
+    Reading per command also means a `%` complaint can be attributed to the
+    command that caused it, instead of a pile of them at the end."""
+    transcript = []
+    for command in ['configure terminal'] + list(commands) + ['end']:
         crt.Screen.Send(command + '\r')
-    crt.Screen.Send('end\r')
-    output = crt.Screen.ReadString(prompt, capture_l2s.READ_TIMEOUT_SECONDS)
-    if output is None:
-        raise capture_l2s.CollectionError(
-            'timed out in config mode',
-            'Timed out waiting for the prompt after the configuration block.',
-            'Config timeout')
-    return output
+        answer = crt.Screen.ReadString(CONFIG_PROMPT, capture_l2s.READ_TIMEOUT_SECONDS)
+        if answer is None:
+            raise capture_l2s.CollectionError(
+                'timed out after `{0}`'.format(command),
+                'Timed out waiting for a prompt after sending `{0}`.'.format(command),
+                'Config timeout')
+        transcript.append((command, answer))
+    return transcript
 
 
-def rejected_lines(output):
-    """The switch's own complaints, one per rejected command."""
-    return [line.strip() for line in (output or '').splitlines()
-            if line.strip().startswith(ERROR_MARKER)]
+def rejected_lines(transcript):
+    """The switch's own complaints, each named with the command that drew it."""
+    rejected = []
+    for command, answer in transcript or []:
+        for line in (answer or '').splitlines():
+            if line.strip().startswith(ERROR_MARKER):
+                rejected.append('{0}: {1}'.format(command, line.strip()))
+    return rejected
+
+
+def ssh_crypto_state(prompt):
+    """What `ip ssh` lines the switch actually has, read back after the push.
+
+    The three SSH lines are the ones most likely to be accepted by the parser
+    and still not be there afterwards - an image without `aes256-gcm` rejects
+    that whole line, and some IOS XE trains no longer render `ip ssh version 2`
+    at all because v1 is gone and v2-only is not a setting any more. Neither is
+    visible from the config block's own output, so the switch is asked."""
+    try:
+        output = capture_l2s.run_command('show running-config | include ^ip ssh', prompt)
+    except Exception as error:
+        return 'not read: ' + bulk.first_line(str(error))
+    lines = [line.strip() for line in (output or '').splitlines()
+             if line.strip().startswith('ip ssh')]
+    if not lines:
+        return 'NONE of the ip ssh lines are in running-config'
+    missing = [command for command in SSH_CRYPTO_FIXES if command not in lines]
+    found = '; '.join(lines)
+    return found if not missing else '{0} -- MISSING: {1}'.format(found, '; '.join(missing))
 
 
 class RunLog:
@@ -278,9 +319,10 @@ class RunLog:
         with open(self.path, 'w', encoding='utf-8') as handle:
             handle.write(','.join(LOG_COLUMNS) + '\n')
 
-    def record(self, session_path, host, outcome, rejected='', comment='', hostname=''):
+    def record(self, session_path, host, outcome, rejected='', comment='', hostname='',
+               ssh=''):
         self.counts[outcome] = self.counts.get(outcome, 0) + 1
-        row = (hostname or session_path, host, outcome, rejected, comment, session_path,
+        row = (hostname or session_path, host, outcome, rejected, ssh, comment, session_path,
                time.strftime('%Y-%m-%d %H:%M:%S'))
         with open(self.path, 'a', encoding='utf-8') as handle:
             handle.write(','.join('"{0}"'.format(str(f).replace('"', "'")) for f in row) + '\n')
@@ -319,20 +361,33 @@ def main():
                               'Cannot write there')
         return
 
+    # Not asked at all when the file already answers. The confirmation box lists
+    # every command, `logging host` included, so nothing is pushed unseen - and
+    # being asked each run for two addresses that are written down is how a
+    # digit gets typed wrong on switch four hundred.
     known = inventory_syslog_servers()
-    syslog_answer = crt.Dialog.Prompt(
-        'Syslog server IP addresses, separated by commas. Leave blank to skip.\n\n'
-        'DISA asks for two collectors (V-220568/220620), and one is not a partial pass,\n'
-        'so a single address is not pushed.\n\n'
-        + ('Filled in from inventory.yaml. Edit or clear it as you like.'
-           if len(known) >= SYSLOG_MINIMUM else
-           'inventory.yaml lists {0} usable address(es), so there is nothing to fill in\n'
-           'from it - add a second collector there and this box fills itself next time.'
-           .format(len(known))),
-        'Harden - syslog servers', ', '.join(known), False)
-    if syslog_answer is None:
-        return
-    syslog_commands, syslog_servers, not_addresses = syslog_fixes(syslog_answer)
+    if len(known) >= SYSLOG_MINIMUM:
+        syslog_commands, syslog_servers, not_addresses = syslog_fixes(', '.join(known))
+        syslog_source = 'inventory.yaml'
+    else:
+        syslog_source = 'typed in'
+        syslog_answer = crt.Dialog.Prompt(
+            'Syslog server IP addresses, separated by commas. Leave blank to skip.\n\n'
+            'DISA asks for two collectors (V-220568/220620), and one is not a partial pass,\n'
+            'so a single address is not pushed.\n\n'
+            'This box would fill itself from inventory.yaml, and could not. Looked at:\n'
+            '  {0}\n'
+            '  {1}\n\n'
+            'Fix that and this run is the last one that asks.'
+            .format(inventory_path(),
+                    'file not found' if not os.path.exists(inventory_path())
+                    else 'found the file, but it lists {0} usable IPv4 address(es) under '
+                         'services.syslog_servers (need {1}; x.x.x.x placeholders do not '
+                         'count)'.format(len(known), SYSLOG_MINIMUM)),
+            'Harden - syslog servers', ', '.join(known), False)
+        if syslog_answer is None:
+            return
+        syslog_commands, syslog_servers, not_addresses = syslog_fixes(syslog_answer)
     if not_addresses:
         # Stop before anything is configured rather than drop the typo quietly:
         # a dropped collector leaves the rule a finding on the whole fleet.
@@ -375,6 +430,8 @@ def main():
         listed += '\n  ...and {0} more'.format(len(sessions) - SESSIONS_SHOWN)
 
     preview = '\n'.join('  ' + command for command in commands)
+    if syslog_commands:
+        preview += '\n\n  (the two `logging host` lines came from {0})'.format(syslog_source)
     if with_vty:
         preview += '\n\n  ...then the vty block, its range read from each switch:\n' + \
                    '\n'.join('    ' + command for command in vty_fixes(4, CONCURRENT_SESSIONS))
@@ -439,13 +496,19 @@ def main():
                         'answering while this row claimed a {0}-session limit. Set the '
                         'limit here by hand.'.format(CONCURRENT_SESSIONS))
 
-        output = send_config(pushed, prompt)
-        rejected = rejected_lines(output)
+        transcript = send_config(pushed, prompt)
+        rejected = rejected_lines(transcript)
+        # Asked of the switch rather than inferred from the push: a line the
+        # parser accepted is not the same as a line that is in running-config.
+        ssh_state = ssh_crypto_state(prompt)
         outcome = 'hardened - vty skipped' if vty_skipped else 'hardened'
         if rejected:
             outcome += ' with rejections'
+        if 'MISSING' in ssh_state or ssh_state.startswith('NONE'):
+            outcome += ', ssh crypto incomplete'
         log.record(session_path, host, outcome,
-                   rejected='; '.join(rejected)[:300], comment=note, hostname=hostname)
+                   rejected='; '.join(rejected)[:300], comment=note, hostname=hostname,
+                   ssh=ssh_state[:300])
 
     crt.Screen.Synchronous = True
     try:
