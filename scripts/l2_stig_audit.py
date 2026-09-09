@@ -794,19 +794,55 @@ def _admin_activity_logged(cfg):
     return True, f'found: `logging userinfo`, {archive_reason}'
 
 
-# V-220570: concurrent management sessions limited via either ip http
-# max-connections or line vty session-limit (either is sufficient per DISA)
+# V-220570 (IOS) / V-220518 (IOS XE): concurrent management sessions limited to
+# an organization-defined number. The Check Content gives three ways, and DISA
+# leads its Fix Text with the third:
+#
+#   ip http max-connections 2
+#   line vty 0 4 / session-limit 2                      (where supported)
+#   line vty 0 1 / transport input ssh                  (where it is not)
+#   line vty 2 4 / transport input none
+#
+# That last pair is the one this used to miss. A switch hardened exactly as
+# DISA's own Fix Text shows - vty 0-1 answering SSH, 2-4 answering nothing -
+# carries neither of the other two lines, and was reported as having no session
+# limit at all. It is the same false FAIL as reading the management ACL as
+# `permit ip <source> any` only: the rule met by a shape the check did not know.
+#
+# It also matters more on a switch with HTTP off, which is the normal hardened
+# state - `no ip http server` is pushed by the hardening scripts - because then
+# `ip http max-connections` is configuration for a service that is not running,
+# and the vty lines are the only thing actually limiting anything.
+def _disabled_vty_ranges(cfg):
+    """Ranges of vty lines answering nothing, as ('line vty 2 4', count) pairs."""
+    disabled = []
+    for chunk in re.split(r'^(?=line )', cfg, flags=re.M):
+        header = re.match(r'line vty (\d+)(?:\s+(\d+))?', chunk)
+        if not header or not re.search(r'^\s*transport input none\s*$', chunk, re.M):
+            continue
+        first = int(header.group(1))
+        last = int(header.group(2)) if header.group(2) else first
+        disabled.append((chunk.splitlines()[0].strip(), last - first + 1))
+    return disabled
+
+
 def _session_limit_check(cfg):
     http_m = re.search(r'^ip http max-connections (\d+)', cfg, re.M)
     session_m = re.search(r'^\s*session-limit (\d+)', cfg, re.M)
-    if http_m or session_m:
+    disabled = _disabled_vty_ranges(cfg)
+    if http_m or session_m or disabled:
         found = []
-        if http_m:
-            found.append(f'ip http max-connections {http_m.group(1)}')
         if session_m:
             found.append(f'session-limit {session_m.group(1)}')
+        for header, count in disabled:
+            found.append(f'`{header}` answers nothing (`transport input none`), '
+                         f'{count} line(s) taken out of service')
+        if http_m:
+            found.append(f'ip http max-connections {http_m.group(1)}')
         return True, f'found: {", ".join(found)}'
-    return False, 'missing both `ip http max-connections <n>` and `line vty ... session-limit <n>` (need at least one)'
+    return False, ('no session limit: none of `line vty ... session-limit <n>`, '
+                   '`transport input none` on unused vty lines, or '
+                   '`ip http max-connections <n>`')
 
 
 # V-220589/590/591/592/593/594: password complexity, each is one sub-command

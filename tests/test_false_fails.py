@@ -31,6 +31,7 @@ as fixtures.py.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -174,6 +175,37 @@ def test_management_network_of_several_prefixes(tmpdir):
           'FAIL' in line and SECOND_NETWORK in line, line)
 
 
+def test_session_limit_by_reducing_vty_lines(tmpdir):
+    """V-220518/570 gives three ways to limit concurrent management sessions,
+    and DISA's Fix Text leads with the one this used to miss: leave vty 0-1
+    answering SSH and give vty 2-4 `transport input none`. A switch hardened
+    exactly as that Fix Text shows carries neither `session-limit` nor
+    `ip http max-connections`, and was reported as having no limit at all.
+
+    It matters most on a hardened switch, where `no ip http server` is pushed:
+    a limit on a server that is not running is not the control, the vty lines
+    are."""
+    print('\ntaking vty lines out of service is a session limit, per DISA')
+    reduced = fixtures.RUNNING_CONFIG.replace('ip http max-connections 2\n', '')
+    reduced = reduced.replace(
+        'line vty 0 4\n exec-timeout 5 0',
+        'line vty 0 1\n exec-timeout 5 0\n transport input ssh\n!\n'
+        'line vty 2 4\n transport input none\n!\nline vty 0 4\n exec-timeout 5 0')
+    report = report_for(tmpdir, 'vtyreduced', running_config=reduced)
+    line = verdict(report, 'V-220518')
+    check('the switch is not reported as having no session limit',
+          'PASS' in line, line)
+    check('and the reason says which lines were taken out of service',
+          'transport input none' in line and 'line vty 2 4' in line, line)
+
+    # Still a finding when nothing limits anything - the point is to recognise
+    # a third shape, not to stop failing.
+    none_at_all = reduced.replace(' transport input none\n', ' transport input ssh\n')
+    none_at_all = re.sub(r'^\s*session-limit \d+\n', '', none_at_all, flags=re.M)
+    line = verdict(report_for(tmpdir, 'nolimit', running_config=none_at_all), 'V-220518')
+    check('a switch with no limit of any kind is still a finding', 'FAIL' in line, line)
+
+
 def test_a_wildcard_this_cannot_read_is_not_a_finding(tmpdir):
     """A non-contiguous wildcard - `0.0.255.0` - is a legal ACL mask that names
     no CIDR network, so there is no prefix to compare against the management
@@ -228,6 +260,7 @@ if __name__ == '__main__':
         test_vtp_wordings(tmpdir)
         test_management_acl_shapes(tmpdir)
         test_management_network_of_several_prefixes(tmpdir)
+        test_session_limit_by_reducing_vty_lines(tmpdir)
         test_a_wildcard_this_cannot_read_is_not_a_finding(tmpdir)
         test_standard_acl_with_logging(tmpdir)
         test_unreadable_source_is_not_reported_as_out_of_subnet(tmpdir)
