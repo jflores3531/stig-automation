@@ -111,6 +111,37 @@ ACCESS_CONTROL_FIXES = {
         'login block-for 900 attempts 3 within 120',
 }
 
+# V-220555/220607 and V-220556/220608: SSH transport crypto. Global config
+# lines, nothing per-interface, and nothing that changes how the switch
+# forwards - but they do change how you log into it, so read the note below.
+#
+# The MAC line is DISA's V-220555 example verbatim. The encryption line is not:
+# V-220556's example reads `aes256-ctr aes192-ctr aes128-ctr`. Its finding
+# sentence asks for "a FIPS 140-2 approved algorithm", not for that list, and
+# AES-GCM (SP 800-38D) and AES-CTR (SP 800-38A) are both approved - so
+# `aes256-gcm aes256-ctr` satisfies the rule as written while offering less
+# than the example does, not more. Kept identical to l2_stig_harden_global's
+# SSH_ENCRYPTION_FIX, which is the same requirement pushed from the bulk pass.
+#
+# Both lines REPLACE the switch's algorithm list rather than adding to it:
+#
+#   * An image without `aes256-gcm` rejects the whole line and keeps the list
+#     it had, so the rule stays a finding on a run that otherwise looks clean.
+#     Netmiko does not treat a rejected command as fatal - check
+#     `show running-config | include ip ssh` afterwards, or the SecureCRT
+#     walk's rejected column.
+#   * Where they are accepted, a client that cannot negotiate hmac-sha2-256 or
+#     better, and aes256-ctr or better, no longer connects. Every current SSH
+#     client can; anything that cannot is a client that should not be reaching
+#     a DoD switch anyway.
+SSH_CRYPTO_FIXES = {
+    'V-220555/220556 (SSH version 2, which both rules require)': 'ip ssh version 2',
+    'V-220555/220607 (FIPS-validated HMAC, session integrity)':
+        'ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256',
+    'V-220556/220608 (FIPS-approved encryption, session confidentiality)':
+        'ip ssh server algorithm encryption aes256-gcm aes256-ctr',
+}
+
 # One block, eight rules - DISA reuses the same evidence for every one of them.
 #
 # The two trailing exits are not decoration. This descends two sub-modes -
@@ -224,9 +255,10 @@ parser.add_argument('--sessions', type=int, default=CONCURRENT_SESSIONS, metavar
 parser.add_argument('--with-vty', action='store_true', dest='with_vty',
                     help='Also push the vty session limit and vty exec-timeout (V-220518/220570 '
                          'and the vty half of V-220544/220596). OFF by default, because it is the '
-                         'only part of this script that decides who may log in afterwards: it '
-                         'leaves the switch answering on two vty lines, so a third SSH session is '
-                         'refused. Run it with console access to hand, or a second known-good path '
+                         'only part of this script that decides how many may log in afterwards: it '
+                         f'leaves the switch answering on {CONCURRENT_SESSIONS} vty lines, so the '
+                         'next SSH session is refused. Run it with console access to hand, or a '
+                         'second known-good path '
                          'to the switch. Everything else here is reversible from any session.')
 parser.add_argument('--dry-run', action='store_true',
                     help='Print the commands and exit without connecting to anything.')
@@ -244,11 +276,13 @@ syslog_servers = services.get('syslog_servers') or []
 
 applied_fixes = dict(LOGGING_FIXES)
 applied_fixes.update(ACCESS_CONTROL_FIXES)
+applied_fixes.update(SSH_CRYPTO_FIXES)
 applied_fixes['V-220519/520/521/522/530/545/559/561 (archive logging)'] = \
     '; '.join(ARCHIVE_LOGGING_FIX)
 applied_fixes['V-220544/220596 (console exec-timeout)'] = '; '.join(CONSOLE_FIX)
 
 commands = list(LOGGING_FIXES.values()) + list(ACCESS_CONTROL_FIXES.values())
+commands += list(SSH_CRYPTO_FIXES.values())
 commands += ARCHIVE_LOGGING_FIX
 
 # DISA asks for two syslog servers, so one configured server is reported rather

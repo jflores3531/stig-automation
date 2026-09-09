@@ -36,14 +36,18 @@ the global 'spanning-tree portfast bpduguard default' fix (in
 l2_stig_harden_global.py) only activates BPDU Guard on ports that have PortFast
 enabled, so without this the global command was present but functionally
 inert everywhere (a false PASS).
-V-220623 (802.1x/MAB): the global prerequisites ('dot1x system-auth-control',
-'aaa authentication dot1x default group radius') are pushed by
-l2_stig_harden_aaa.py instead, not here - the latter needs aaa new-model
-already active, which neither this nor l2_stig_harden_global.py pushes (see that
-script's own docstring for why). Only the per-port commands (authentication
-port-control auto / dot1x pae authenticator / mab, in access_fixes below)
-are pushed here; they're inert until the global prerequisites are active,
-same as any config for a globally-disabled feature."""
+V-220623 (802.1x/MAB): NOT pushed, by this script or any other per-port pass.
+`authentication port-control auto` on a switch with no reachable RADIUS
+authenticator and no supplicant on the endpoint authenticates nobody and
+forwards nothing, so on an access switch full of user devices it is an outage,
+not a hardening step. It was pushed here once, skipping ports on non-user
+VLANs after it locked out the lab's own management port; the skip treated a
+fleet-wide problem as a management-port problem. 802.1x needs a NAC design
+behind it, so the rule is reported as an unpushed finding rather than
+half-applied - see UNPUSHED_RULES. The global prerequisites
+('dot1x system-auth-control', 'aaa authentication dot1x default group radius')
+still live in l2_stig_harden_aaa.py, where they are inert on their own: with no
+port set to port-control auto, nothing authenticates against them."""
 
 import argparse
 import re
@@ -128,34 +132,6 @@ def shutdown_access_ports(cfg, access_names):
     return shutdown
 
 
-def access_ports_on_vlans(cfg, access_names, vlan_ids):
-    """Return the subset of access_names whose explicit access VLAN is in
-    vlan_ids - used to find ports on management/infrastructure segments
-    (inventory.yaml's non_user_vlans).
-
-    Exists because of a live lockout on the rebuilt lab (2026-08-28):
-    `authentication port-control auto` was pushed to S1's Gi0/0 - the
-    management port carrying the automation host - and this image accepted it
-    and enforced it, immediately blocking the supplicant-less host. Note that
-    directly contradicts the older recorded observation that 802.1x is
-    rejected/nonfunctional on vios_l2: the `dot1x pae authenticator`/`mab`
-    commands are rejected here, but `authentication port-control auto` alone
-    is accepted and blocks the port. The 802.1x/MAB block is therefore never
-    pushed to ports on a non-user VLAN - the audit's V-220623 check stays
-    strict and will report those ports as a finding, which is the honest
-    outcome (same known/accepted-FAIL bucket as S2's V-220634)."""
-    wanted = {str(v) for v in vlan_ids}
-    matched = []
-    for chunk in re.split(r'^(?=interface \S+)', cfg, flags=re.M):
-        m = re.match(r'interface (\S+)', chunk)
-        if not m or m.group(1) not in access_names:
-            continue
-        vlan = re.search(r'^\s*switchport access vlan (\d+)\s*$', chunk, re.M)
-        if vlan and vlan.group(1) in wanted:
-            matched.append(m.group(1))
-    return matched
-
-
 def unassigned_access_ports(cfg, access_names):
     """Return the subset of access_names still on the default VLAN - no
     explicit 'switchport access vlan' line, or an explicit VLAN 1. Only these
@@ -209,6 +185,19 @@ TRUNK_PORT_FIXES = [
 
 # Rules satisfied as a side effect of the access-port mode/VLAN push, not by
 # a dedicated command of their own (see module docstring)
+# Rules this script could push a command for and does not. Printed on every
+# run: an unpushed fix the operator does not know about is one they find out
+# about from an assessor.
+UNPUSHED_RULES = [
+    ('V-220623 (802.1x/MAB)',
+     'no `authentication port-control auto`, `dot1x pae authenticator` or `mab` is '
+     'pushed to any port. Without a reachable RADIUS authenticator and a supplicant '
+     'on the endpoint, port-control auto blocks the port - an outage on an access '
+     'switch, not a hardening step. Deploy 802.1x with a NAC design, then re-audit. '
+     'l2_stig_harden_aaa.py still pushes the global prerequisites, which are inert '
+     'while no port is set to authenticate.'),
+]
+
 SIDE_EFFECT_RULES = [
     'V-220642 (no default VLAN on host ports)',
     'V-220645 (user-facing ports as access)',
@@ -295,20 +284,22 @@ access_fixes.append('spanning-tree portfast')
 # is harmless there.
 access_fixes.append('switchport block unicast')
 
-# V-220623 (802.1x/MAB) - pushed per-port below, NOT in the flat list, and
-# never to access ports on a non-user VLAN (management/infrastructure segments
-# from inventory.yaml). `authentication port-control auto` is accepted and
-# enforced even on lab vios_l2 (dot1x pae/mab are the rejected ones), so
-# landing it on the management port blocks the supplicant-less automation host
-# and cuts the very session doing the pushing - confirmed live on the rebuilt
-# S1, 2026-08-28. See access_ports_on_vlans() for the audit-side consequence.
-DOT1X_FIXES = [
-    'authentication port-control auto',
-    'dot1x pae authenticator',
-    'mab',
-]
-non_user_vlan_ids = netauto.load_non_user_vlans(device_name=device_name)
-mgmt_vlan_ports = set(access_ports_on_vlans(running_config, access_ports, non_user_vlan_ids))
+# V-220623 (802.1x/MAB) IS DELIBERATELY NOT PUSHED - see UNPUSHED_RULES.
+#
+# It used to be pushed per-port here, skipping ports on non-user VLANs. That
+# skip existed because of a live lockout: `authentication port-control auto`
+# landed on S1's Gi0/0, the management port carrying the automation host, and
+# the image accepted and enforced it, blocking a supplicant-less host and
+# cutting the session doing the pushing (rebuilt lab, 2026-08-28).
+#
+# The skip was the wrong shape of fix. What locked out that one port locks out
+# every port on a switch with no 802.1x infrastructure behind it: with no
+# RADIUS authenticator reachable and no supplicant on the endpoint, a port set
+# to port-control auto authenticates nobody and forwards nothing. On an access
+# switch full of user devices that is not a lockout of the automation host, it
+# is a lockout of the floor. 802.1x is a deployment with a NAC design behind
+# it, not a line in a bulk hardening pass, so this script no longer pushes any
+# part of it and says so in its output instead.
 # V-220636 (storm control) is pushed per-port, not in the flat access_fixes
 # list above - the threshold varies by port speed, and FastEthernet ports
 # are skipped entirely (see storm_control_command()).
@@ -325,8 +316,6 @@ interface_commands = []
 for name in access_ports:
     interface_commands.append(f'interface {name}')
     interface_commands += access_fixes
-    if name not in mgmt_vlan_ports:
-        interface_commands += DOT1X_FIXES
     if name in default_vlan_ports:
         interface_commands.append(f'switchport access vlan {default_access_vlan}')
     if name in storm_control_ports:
@@ -354,13 +343,6 @@ if access_ports:
             f'storm-control broadcast level bps ... (speed-scaled, on {len(storm_control_ports)} of {len(access_ports)} '
             f'access port(s) - not supported on lab vios_l2, kept for real hardware)'
         )
-    dot1x_ports = [name for name in access_ports if name not in mgmt_vlan_ports]
-    applied_fixes['V-220623 (802.1x/MAB)'] = (
-        f'authentication port-control auto; dot1x pae authenticator; mab '
-        f'(on {len(dot1x_ports)} of {len(access_ports)} access port(s) - '
-        f'{len(mgmt_vlan_ports)} on non-user VLANs skipped: port-control auto is enforced '
-        'even on vios_l2 and locks out a supplicant-less management host)'
-    )
 if trunk_ports:
     applied_fixes['V-220640 (static trunk)'] = f'switchport nonegotiate (on {len(trunk_ports)} trunk port(s))'
     applied_fixes['V-220633b/635b (DHCP snooping + DAI trust)'] = f'ip dhcp snooping trust; ip arp inspection trust (on {len(trunk_ports)} trunk port(s))'
@@ -418,8 +400,9 @@ elif not disabled_ports:
 
 print('\nV-220634 (IP Source Guard) is pushed separately by l2_stig_harden_ipsg.py.')
 print('V-220635 (DAI) is pushed separately by l2_stig_harden_dai.py.')
-print('V-220623a/b (dot1x system-auth-control + AAA method) is pushed separately by l2_stig_harden_aaa.py, '
-      'after aaa new-model is confirmed active - only the per-port V-220623 commands above are pushed here.')
+print('\nDeliberately NOT pushed - a finding after this script runs, and meant to be:')
+for rule, why in UNPUSHED_RULES:
+    print(f'  - {rule}: {why}')
 
 print('\nRules satisfied as a side effect of the access-port mode/VLAN push above, not by a dedicated command:')
 for rule in SIDE_EFFECT_RULES:

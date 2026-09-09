@@ -190,18 +190,28 @@ class FakeCRT:
 
 
 def run_walker(tmpdir, sessions, behaviour, host_outputs=None, folder='',
-               reject_host_key_flag=False, banner_lines=0, drop_after_polls=0):
-    """Drive bulk.main() with a stubbed SecureCRT and a stubbed session list."""
+               reject_host_key_flag=False, banner_lines=0, drop_after_polls=0,
+               accept_host_keys=None):
+    """Drive bulk.main() with a stubbed SecureCRT and a stubbed session list.
+
+    accept_host_keys overrides the module's own setting for one run. The
+    default is off - host keys are added deliberately - but the machinery that
+    recovers from a build rejecting the flag only runs when it is on, and that
+    machinery cost an afternoon to find, so it stays covered."""
     fake = FakeCRT(tmpdir, behaviour, host_outputs or OUTPUTS, folder,
                    reject_host_key_flag, banner_lines, drop_after_polls)
     bulk.crt = fake
     capture_l2s.crt = fake
     original_find = bulk.find_sessions
+    original_accept = bulk.ACCEPT_HOST_KEYS
+    if accept_host_keys is not None:
+        bulk.ACCEPT_HOST_KEYS = accept_host_keys
     bulk.find_sessions = lambda _filter='': list(sessions)
     try:
         bulk.main()
     finally:
         bulk.find_sessions = original_find
+        bulk.ACCEPT_HOST_KEYS = original_accept
         bulk.crt = None
         capture_l2s.crt = None
     return fake
@@ -743,26 +753,27 @@ def test_an_unrecognised_failure_says_what_was_tried(tmpdir):
           timed_out.get('comment') == 'Connection timed out', timed_out)
 
 
-def test_host_keys_are_accepted_without_a_dialog(tmpdir):
-    """The first SSH connection to a switch SecureCRT has not seen raises a New
-    Host Key dialog. With a person in the chair that is one press of Enter;
-    in an unattended walk it is a modal box no script can dismiss, and the run
-    stops on switch 1 of six hundred until somebody comes back to the machine.
-    `/ACCEPTHOSTKEYS` makes the same trust decision that button does, without
-    drawing it."""
-    print('\nan unknown host key does not stop the walk')
+def test_host_keys_are_not_accepted_blind(tmpdir):
+    """Host-key checking is the part of SSH that says the switch is the switch.
+    `/ACCEPTHOSTKEYS` answers the New Host Key dialog the way its default button
+    does - convenient for an unattended walk, and also the walk deciding on its
+    own to trust a key nobody has seen. The default is off; a switch whose key
+    is not in SecureCRT's database is a person's decision, once, not a walk's.
+    """
+    print('\nthe walk does not trust host keys it has never seen')
     fake = run_walker(tmpdir, [('sw-a', '10.0.12.1')], {})
-    check('the connect string carries /ACCEPTHOSTKEYS',
-          all('/ACCEPTHOSTKEYS' in text for text in fake.connect_strings),
+    check('no connect string carries /ACCEPTHOSTKEYS',
+          not any('/ACCEPTHOSTKEYS' in text for text in fake.connect_strings),
           fake.connect_strings)
     check('and the session is still named the way SecureCRT expects',
           all(text.startswith('/S "') for text in fake.connect_strings),
           fake.connect_strings)
 
-    # A build old enough not to know the option rejects it rather than ignoring
-    # it. That is one retry, not a lost night - and it is discovered once.
+    # The rest of this covers the recovery for anyone who turns the flag back
+    # on: a build old enough not to know the option rejects it rather than
+    # ignoring it. That is one retry, not a lost night - discovered once.
     older = run_walker(tmpdir, [('sw-b', '10.0.12.2'), ('sw-c', '10.0.12.3')], {},
-                       reject_host_key_flag=True)
+                       reject_host_key_flag=True, accept_host_keys=True)
     check('an older build still gets its switches',
           outcomes(tmpdir).get('sw-b') == 'checklisted'
           and outcomes(tmpdir).get('sw-c') == 'checklisted', outcomes(tmpdir))
@@ -779,7 +790,8 @@ def test_host_keys_are_accepted_without_a_dialog(tmpdir):
     # hand. The recovery is the same one; only the recognising was missing.
     quirky = run_walker(tmpdir, [('sw-d', '10.0.12.4'), ('sw-e', '10.0.12.5')], {},
                         reject_host_key_flag='A hostname is required for the '
-                                             'specific protocol.')
+                                             'specific protocol.',
+                        accept_host_keys=True)
     check('a build that refuses the flag in its own words still gets its switches',
           outcomes(tmpdir).get('sw-d') == 'checklisted'
           and outcomes(tmpdir).get('sw-e') == 'checklisted', outcomes(tmpdir))
@@ -852,7 +864,7 @@ if __name__ == '__main__':
                  test_a_prompt_that_never_comes_says_what_it_saw,
                  test_a_session_that_drops_is_not_reported_as_no_prompt,
                  test_an_unrecognised_failure_says_what_was_tried,
-                 test_host_keys_are_accepted_without_a_dialog,
+                 test_host_keys_are_not_accepted_blind,
                  test_an_unhandled_error_does_not_end_the_walk,
                  test_no_audit_here_falls_back_to_captures,
                  test_stop_file_halts_cleanly):

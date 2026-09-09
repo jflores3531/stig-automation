@@ -439,11 +439,21 @@ class RunLog:
 # switch with SecureCRT's own message, which is the one host-key case worth a
 # human's attention.
 #
-# Set this False to leave the flag off - on a build old enough not to know it,
-# or where policy says host keys are added deliberately. The run then needs the
-# keys already in SecureCRT's database, or a person to click; the fallback
-# below covers the first case by itself.
-ACCEPT_HOST_KEYS = True
+# Host keys are added deliberately, not by a walk. `/ACCEPTHOSTKEYS` makes an
+# unattended run answer the New Host Key dialog the way its default button
+# does, which is convenient and is also the walk deciding, on its own, to trust
+# a key nobody has seen. Host-key checking is the part of SSH that says the
+# switch is the switch; a fleet walk is exactly the wrong place to waive it.
+#
+# The cost is real and worth stating: with this False, a session whose key is
+# not already in SecureCRT's database raises that dialog, and a modal box stops
+# an unattended run until somebody clicks it. Connect to a new switch once by
+# hand - or add its key deliberately - and the walks handle it from then on.
+#
+# Set it True to go back to the old behaviour. The fallback below (dropping an
+# unrecognised connect-string option and retrying) is unrelated and applies
+# either way.
+ACCEPT_HOST_KEYS = False
 
 # Some builds reject an unknown connect-string option rather than ignoring it.
 # Rather than assume a version, the first connection that fails this way drops

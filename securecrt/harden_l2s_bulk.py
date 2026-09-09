@@ -23,10 +23,10 @@ import from the wider repository, and tests/test_securecrt_harden.py asserts
 the two copies are identical so they cannot drift.
 
 WHAT IT PUSHES
-Logging/audit and access control only. Nothing that changes how a switch
-forwards or converges: no spanning-tree mode, no VLAN database, no
-`no <service>` lines, nothing per-interface. See the netmiko script's docstring
-for the rule-by-rule breakdown.
+Logging/audit, access control, and the SSH transport crypto (V-220555/220556).
+Nothing that changes how a switch forwards or converges: no spanning-tree mode,
+no VLAN database, no `no <service>` lines, nothing per-interface. See the
+netmiko script's docstring for the rule-by-rule breakdown.
 
 The one thing the netmiko script reads from inventory.yaml is the syslog
 collectors, and nothing in this folder may read that file, so the run asks for
@@ -98,6 +98,20 @@ ACCESS_CONTROL_FIXES = [
     'login block-for 900 attempts 3 within 120',
 ]
 
+# V-220555/220607 and V-220556/220608 - SSH transport crypto. See the netmiko
+# script for the full reasoning; the short version is that the MAC line is
+# DISA's V-220555 example verbatim, the encryption line deliberately is not
+# (`aes256-gcm aes256-ctr` rather than the example's `aes256-ctr aes192-ctr
+# aes128-ctr` - both FIPS-approved, and this offers less than the example, not
+# more), and both REPLACE the switch's algorithm list rather than adding to it.
+# An image without `aes256-gcm` rejects the whole line and keeps what it had,
+# which lands in this run's rejected column rather than passing unnoticed.
+SSH_CRYPTO_FIXES = [
+    'ip ssh version 2',
+    'ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256',
+    'ip ssh server algorithm encryption aes256-gcm aes256-ctr',
+]
+
 ARCHIVE_LOGGING_FIX = [
     'archive',
     'log config',
@@ -129,8 +143,8 @@ LOG_COLUMNS = ('hostname', 'ip_address', 'outcome', 'rejected', 'comment',
 
 def base_commands():
     """Everything that cannot change who may log in."""
-    return list(LOGGING_FIXES) + list(ACCESS_CONTROL_FIXES) + list(ARCHIVE_LOGGING_FIX) \
-        + list(CONSOLE_FIX)
+    return list(LOGGING_FIXES) + list(ACCESS_CONTROL_FIXES) + list(SSH_CRYPTO_FIXES) \
+        + list(ARCHIVE_LOGGING_FIX) + list(CONSOLE_FIX)
 
 
 SYSLOG_MINIMUM = 2

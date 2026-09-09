@@ -206,6 +206,9 @@ def test_commands_match_the_netmiko_script():
     check('access control fixes, in order',
           harden.ACCESS_CONTROL_FIXES == list(other['ACCESS_CONTROL_FIXES'].values()),
           harden.ACCESS_CONTROL_FIXES)
+    check('ssh crypto fixes, in order',
+          harden.SSH_CRYPTO_FIXES == list(other['SSH_CRYPTO_FIXES'].values()),
+          f"securecrt={harden.SSH_CRYPTO_FIXES}\n       netmiko={list(other['SSH_CRYPTO_FIXES'].values())}")
     check('the archive block, including its two closing exits',
           harden.ARCHIVE_LOGGING_FIX == other['ARCHIVE_LOGGING_FIX'],
           harden.ARCHIVE_LOGGING_FIX)
@@ -227,6 +230,8 @@ def test_the_default_run_touches_no_vty_line(tmpdir):
           sent)
     check('the logging fixes were sent',
           all(command in sent for command in harden.LOGGING_FIXES), sent)
+    check('and the ssh crypto lines',
+          all(command in sent for command in harden.SSH_CRYPTO_FIXES), sent)
     check('so was the archive block, with its exits',
           sent.count('exit') >= 2 and 'hidekeys' in sent, sent)
     check('and the console timeout', 'line con 0' in sent, sent)

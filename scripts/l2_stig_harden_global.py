@@ -93,10 +93,25 @@ CONSOLE_EXEC_TIMEOUT_FIX = ['line con 0', 'exec-timeout 5 0']
 # on the mistaken assumption it would satisfy V-220607 too, but V-220607's audit
 # check looks at the separate `algorithm mac` line specifically, so it always
 # failed live until this was added.
+#
+# The MAC line is DISA's V-220555 example verbatim. The encryption line is not:
+# DISA's V-220556 example is `aes256-ctr aes192-ctr aes128-ctr`, and this pushes
+# `aes256-gcm aes256-ctr`. The rule's finding sentence asks for "a FIPS 140-2
+# approved algorithm", not for the example's list - AES-GCM (SP 800-38D) and
+# AES-CTR (SP 800-38A) are both approved, and dropping the 128- and 192-bit
+# entries narrows what can be negotiated rather than widening it. An assessor
+# reading the Check Content will see a list that is not the one printed there,
+# so the reason is written here rather than left to be reconstructed.
+#
+# Both lines REPLACE the switch's algorithm list rather than adding to it. An
+# image that does not have `aes256-gcm` rejects the whole line and keeps its
+# existing list, which leaves the rule a finding on a run that otherwise looks
+# clean - check `show running-config | include ip ssh` after a push, or the
+# rejected column of the SecureCRT walk's log.
 SSH_ENCRYPTION_FIX = [
     'ip ssh version 2',
-    'ip ssh server algorithm mac hmac-sha2-256',
-    'ip ssh server algorithm encryption aes256-ctr aes192-ctr aes128-ctr',
+    'ip ssh server algorithm mac hmac-sha2-512 hmac-sha2-256',
+    'ip ssh server algorithm encryption aes256-gcm aes256-ctr',
 ]
 
 # V-220586: disable unnecessary/nonsecure services - idempotent, safe to push
