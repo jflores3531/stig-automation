@@ -342,6 +342,16 @@ def test_the_confirmation_says_what_it_will_do(tmpdir):
     check('and lists the commands', 'logging userinfo' in confirm, confirm)
     check('and says startup-config is not written, so a reload reverts',
           'startup-config is NOT written' in confirm, confirm)
+    check('and names the switch, since a one-switch scope is a prefix match',
+          'node-a/sw-1' in confirm, confirm)
+
+    # A scope typed for one switch that quietly took in its neighbours has to
+    # be visible in the box, not just as a count that reads plausibly.
+    many = run_harden(tmpdir, [('node-a/sw-{0}'.format(n), '10.0.4.{0}'.format(n))
+                               for n in range(1, 20)])
+    big = ' '.join(message for title, message in many.messages if 'confirm' in title.lower())
+    check('a long list is truncated rather than filling the screen',
+          'and 7 more' in big, big)
 
 
 if __name__ == '__main__':

@@ -75,6 +75,9 @@ OUTPUT_DIR = r'C:\Documents\netauto_hardening'
 # end of the current switch.
 STOP_FILE = 'STOP'
 
+# How many session names the confirmation lists before it stops naming them.
+SESSIONS_SHOWN = 12
+
 # Kept identical to scripts/l2_stig_harden_logging_access.py, which cannot be
 # imported from here - see this file's docstring, and the test that pins them
 # equal. Order matters: the archive block descends two sub-modes and closes
@@ -305,12 +308,19 @@ def main():
         .format(CONCURRENT_SESSIONS),
         'Harden - include the vty session limit?', 4 | 48) == 6  # MB_YESNO | MB_ICONWARNING
 
+    # Named, not just counted. The scope prompt is a prefix match, so a filter
+    # meant for one switch quietly takes in its neighbours - `10.1.2.3` also
+    # matches `10.1.2.30`. On a run that configures, the list is the check.
+    listed = '\n'.join('  ' + path for path, _host in sessions[:SESSIONS_SHOWN])
+    if len(sessions) > SESSIONS_SHOWN:
+        listed += '\n  ...and {0} more'.format(len(sessions) - SESSIONS_SHOWN)
+
     preview = '\n'.join('  ' + command for command in commands)
     if with_vty:
         preview += '\n\n  ...then the vty block, its range read from each switch:\n' + \
                    '\n'.join('    ' + command for command in vty_fixes(4, CONCURRENT_SESSIONS))
     if crt.Dialog.MessageBox(
-            '{0} device(s) to configure{1}.\n\n'
+            '{0} device(s) to configure{1}:\n{4}\n\n'
             'THIS WRITES TO running-config ON EVERY ONE OF THEM.\n\n'
             'Commands:\n{2}\n\n'
             'startup-config is NOT written, so a reload reverts any switch until you save it '
@@ -318,7 +328,7 @@ def main():
             'To stop early, create a file named {3} in the log folder.\n\n'
             'Begin?'.format(len(sessions),
                             ' ({0} duplicate session(s) collapsed)'.format(len(duplicates))
-                            if duplicates else '', preview, STOP_FILE),
+                            if duplicates else '', preview, STOP_FILE, listed),
             'Harden - confirm', 4 | 48) != 6:
         return
 
