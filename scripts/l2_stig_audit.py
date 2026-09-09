@@ -813,36 +813,63 @@ def _admin_activity_logged(cfg):
 # state - `no ip http server` is pushed by the hardening scripts - because then
 # `ip http max-connections` is configuration for a service that is not running,
 # and the vty lines are the only thing actually limiting anything.
-def _disabled_vty_ranges(cfg):
-    """Ranges of vty lines answering nothing, as ('line vty 2 4', count) pairs."""
-    disabled = []
+def _vty_line_states(cfg):
+    """(open, closed) counts of vty lines, by what their `transport input` says.
+
+    A switch does not have five vty lines because DISA's example configures
+    five. IOS XE ships `line vty 0 4` AND `line vty 5 15`, so a switch hardened
+    only on the first range still answers on eleven more - and reporting that
+    as a session limit is the false PASS this exists to prevent. Every range in
+    the config is counted, not the one the example happens to show.
+
+    A range with no `transport input` of its own is counted open: that is what
+    it is, and assuming otherwise would be guessing in the direction of a pass.
+
+    Counted as sets of line numbers rather than by adding range sizes up,
+    because ranges can overlap - `line vty 0 4` and `line vty 2 4` name the
+    same three lines twice - and adding them would report more lines than the
+    switch has. Where a line falls in both, closed wins: `transport input none`
+    is an explicit closure and the broader range is what it was carved out of.
+    """
+    open_lines, closed_lines = set(), set()
     for chunk in re.split(r'^(?=line )', cfg, flags=re.M):
         header = re.match(r'line vty (\d+)(?:\s+(\d+))?', chunk)
-        if not header or not re.search(r'^\s*transport input none\s*$', chunk, re.M):
+        if not header:
             continue
         first = int(header.group(1))
         last = int(header.group(2)) if header.group(2) else first
-        disabled.append((chunk.splitlines()[0].strip(), last - first + 1))
-    return disabled
+        numbers = set(range(first, last + 1))
+        if re.search(r'^\s*transport input none\s*$', chunk, re.M):
+            closed_lines |= numbers
+        else:
+            open_lines |= numbers
+    return len(open_lines - closed_lines), len(closed_lines)
 
 
 def _session_limit_check(cfg):
     http_m = re.search(r'^ip http max-connections (\d+)', cfg, re.M)
     session_m = re.search(r'^\s*session-limit (\d+)', cfg, re.M)
-    disabled = _disabled_vty_ranges(cfg)
-    if http_m or session_m or disabled:
-        found = []
-        if session_m:
-            found.append(f'session-limit {session_m.group(1)}')
-        for header, count in disabled:
-            found.append(f'`{header}` answers nothing (`transport input none`), '
-                         f'{count} line(s) taken out of service')
-        if http_m:
-            found.append(f'ip http max-connections {http_m.group(1)}')
-        return True, f'found: {", ".join(found)}'
-    return False, ('no session limit: none of `line vty ... session-limit <n>`, '
-                   '`transport input none` on unused vty lines, or '
-                   '`ip http max-connections <n>`')
+    open_lines, closed_lines = _vty_line_states(cfg)
+
+    found = []
+    if session_m:
+        found.append(f'session-limit {session_m.group(1)}')
+    if closed_lines:
+        found.append(f'{closed_lines} vty line(s) taken out of service '
+                     '(`transport input none`)')
+    if http_m:
+        found.append(f'ip http max-connections {http_m.group(1)}')
+    if not found:
+        return False, ('no session limit: none of `line vty ... session-limit <n>`, '
+                       '`transport input none` on unused vty lines, or '
+                       '`ip http max-connections <n>`')
+
+    # Said on every verdict, pass or not. A limit configured on one range while
+    # another answers is the shape that reads as compliant and is not, and the
+    # only way a reviewer sees it is if the count is in front of them.
+    return True, (f'{", ".join(found)}; {open_lines} vty line(s) can still answer'
+                  + (' - check that is the organization-defined number, since ranges beyond '
+                     '`line vty 0 4` are configured separately' if open_lines > 5 else ''))
 
 
 # V-220589/590/591/592/593/594: password complexity, each is one sub-command

@@ -79,6 +79,7 @@ reason it is not the default.
 """
 
 import argparse
+import re
 
 import netauto
 
@@ -137,29 +138,54 @@ CONCURRENT_SESSIONS = 2
 EXEC_TIMEOUT = 'exec-timeout 5 0'
 
 
-def vty_fixes(sessions=CONCURRENT_SESSIONS):
+def _line_range(first, last):
+    """`line vty 0 4`, or `line vty 4` where the range is a single line."""
+    return f'line vty {first} {last}' if last > first else f'line vty {first}'
+
+
+def vty_fixes(highest_vty, sessions=CONCURRENT_SESSIONS):
     """The vty lines, in the order they must be sent. Off by default - see
     --with-vty.
 
-    `session-limit` first, on the full range, so it is on every line an
-    assessor looks at. Then the range is split: the first `sessions` lines
-    answer SSH, the rest answer nothing. Splitting after setting the limit
-    means no line is ever left without one."""
+    `highest_vty` is read off the switch rather than assumed, and that is the
+    whole reason this takes an argument. A switch does not have five vty lines
+    because DISA's example configures five: IOS XE ships `line vty 0 4` AND
+    `line vty 5 15`, so a script that hardens 0-4 and stops leaves eleven more
+    answering SSH and its own claim of a two-session limit is false. Whatever
+    the highest configured line is, everything above the allowed count is taken
+    out of service.
+
+    `session-limit` goes on the full range first, so it is on every line an
+    assessor looks at, and the split follows - which means no line is ever left
+    without one."""
     last_open = sessions - 1
     commands = [
-        'line vty 0 4',
+        _line_range(0, highest_vty),
         f'session-limit {sessions}',
         EXEC_TIMEOUT,
-        'transport input ssh',
-        f'line vty 0 {last_open}' if last_open else 'line vty 0',
+        _line_range(0, last_open),
         'transport input ssh',
     ]
-    if last_open < 4:
-        commands += [
-            f'line vty {last_open + 1} 4' if last_open + 1 < 4 else 'line vty 4',
-            'transport input none',
-        ]
+    if last_open < highest_vty:
+        commands += [_line_range(last_open + 1, highest_vty), 'transport input none']
     return commands
+
+
+def highest_vty_line(net_connect):
+    """The highest vty line number the switch actually has configured.
+
+    Falls back to 4 - DISA's own example range - if nothing can be read, which
+    keeps the script working against a device that answers this oddly rather
+    than having it push nothing. The fallback is reported, never silent: a
+    wrong answer here is lines left answering that the run claims are closed."""
+    try:
+        output = net_connect.send_command('show running-config | include ^line vty')
+    except Exception:
+        return 4, False
+    numbers = [int(n) for line in (output or '').splitlines()
+               for n in re.findall(r'\d+', line)]
+    return (max(numbers), True) if numbers else (4, False)
+
 
 
 # The console line is not the vty lines and is not held back with them. An
@@ -217,13 +243,6 @@ if len(syslog_servers) >= 2:
 
 commands += CONSOLE_FIX
 
-# Last, because everything above is reversible from any session and this
-# decides which sessions there can be.
-if args.with_vty:
-    commands += vty_fixes(args.sessions)
-    applied_fixes['V-220518/220570 + V-220544/220596 (vty session limit + exec-timeout)'] = \
-        '; '.join(vty_fixes(args.sessions))
-
 # What is left undone by not pushing the vty lines, said here rather than
 # discovered in the next audit. Both rules stay findings until they are run:
 # V-220518 has nothing else that could satisfy it, and V-220544 asks for the
@@ -239,8 +258,14 @@ if args.dry_run:
     for command in commands:
         print('  ' + command)
     if args.with_vty:
-        print(f'\nAfter this the switch would accept {args.sessions} concurrent SSH session(s) '
-              f'on vty 0-{args.sessions - 1}; vty {args.sessions}-4 would answer nothing.')
+        # The real run reads the highest vty line off the switch first, so the
+        # range shown here is DISA's example rather than a promise about yours.
+        print('\nPlus the vty block, whose range is read off the switch at run time. '
+              'Against a switch configured `line vty 0 4` it would be:')
+        for command in vty_fixes(4, args.sessions):
+            print('  ' + command)
+        print(f'\nOn a switch that also has `line vty 5 15` - the IOS XE default - the closing '
+              f'range covers those too, or the {args.sessions}-session limit would be untrue.')
     else:
         print('\nNo vty line is touched, so nothing here can change who may log in.')
         print('Still a finding afterwards, until --with-vty is run:')
@@ -256,6 +281,21 @@ net_connect = netauto.connect(device_name, device_info, username, password)
 if net_connect is None:
     raise SystemExit(1)
 
+# Read before writing, and only for this: how many vty lines the switch has.
+# Appended last, because everything above is reversible from any session that
+# can reach the switch and this decides which sessions there can be.
+highest_vty, read_ok = 4, True
+if args.with_vty:
+    highest_vty, read_ok = highest_vty_line(net_connect)
+    if not read_ok:
+        print('Could not read the vty ranges from the switch; assuming `line vty 0 4`, '
+              "DISA's example. If this switch also has `line vty 5 15` those lines will be "
+              'left answering and the session limit below will not be true - check by hand.')
+    vty_commands = vty_fixes(highest_vty, args.sessions)
+    commands += vty_commands
+    applied_fixes['V-220518/220570 + V-220544/220596 (vty session limit + exec-timeout)'] = \
+        '; '.join(vty_commands)
+
 net_connect.send_config_set(commands)
 netauto.log_push('l2_stig_harden_logging_access.py', device_name, username, commands)
 
@@ -268,9 +308,11 @@ if len(syslog_servers) < 2:
           "inventory.yaml's services section, and the rule asks for two.")
 
 if args.with_vty:
+    closed = 'none' if args.sessions > highest_vty else f'{args.sessions}-{highest_vty}'
     print(f'\nThe switch now accepts {args.sessions} concurrent SSH session(s): vty '
-          f'0-{args.sessions - 1} answer SSH, vty {args.sessions}-4 answer nothing. A further '
-          'session is refused - verify you can still open a new one before closing this session.')
+          f'0-{args.sessions - 1} answer SSH, vty {closed} answer nothing '
+          f'(read from the switch: its highest vty line is {highest_vty}). A further session is '
+          'refused - verify you can still open a new one before closing this session.')
 else:
     print('\nNo vty line was touched, so who may log in is exactly as it was.')
     print('Still a finding, until this is re-run with --with-vty:')

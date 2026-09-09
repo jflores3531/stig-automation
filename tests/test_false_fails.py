@@ -195,8 +195,10 @@ def test_session_limit_by_reducing_vty_lines(tmpdir):
     line = verdict(report, 'V-220518')
     check('the switch is not reported as having no session limit',
           'PASS' in line, line)
-    check('and the reason says which lines were taken out of service',
-          'transport input none' in line and 'line vty 2 4' in line, line)
+    check('and the reason says how many lines were taken out of service',
+          'transport input none' in line and '3 vty line(s) taken out of service' in line, line)
+    check('and how many can still answer, which is the number that matters',
+          '2 vty line(s) can still answer' in line, line)
 
     # Still a finding when nothing limits anything - the point is to recognise
     # a third shape, not to stop failing.
@@ -204,6 +206,24 @@ def test_session_limit_by_reducing_vty_lines(tmpdir):
     none_at_all = re.sub(r'^\s*session-limit \d+\n', '', none_at_all, flags=re.M)
     line = verdict(report_for(tmpdir, 'nolimit', running_config=none_at_all), 'V-220518')
     check('a switch with no limit of any kind is still a finding', 'FAIL' in line, line)
+
+    # The direction that matters more, because a false PASS on a compliance
+    # tool is worse than a false FAIL. IOS XE ships `line vty 0 4` AND
+    # `line vty 5 15`, so a switch hardened only on the first range answers on
+    # eleven more - and a check that stops at "some lines were closed" calls
+    # that a session limit. It cannot be failed outright: the rule's number is
+    # organization-defined and 13 is a number. What it must not do is stay
+    # silent about how many lines can still answer.
+    with_high_range = reduced.replace(
+        'line vty 2 4\n transport input none',
+        'line vty 2 4\n transport input none\n!\nline vty 5 15\n transport input ssh')
+    line = verdict(report_for(tmpdir, 'vty515', running_config=with_high_range), 'V-220518')
+    check('lines left answering beyond vty 0-4 are counted, not overlooked',
+          'can still answer' in line, line)
+    check('and the count is the real one, not the five DISA\'s example shows',
+          '13 vty line(s) can still answer' in line, line)
+    check('with the reason pointing at the range that is easy to miss',
+          'line vty 0 4' in line, line)
 
 
 def test_a_wildcard_this_cannot_read_is_not_a_finding(tmpdir):
