@@ -976,8 +976,27 @@ CHECKS['V-220696'] = lambda cfg: _no_access_ports_on_native_vlan(cfg, native_vla
 CHECKS['V-220690'] = lambda cfg: _disabled_ports_on_unused_vlan(cfg, unused_vlan, interface_statuses)
 CHECKS['V-220680'] = lambda cfg: _root_guard_check(cfg, root_ports)
 
+# What each rule was actually read from, where running-config alone did not
+# answer it. Everything absent takes the default. See l2_stig_audit's own
+# RULE_COMMANDS for why this is written out rather than inferred.
+RULE_COMMANDS = {
+    # NX-OS omits the VTP password from running-config, same as IOS.
+    'V-220676': ('show vtp password',),
+    # Which VLANs are genuine user VLANs is a fact about the VLAN database.
+    'V-220684': ('show running-config', 'show vlan brief'),
+    'V-220686': ('show running-config', 'show vlan brief'),
+    # NX-OS does not render enough per-interface state to tell an
+    # administratively shut port from any other down one, so this one reads the
+    # status table as well - see _disabled_ports_on_unused_vlan.
+    'V-220690': ('show running-config', 'show interface status'),
+    # Root Guard must never land on this switch's own root port, and which port
+    # that is comes off the STP topology.
+    'V-220680': ('show running-config', 'show spanning-tree'),
+}
+
 stig_common.run_stig_audit(
     device_name, device_info, CHECKLIST_PATH, CHECKS,
+    rule_commands=RULE_COMMANDS,
     title='NX-OS STIG audit',
     username=username, password=password,
     to_cklb=args.to_cklb,

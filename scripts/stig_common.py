@@ -17,7 +17,8 @@ SEVERITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
 
 def run_stig_audit(device_name, device_info, checklist_path, checks, title, username, password,
                     not_automated_note='need manual review or external infrastructure',
-                    session=None, to_cklb=None, target_data=None, captured_on=None):
+                    session=None, to_cklb=None, target_data=None, captured_on=None,
+                    rule_commands=None, default_commands=('show running-config',)):
     """Connect to a device, check its running-config against a DISA STIG checklist's
     rules using `checks` (group_id -> predicate(running_config) -> bool, or
     -> (bool, reason) to show why a rule passed/failed, or -> (None, reason)
@@ -35,6 +36,20 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
     way - the only thing that changes is where the output came from. The
     stand-in implements send_command() and a no-op disconnect(), which is why
     the flow below needs no second branch.
+
+    `rule_commands` maps a rule to the commands whose output actually answered
+    it, for the rules the default does not describe - a live `show snmp user`,
+    say, rather than running-config. Anything absent takes `default_commands`.
+    The pair is what puts "Inspected with: ..." under each verdict in the report
+    and in the exported checklist, so a reviewer asking how a rule was
+    determined reads the answer beside it instead of reconstructing it.
+
+    Opt-in on purpose: an audit that passes no map claims nothing, which is the
+    right default for one whose commands have not been mapped. Naming a command
+    a rule did not read would be worse than naming none - it is evidence about
+    evidence, and wrong there is not recoverable by looking harder at the
+    switch. A rule with no check inspected nothing and is given no commands at
+    all, whatever the map says.
 
     `target_data` is what the checklist says the device IS - host name, IP, MAC,
     FQDN - as collect_target_data() reads them off the same output the verdicts
@@ -57,6 +72,9 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
 
     results = {'PASS': 0, 'FAIL': 0, 'NOT APPLICABLE': 0, 'NOT AUTOMATED': 0}
     findings = []
+    # Kept beside the findings rather than folded into them: every caller of
+    # this function reads the 4-tuple, and a rule's evidence is not a verdict.
+    commands_by_rule = {}
 
     for rule in rules:
         group_id = rule['group_id']
@@ -64,8 +82,11 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
         reason = None
 
         if check is None:
+            # Nothing looked at this rule, so nothing is claimed to have.
             status = 'NOT AUTOMATED'
         else:
+            commands_by_rule[group_id] = tuple(
+                (rule_commands or {}).get(group_id, default_commands))
             result = check(running_config)
             passed, reason = result if isinstance(result, tuple) else (result, None)
             if isinstance(passed, str):
@@ -84,6 +105,9 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
         print(f"[{rule['severity'].upper():6}] {status:14} {group_id}  {rule_title}")
         if reason:
             print(f"           {reason}")
+        inspected = describe_inspection(commands_by_rule.get(group_id, ()))
+        if inspected:
+            print(f"           {inspected}")
         print()
 
     # Last, so a checklist is only written for a run that got far enough to
@@ -95,7 +119,8 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
             output_path = resolve_cklb_path(to_cklb, checklist_path, device_name,
                                             captured_on=captured_on, target_data=target_data)
             print(write_cklb(checklist_path, output_path, findings, device_name, source, title,
-                             device_info=device_info, target_data=target_data))
+                             device_info=device_info, target_data=target_data,
+                             commands_by_rule=commands_by_rule))
         except (ChecklistError, OSError) as checklist_error:
             # The report above is complete and correct; only the file failed.
             # Said plainly, and with a non-zero exit so a script that asked for
@@ -514,21 +539,41 @@ def resolve_cklb_path(to_cklb, checklist_path, device_name, captured_on=None, ta
 NOTE_IN_FINDING_DETAILS = ('FAIL',)
 
 
-def _audit_note(reason):
-    """What goes in the box: why the rule got the verdict it got, and nothing
-    else. No status - STIG Viewer already shows that beside the box - and no
-    provenance, which would be the same sentence 64 times in one file. What
-    read this switch and when is recorded once, in the asset block's own
-    comment, where it is said once instead of per rule.
+def describe_inspection(commands):
+    """The "Inspected with: ..." line for a rule, or '' where nothing ran.
 
-    A rule with no reason leaves an empty box rather than a sentence saying so.
-    That is the honest rendering of a rule nothing looked at, and it reads in
-    STIG Viewer exactly as it should: unanswered."""
-    return reason or ''
+    One line, the commands backticked in the order they were read. A rule with
+    no commands - one nothing checked - gets nothing, because the alternative
+    is a checklist claiming a command was run against a rule it never
+    answered."""
+    if not commands:
+        return ''
+    return 'Inspected with: ' + ', '.join('`{0}`'.format(command) for command in commands)
+
+
+def _audit_note(reason, commands=()):
+    """What goes in the box: why the rule got the verdict it got, and what was
+    read to decide it. No status - STIG Viewer already shows that beside the
+    box - and no provenance of the run itself, which would be the same sentence
+    64 times in one file. What read this switch and when is recorded once, in
+    the asset block's own comment.
+
+    The command is the exception to that "said once" rule, and it earns it by
+    differing per rule: an assessor reading a verdict asks how it was
+    determined, and for `show snmp user` or `show ip ssh` the answer is not the
+    one the asset block implies.
+
+    A rule with neither reason nor commands leaves an empty box rather than a
+    sentence saying so. That is the honest rendering of a rule nothing looked
+    at, and it reads in STIG Viewer exactly as it should: unanswered."""
+    inspected = describe_inspection(commands)
+    if reason and inspected:
+        return '{0}\n\n{1}'.format(reason, inspected)
+    return reason or inspected or ''
 
 
 def write_cklb(checklist_path, output_path, findings, device_name, source, title,
-               device_info=None, run_at=None, target_data=None):
+               device_info=None, run_at=None, target_data=None, commands_by_rule=None):
     """Write `findings` into a copy of the checklist as a STIG Viewer 3 .cklb.
 
     findings is run_stig_audit's list of (status, rule, group_id, reason).
@@ -573,7 +618,7 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
                 continue
             status, reason = answered[group_id]
             rule['status'] = CKLB_STATUS[status]
-            note = _audit_note(reason)
+            note = _audit_note(reason, (commands_by_rule or {}).get(group_id, ()))
 
             # The box this verdict does not use is cleared rather than left
             # alone: a rule that fails today and passes tomorrow would otherwise

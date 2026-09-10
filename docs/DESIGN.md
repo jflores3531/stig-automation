@@ -260,6 +260,24 @@ With that one automated, **every rule in the IOS XE checklist returns a real ver
 
 `tests/test_manual_review_rules.py` pins all six, in both directions — the newly automated verdicts, and the cases that must still report `NOT AUTOMATED` rather than a guess.
 
+## Each verdict says what was read to reach it
+
+Every answered rule now carries one more line, in the report and in the exported checklist's box:
+
+```
+Inspected with: `show ip ssh`, `show running-config`
+```
+
+The reason says why the rule got its verdict; this says where that came from. For most rules the answer is `show running-config` and reading it costs nothing. For the ones it is not — `show snmp user` for the SNMPv3 rules, `show vtp password` for VTP, `show version` for the release rule, `show spanning-tree` for Root Guard, `show vlan brief` for the DHCP snooping and DAI coverage, `show ip ssh` for SSHv2 — a reviewer asking how the rule was determined would otherwise have to reconstruct it from the code.
+
+The map is written out per rule rather than inferred from the closures. Inference here would be clever and unverifiable, and this is evidence about evidence: naming a command a check did not read is a wrong claim inside a signed checklist, and unlike a wrong verdict nobody can catch it by looking harder at the switch. `tests/test_inspection_commands.py` pins every entry against the set of commands the collector actually runs, so a command that is not collected cannot be claimed.
+
+**A rule with no check claims nothing.** NOT AUTOMATED covers two different situations and only one of them read anything: a rule with no entry in `CHECKS` was skipped, while a check that *returns* `'NOT AUTOMATED'` — `_user_facing_trunk_check`, say — did read the config and then decided the rule needs a human. The first gets no line at all, because "Inspected with: `show running-config`" under a rule nothing examined is the checklist misrepresenting its own work. The second gets one, because it is as true there as on a PASS.
+
+Where the config sources interface templates, every rule's line names the `show template interface source user <name>` commands too. That is not padding: with templates expanded, every check really did read those bodies, and a verdict about a templated port was reached partly from them.
+
+The mechanism is opt-in. An audit that passes no `rule_commands` map claims nothing, which is the right default for one whose commands have not been mapped — all three audits here pass one.
+
 ## The report, as a file STIG Viewer opens
 
 A printed report is read once and retyped into STIG Viewer rule by rule, and that transcription is the least reliable step in the whole exercise: 64 rules, four statuses, and a free-text box per rule that nobody is filling in carefully by rule 50. STIG Viewer 3's format is `.cklb` — the same JSON these audits already read their rules out of — so `--to-cklb` writes the verdicts back into a copy of it.

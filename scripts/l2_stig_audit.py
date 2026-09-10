@@ -2393,6 +2393,39 @@ CHECKS['V-220605'] = lambda cfg: _snmpv3_user_live_check(snmp_user_output, requi
 # `show version` like the other live-state checks rather than the config.
 CHECKS['V-220621'] = lambda cfg: _ios_release_supported_check(version_output)
 
+# What each rule was actually read from, for the rules running-config alone does
+# not answer. Everything absent takes the default, `show running-config`.
+#
+# This is evidence about evidence, so it is written out per rule rather than
+# inferred: naming a command a check did not read would be a wrong claim in a
+# signed checklist, and unlike a wrong verdict nobody can catch it by looking
+# harder at the switch. tests/test_inspection_commands.py pins every entry
+# against the commands the collector actually runs, so a command that is not
+# collected cannot be claimed, and against the CHECKS dict, so a rule that
+# grows a new data source is caught when its entry stops matching.
+#
+# Keyed by IOS rule ID, like CHECKS, and re-keyed with it below.
+RULE_COMMANDS = {
+    # SNMPv3 users never appear in running-config - see _snmpv3_user_live_check.
+    'V-220604': ('show snmp user',),
+    'V-220605': ('show snmp user',),
+    # The VTP password is not in running-config either.
+    'V-220624': ('show vtp password',),
+    # The release is in the config; the model that decides whether that release
+    # is supported is not.
+    'V-220621': ('show version',),
+    # Root Guard must never be on this switch's own root port, and which port
+    # that is comes off the STP topology, not the config.
+    'V-220629': ('show running-config', 'show spanning-tree'),
+    # Which VLANs are genuine user VLANs is a fact about the VLAN database.
+    'V-220633': ('show running-config', 'show vlan brief'),
+    'V-220635': ('show running-config', 'show vlan brief'),
+    # SSHv2 is settled by `show ip ssh` first - a 9300 never writes
+    # `ip ssh version 2` - with the config line as the fallback.
+    'V-220607': ('show ip ssh', 'show running-config'),
+    'V-220608': ('show ip ssh', 'show running-config'),
+}
+
 # Re-key onto the IOS XE STIG last, after the live-discovery entries above have
 # been added, so those carry over too. Anything ios_xe_rule_map leaves out has
 # no entry here and run_stig_audit reports it NOT AUTOMATED - the honest verdict
@@ -2418,6 +2451,9 @@ if args.checklist == 'ios-xe':
     audit_title = 'STIG audit (Cisco IOS XE Switch L2S/NDM)'
     CHECKS = ios_xe_rule_map.translate(CHECKS)
     CHECKS.update(IOS_XE_ONLY_CHECKS)
+    # Re-keyed by the same map, so a rule's commands follow its check across
+    # the two books rather than being written out twice.
+    RULE_COMMANDS = ios_xe_rule_map.translate(RULE_COMMANDS)
 else:
     checklist_path = CHECKLIST_PATH
     audit_title = 'STIG audit'
@@ -2428,6 +2464,15 @@ else:
 if template_bodies:
     CHECKS = {rule_id: stig_common.through_templates(check, template_bodies)
               for rule_id, check in CHECKS.items()}
+    # Every rule now reads the expanded config, so every rule read these too.
+    # Said per rule because it is true per rule: a verdict about a templated
+    # port was reached partly from the template's own body, and a reviewer
+    # checking the work needs to know which command produced it.
+    template_reads = tuple(capture.template_command(name) for name in sorted(template_bodies))
+    RULE_COMMANDS = {
+        rule_id: tuple(RULE_COMMANDS.get(rule_id, ('show running-config',))) + template_reads
+        for rule_id in CHECKS
+    }
 
 stig_common.run_stig_audit(
     device_name, device_info, checklist_path, CHECKS,
@@ -2437,4 +2482,5 @@ stig_common.run_stig_audit(
     to_cklb=args.to_cklb,
     target_data=target_data,
     captured_on=captured_on,
+    rule_commands=RULE_COMMANDS,
 )
