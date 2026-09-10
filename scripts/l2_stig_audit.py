@@ -2426,6 +2426,110 @@ RULE_COMMANDS = {
     'V-220608': ('show ip ssh', 'show running-config'),
 }
 
+# The filtered command that shows a rule's evidence on the switch.
+#
+# NOT what this audit ran. It reads `show running-config` once and greps the
+# text in Python, so claiming `| include ...` under "Inspected with" would be
+# describing a command nobody sent - the one thing test_inspection_commands.py
+# exists to prevent. These are printed under their own label, for the reviewer
+# who wants to see the evidence on the device rather than take the report's
+# word for it, and for whoever has to re-check a finding six months later.
+#
+# `| section <regex>` prints a block and everything indented under it;
+# `| include <regex>` prints matching lines only. A rule with no entry here
+# gets no line at all: a filter that shows nothing reads as "the switch is not
+# configured for this", which is worse than not offering one.
+#
+# tests/test_inspection_commands.py applies every filter below to a config that
+# satisfies the rule and requires non-empty output, so a filter that cannot
+# show its own evidence fails the suite.
+_SECTION_INTERFACE = 'show running-config | section ^interface'
+_SECTION_LINE = 'show running-config | section ^line '
+_SECTION_ARCHIVE = 'show running-config | section ^archive'
+
+RULE_VERIFY = {
+    # Management sessions and the lines that carry them.
+    'V-220570': ('show running-config | section ^line vty',),
+    'V-220575': ('show running-config | section ^line vty',
+                 'show running-config | section ^ip access-list'),
+    'V-220581': ('show running-config | section ^ip access-list',),
+    'V-220596': (_SECTION_LINE,),
+    'V-220576': ('show running-config | include ^login block-for',),
+    'V-220577': ('show running-config | include ^banner',),
+
+    # The archive block answers eight rules on the same evidence.
+    'V-220571': (_SECTION_ARCHIVE,),
+    'V-220572': (_SECTION_ARCHIVE,),
+    'V-220573': (_SECTION_ARCHIVE,),
+    'V-220574': (_SECTION_ARCHIVE,),
+    'V-220582': (_SECTION_ARCHIVE,),
+    'V-220597': (_SECTION_ARCHIVE,),
+    'V-220609': (_SECTION_ARCHIVE,),
+    'V-220611': (_SECTION_ARCHIVE,),
+    'V-220578': ('show running-config | include ^logging userinfo', _SECTION_ARCHIVE),
+
+    # Logging and timestamps.
+    'V-220580': ('show running-config | include ^service timestamps',),
+    'V-220599': ('show running-config | include ^logging buffered',),
+    'V-220600': ('show running-config | include ^logging trap',),
+    'V-220620': ('show running-config | include ^logging host',),
+    'V-220612': ('show running-config | include ^login on-',),
+
+    # Files and software.
+    'V-220583': ('show running-config | include ^file privilege',),
+    'V-220584': ('show running-config | include ^file privilege',),
+    'V-220585': ('show running-config | include ^file privilege',),
+
+    # Accounts, passwords, AAA.
+    'V-220587': ('show running-config | include ^username',),
+    'V-220589': ('show running-config | section ^aaa common-criteria policy',),
+    'V-220590': ('show running-config | section ^aaa common-criteria policy',),
+    'V-220591': ('show running-config | section ^aaa common-criteria policy',),
+    'V-220592': ('show running-config | section ^aaa common-criteria policy',),
+    'V-220593': ('show running-config | section ^aaa common-criteria policy',),
+    'V-220594': ('show running-config | section ^aaa common-criteria policy',),
+    'V-220595': ('show running-config | include ^service password-encryption|^enable secret',),
+    'V-220617': ('show running-config | include ^radius server|^aaa group server',),
+
+    # Time and transport crypto.
+    'V-220601': ('show running-config | include ^ntp',),
+    'V-220606': ('show running-config | include ^ntp',),
+    'V-220607': ('show running-config | include ^ip ssh',),
+    'V-220608': ('show running-config | include ^ip ssh',),
+
+    # Layer 2, mostly per-interface.
+    'V-220629': (_SECTION_INTERFACE,),
+    'V-220630': ('show running-config | include ^spanning-tree portfast', _SECTION_INTERFACE),
+    'V-220631': ('show running-config | include ^spanning-tree loopguard',),
+    'V-220632': (_SECTION_INTERFACE,),
+    'V-220633': ('show running-config | include ^ip dhcp snooping', _SECTION_INTERFACE),
+    'V-220634': (_SECTION_INTERFACE,),
+    'V-220635': ('show running-config | include ^ip arp inspection', _SECTION_INTERFACE),
+    'V-220636': (_SECTION_INTERFACE,),
+    'V-220637': ('show running-config | include ^ip igmp snooping',),
+    'V-220638': ('show running-config | include ^spanning-tree mode',),
+    'V-220639': ('show running-config | include ^udld', _SECTION_INTERFACE),
+    'V-220640': (_SECTION_INTERFACE,),
+    'V-220641': (_SECTION_INTERFACE,),
+    'V-220642': (_SECTION_INTERFACE,),
+    'V-220643': (_SECTION_INTERFACE,),
+    'V-220644': ('show running-config | section ^interface Vlan',),
+    'V-220646': (_SECTION_INTERFACE,),
+    'V-220647': (_SECTION_INTERFACE,),
+    'V-220623': (_SECTION_INTERFACE,),
+    'V-220625': ('show running-config | include ^mls qos',),
+}
+
+# The IOS XE-only checks have no IOS rule to be re-keyed from, so their filters
+# are keyed by their own IDs and merged after the translation, exactly as
+# IOS_XE_ONLY_CHECKS is.
+IOS_XE_ONLY_VERIFY = {
+    'V-220554': ('show running-config | include ^ntp',),
+    'V-220566': ('show running-config | section ^event manager',),
+    'V-220567': ('show running-config | section ^crypto pki',),
+    'V-220651': ('show running-config | section ^policy-map', _SECTION_INTERFACE),
+}
+
 # Re-key onto the IOS XE STIG last, after the live-discovery entries above have
 # been added, so those carry over too. Anything ios_xe_rule_map leaves out has
 # no entry here and run_stig_audit reports it NOT AUTOMATED - the honest verdict
@@ -2454,6 +2558,8 @@ if args.checklist == 'ios-xe':
     # Re-keyed by the same map, so a rule's commands follow its check across
     # the two books rather than being written out twice.
     RULE_COMMANDS = ios_xe_rule_map.translate(RULE_COMMANDS)
+    RULE_VERIFY = ios_xe_rule_map.translate(RULE_VERIFY)
+    RULE_VERIFY.update(IOS_XE_ONLY_VERIFY)
 else:
     checklist_path = CHECKLIST_PATH
     audit_title = 'STIG audit'
@@ -2483,4 +2589,5 @@ stig_common.run_stig_audit(
     target_data=target_data,
     captured_on=captured_on,
     rule_commands=RULE_COMMANDS,
+    rule_filters=RULE_VERIFY,
 )

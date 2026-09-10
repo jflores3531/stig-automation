@@ -18,7 +18,8 @@ SEVERITY_ORDER = {'high': 0, 'medium': 1, 'low': 2}
 def run_stig_audit(device_name, device_info, checklist_path, checks, title, username, password,
                     not_automated_note='need manual review or external infrastructure',
                     session=None, to_cklb=None, target_data=None, captured_on=None,
-                    rule_commands=None, default_commands=('show running-config',)):
+                    rule_commands=None, default_commands=('show running-config',),
+                    rule_filters=None):
     """Connect to a device, check its running-config against a DISA STIG checklist's
     rules using `checks` (group_id -> predicate(running_config) -> bool, or
     -> (bool, reason) to show why a rule passed/failed, or -> (None, reason)
@@ -43,6 +44,14 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
     The pair is what puts "Inspected with: ..." under each verdict in the report
     and in the exported checklist, so a reviewer asking how a rule was
     determined reads the answer beside it instead of reconstructing it.
+
+    `rule_filters` is a different thing and is labelled differently in the
+    output: the filtered command that shows a rule's evidence ON THE SWITCH, for
+    a reviewer who would rather look than take the report's word for it. It is
+    NOT what this audit ran - the audit reads running-config once and greps the
+    text - so it is never folded into "Inspected with", which is a claim about
+    what happened. A rule with no filter gets no such line, because a filter
+    that shows nothing reads as "the switch is not configured for this".
 
     Opt-in on purpose: an audit that passes no map claims nothing, which is the
     right default for one whose commands have not been mapped. Naming a command
@@ -75,6 +84,7 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
     # Kept beside the findings rather than folded into them: every caller of
     # this function reads the 4-tuple, and a rule's evidence is not a verdict.
     commands_by_rule = {}
+    filters_by_rule = {}
 
     for rule in rules:
         group_id = rule['group_id']
@@ -87,6 +97,7 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
         else:
             commands_by_rule[group_id] = tuple(
                 (rule_commands or {}).get(group_id, default_commands))
+            filters_by_rule[group_id] = tuple((rule_filters or {}).get(group_id, ()))
             result = check(running_config)
             passed, reason = result if isinstance(result, tuple) else (result, None)
             if isinstance(passed, str):
@@ -108,6 +119,8 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
         inspected = describe_inspection(commands_by_rule.get(group_id, ()))
         if inspected:
             print(f"           {inspected}")
+        for line in describe_verification(filters_by_rule.get(group_id, ())):
+            print(f"           {line}")
         print()
 
     # Last, so a checklist is only written for a run that got far enough to
@@ -120,7 +133,8 @@ def run_stig_audit(device_name, device_info, checklist_path, checks, title, user
                                             captured_on=captured_on, target_data=target_data)
             print(write_cklb(checklist_path, output_path, findings, device_name, source, title,
                              device_info=device_info, target_data=target_data,
-                             commands_by_rule=commands_by_rule))
+                             commands_by_rule=commands_by_rule,
+                             filters_by_rule=filters_by_rule))
         except (ChecklistError, OSError) as checklist_error:
             # The report above is complete and correct; only the file failed.
             # Said plainly, and with a non-zero exit so a script that asked for
@@ -551,7 +565,17 @@ def describe_inspection(commands):
     return 'Inspected with: ' + ', '.join('`{0}`'.format(command) for command in commands)
 
 
-def _audit_note(reason, commands=()):
+def describe_verification(filters):
+    """The "Verify with: ..." lines, one per filtered command, or [].
+
+    Separate from describe_inspection and separately labelled, because these
+    are two different claims. One says what this run read; the other says what
+    a person can type to see the same thing. Merging them would put a command
+    nobody ran under a heading that says one did."""
+    return ['Verify with: `{0}`'.format(command) for command in filters]
+
+
+def _audit_note(reason, commands=(), filters=()):
     """What goes in the box: why the rule got the verdict it got, and what was
     read to decide it. No status - STIG Viewer already shows that beside the
     box - and no provenance of the run itself, which would be the same sentence
@@ -566,14 +590,16 @@ def _audit_note(reason, commands=()):
     A rule with neither reason nor commands leaves an empty box rather than a
     sentence saying so. That is the honest rendering of a rule nothing looked
     at, and it reads in STIG Viewer exactly as it should: unanswered."""
-    inspected = describe_inspection(commands)
-    if reason and inspected:
-        return '{0}\n\n{1}'.format(reason, inspected)
-    return reason or inspected or ''
+    parts = [part for part in (reason, describe_inspection(commands)) if part]
+    verification = describe_verification(filters)
+    if verification:
+        parts.append('\n'.join(verification))
+    return '\n\n'.join(parts)
 
 
 def write_cklb(checklist_path, output_path, findings, device_name, source, title,
-               device_info=None, run_at=None, target_data=None, commands_by_rule=None):
+               device_info=None, run_at=None, target_data=None, commands_by_rule=None,
+               filters_by_rule=None):
     """Write `findings` into a copy of the checklist as a STIG Viewer 3 .cklb.
 
     findings is run_stig_audit's list of (status, rule, group_id, reason).
@@ -618,7 +644,8 @@ def write_cklb(checklist_path, output_path, findings, device_name, source, title
                 continue
             status, reason = answered[group_id]
             rule['status'] = CKLB_STATUS[status]
-            note = _audit_note(reason, (commands_by_rule or {}).get(group_id, ()))
+            note = _audit_note(reason, (commands_by_rule or {}).get(group_id, ()),
+                               (filters_by_rule or {}).get(group_id, ()))
 
             # The box this verdict does not use is cleared rather than left
             # alone: a rule that fails today and passes tomorrow would otherwise

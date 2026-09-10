@@ -235,6 +235,139 @@ def test_templates_are_named_on_every_rule_that_read_them(tmpdir):
           lines[:3])
 
 
+def apply_filter(command, config):
+    """What an IOS `show running-config | include/section <regex>` would print.
+
+    `include` keeps matching lines. `section` keeps a matching line and
+    everything indented under it, up to the next unindented line - which is how
+    IOS renders an interface or a `line vty` block."""
+    m = re.match(r'show running-config \| (include|section) (.+)$', command)
+    assert m, command
+    mode, pattern = m.group(1), m.group(2).strip()
+    kept, in_section = [], False
+    for line in config.splitlines():
+        if mode == 'include':
+            if re.search(pattern, line):
+                kept.append(line)
+            continue
+        if line[:1] not in (' ', '\t') and line.strip():
+            in_section = bool(re.search(pattern, line))
+        if in_section:
+            kept.append(line)
+    return [line for line in kept if line.strip()]
+
+
+# The fixture config is deliberately unhardened - that is what makes it useful
+# for the false-FAIL suites. A filter has to be tested against a config that
+# HAS the evidence, so this is the fixture plus the blocks the harden scripts
+# push. It is not a compliant switch in every respect; it only has to contain
+# one line per filter for the filter to be able to find it.
+HARDENED_ADDENDUM = """service timestamps log datetime localtime
+service password-encryption
+enable secret 9 $9$redacted
+username stigadmin privilege 15 common-criteria-policy STIG secret 9 $9$redacted
+aaa new-model
+aaa group server radius STIG-RADIUS
+ server name RADIUS-1
+ server name RADIUS-2
+aaa common-criteria policy STIG
+ min-length 15
+ upper-case 1
+ lower-case 1
+ numeric-count 1
+ special-case 1
+ char-changes 8
+radius server RADIUS-1
+ address ipv4 192.0.2.10 auth-port 1812 acct-port 1813
+radius server RADIUS-2
+ address ipv4 192.0.2.11 auth-port 1812 acct-port 1813
+login on-failure log
+login on-success log
+login block-for 900 attempts 3 within 120
+logging userinfo
+logging buffered 64000 informational
+logging trap critical
+logging host 192.0.2.20
+logging host 192.0.2.21
+file privilege 15
+archive
+ log config
+  logging enable
+  logging size 1000
+  notify syslog contenttype plaintext
+  hidekeys
+ip access-list extended MGMT-VTY
+ permit tcp 192.0.2.0 0.0.0.255 any eq 22
+ deny   ip any any log-input
+spanning-tree mode rapid-pvst
+spanning-tree portfast bpduguard default
+spanning-tree loopguard default
+udld enable
+mls qos
+ip dhcp snooping
+ip dhcp snooping vlan 10,20
+ip arp inspection vlan 10,20
+ip igmp snooping
+"""
+
+
+def hardened_config():
+    return fixtures.RUNNING_CONFIG.rstrip('\n') + '\n' + HARDENED_ADDENDUM
+
+
+def test_every_verify_filter_can_show_its_own_evidence(tmpdir):
+    """A filter that prints nothing is worse than no filter at all: on a switch
+    it reads as `this is not configured`, which is a finding the rule may not
+    have. Each one is run against a config that satisfies its rule."""
+    print('\nevery `Verify with` filter actually shows something')
+    source = audit_source()
+    start = source.index('_SECTION_INTERFACE =')
+    end = source.index('# Re-key onto the IOS XE STIG last')
+    namespace = {}
+    exec(compile(source[start:end], 'RULE_VERIFY', 'exec'), namespace)
+    maps = {'RULE_VERIFY': namespace['RULE_VERIFY'],
+            'IOS_XE_ONLY_VERIFY': namespace['IOS_XE_ONLY_VERIFY']}
+
+    config = hardened_config()
+    empty = []
+    for map_name, rules in maps.items():
+        for rule_id, commands in rules.items():
+            for command in commands:
+                if not apply_filter(command, config):
+                    empty.append(f'{map_name}[{rule_id}]: {command}')
+    check('no filter comes back empty against a config that satisfies its rule',
+          not empty, '\n       '.join(empty[:12]))
+
+    every = {command for rules in maps.values()
+             for commands in rules.values() for command in commands}
+    check('every filter is a running-config filter and nothing else',
+          all(c.startswith('show running-config | ') for c in every),
+          [c for c in every if not c.startswith('show running-config | ')])
+    check('and each uses `include` or `section`',
+          all(re.match(r'show running-config \| (include|section) \S', c) for c in every),
+          [c for c in every if not re.match(r'show running-config \| (include|section) \S', c)])
+
+
+def test_verify_is_never_confused_with_what_the_audit_ran(tmpdir):
+    """Two claims, two labels. `Inspected with` says what this run read;
+    `Verify with` says what a person can type. The audit greps running-config
+    in Python and never sends a `|` filter, so a filtered command appearing
+    under `Inspected with` would be a report describing a command nobody sent."""
+    print('\nthe filtered command is never claimed as what the audit ran')
+    text = report(tmpdir, 'labels')
+    inspected = [line.strip() for line in text.splitlines()
+                 if line.strip().startswith('Inspected with:')]
+    check('the report has plenty of both lines',
+          inspected and any('Verify with:' in line for line in text.splitlines()), len(inspected))
+    piped = [line for line in inspected if '|' in line]
+    check('no `Inspected with` line names a filtered command', not piped, piped[:3])
+    check('and none of them names a command the collector does not run',
+          all(any(cmd in line for cmd in
+                  set(capture.AUDIT_COMMANDS_L2S) | set(capture.OPTIONAL_COMMANDS_L2S)
+                  | {'show template interface source user'})
+              for line in inspected), inspected[:3])
+
+
 if __name__ == '__main__':
     test_no_rule_claims_a_command_the_collector_does_not_run()
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -242,6 +375,8 @@ if __name__ == '__main__':
         test_an_unautomated_rule_claims_nothing(tmpdir)
         test_the_line_reaches_the_exported_checklist(tmpdir)
         test_templates_are_named_on_every_rule_that_read_them(tmpdir)
+        test_every_verify_filter_can_show_its_own_evidence(tmpdir)
+        test_verify_is_never_confused_with_what_the_audit_ran(tmpdir)
     print('\n' + ('ALL CHECKS PASSED' if not failures
                   else f'{len(failures)} FAILED: {", ".join(failures)}'))
     sys.exit(1 if failures else 0)

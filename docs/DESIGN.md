@@ -278,6 +278,21 @@ Where the config sources interface templates, every rule's line names the `show 
 
 The mechanism is opt-in. An audit that passes no `rule_commands` map claims nothing, which is the right default for one whose commands have not been mapped — all three audits here pass one.
 
+### And a second line, for looking rather than reading
+
+```
+Inspected with: `show running-config`
+Verify with: `show running-config | section ^line vty`
+```
+
+Two claims, two labels, and the separation is the whole point. The audit reads `show running-config` **once** and greps the text in Python; it never sends a `| include` or `| section`. Putting the filtered form under "Inspected with" would be the report describing a command nobody ran — the exact failure `tests/test_inspection_commands.py` was written to prevent, committed by the file that added the test.
+
+So the filtered command gets its own label and its own meaning: this is what a reviewer types on the switch to see the evidence for themselves, six months later, without reading any of this code. That is worth having, and it is not a statement about what happened during the run.
+
+A rule with no filter gets no line. A filter that prints nothing reads on a switch as *this is not configured* — a finding the rule may not have — so a wrong filter is worse than none. The suite applies every filter to a config that satisfies its rule and requires non-empty output, using a small simulator for what IOS `include` and `section` actually do. That test's fixture is the unhardened config plus the blocks the harden scripts push, since the ordinary fixture is missing most of this evidence on purpose.
+
+`show running-config all` is not offered anywhere: nothing in this project collects it, and a filter against a command that is never run is a filter nobody can reproduce.
+
 ## The report, as a file STIG Viewer opens
 
 A printed report is read once and retyped into STIG Viewer rule by rule, and that transcription is the least reliable step in the whole exercise: 64 rules, four statuses, and a free-text box per rule that nobody is filling in carefully by rule 50. STIG Viewer 3's format is `.cklb` — the same JSON these audits already read their rules out of — so `--to-cklb` writes the verdicts back into a copy of it.
