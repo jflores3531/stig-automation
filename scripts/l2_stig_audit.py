@@ -2466,6 +2466,7 @@ RULE_VERIFY = {
     'V-220597': (_SECTION_ARCHIVE,),
     'V-220609': (_SECTION_ARCHIVE,),
     'V-220611': (_SECTION_ARCHIVE,),
+    'V-220613': (_SECTION_ARCHIVE,),
     'V-220578': ('show running-config | include ^logging userinfo', _SECTION_ARCHIVE),
 
     # Logging and timestamps.
@@ -2570,13 +2571,27 @@ else:
 if template_bodies:
     CHECKS = {rule_id: stig_common.through_templates(check, template_bodies)
               for rule_id, check in CHECKS.items()}
-    # Every rule now reads the expanded config, so every rule read these too.
-    # Said per rule because it is true per rule: a verdict about a templated
-    # port was reached partly from the template's own body, and a reviewer
-    # checking the work needs to know which command produced it.
+    # Only the rules whose evidence IS interface configuration.
+    #
+    # Every check is wrapped by through_templates, which is why this once named
+    # the template reads on all sixty-odd of them. That was true about the code
+    # and false about the rules: expanding a template inserts the template's
+    # body into an interface block and changes nothing else, so a rule grepping
+    # `^logging userinfo` reaches the identical verdict either way. Naming the
+    # template read under it claimed the template mattered to a verdict it could
+    # not have moved, in every comment box in the checklist.
+    #
+    # Which rules those are is taken from RULE_VERIFY rather than listed again:
+    # a rule whose evidence is shown by `show running-config | section
+    # ^interface` is exactly a rule an interface template can change. One list,
+    # so the two cannot drift apart.
     template_reads = tuple(capture.template_command(name) for name in sorted(template_bodies))
     RULE_COMMANDS = {
-        rule_id: tuple(RULE_COMMANDS.get(rule_id, ('show running-config',))) + template_reads
+        rule_id: (tuple(RULE_COMMANDS.get(rule_id, ('show running-config',)))
+                  + (template_reads
+                     if any('section ^interface' in command
+                            for command in RULE_VERIFY.get(rule_id, ()))
+                     else ()))
         for rule_id in CHECKS
     }
 
