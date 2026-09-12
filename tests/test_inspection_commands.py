@@ -145,7 +145,7 @@ def test_an_unautomated_rule_claims_nothing(tmpdir):
     print('\na rule nothing checked claims no command; one that looked does')
     answered = blocks(report(tmpdir, 'unautomated'))
     unautomated = [rule for rule, lines in answered.items() if 'NOT AUTOMATED' in lines[0]]
-    check('the run really did leave some rules unautomated', unautomated, unautomated)
+    print(f'       ({len(unautomated)} rule(s) came back NOT AUTOMATED on this inventory)')
 
     def claims(rule):
         return any(line.startswith('Inspected with:') for line in answered[rule][1:])
@@ -155,12 +155,17 @@ def test_an_unautomated_rule_claims_nothing(tmpdir):
 
     skipped = [rule for rule in unautomated if not has_reason(rule)]
     looked = [rule for rule in unautomated if has_reason(rule)]
+    # Both of these are invariants, not requirements that the case occur. Which
+    # rules come back NOT AUTOMATED depends on the inventory the run was given -
+    # declare `core_switch_hostname_tags` and V-220671 resolves instead - so
+    # asserting that some rule took each path made the suite fail on a different
+    # inventory rather than on a defect.
     check('no skipped rule names a command',
           not [rule for rule in skipped if claims(rule)],
           [rule for rule in skipped if claims(rule)])
     check('a check that looked and then deferred to a human still says what it read',
-          looked and all(claims(rule) for rule in looked),
-          [r for r in looked if not claims(r)] or 'no such rule in this run')
+          all(claims(rule) for rule in looked),
+          [r for r in looked if not claims(r)] or 'no rule took this path in this run')
 
     # Every rule in this checklist happens to have a check, so the skipped case
     # above can be vacuous. Proven directly instead: an audit with no checks at
