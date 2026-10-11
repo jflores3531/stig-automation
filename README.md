@@ -66,6 +66,8 @@ has never seen stops an unattended run on a modal dialog; connect to it once by 
 | `inventory_l2s.py` | `show version` per session into one `inventory_<stamp>.csv`. A stack is one row per chassis. Minutes where the audit takes an evening. |
 | `harden_l2s_bulk.py` | **Configures devices.** Logging/audit, access control, SSH crypto, the V-220534 service block. vty limit opt-in. Never writes startup-config. |
 | `harden_access_ports_bulk.py` | **Configures devices.** The access-port fixes on every host-facing port. Never sends a trunk command. Reads and expands interface templates before classifying any port. |
+| `snmp_acl_l2s.py` | **Configures one switch** — the open session. `snmp_host_acl.py`'s push over SecureCRT: shows the ACL and the exact commands, sends nothing until Yes, reads the list back, and gives that switch a verdict (completed / failed / skipped). Run this on one production switch first. |
+| `snmp_acl_l2s_bulk.py` | **Configures devices.** The same push across every saved session, then a verdict: *Completed on X of Y switch(es)*, with failed and not-changed counted apart. Skips a switch whose ACL is a vty `access-class`. One `snmp_acl_bulk_log_<stamp>.csv` row per session plus a `_verdict.txt`. |
 
 ### Hardening — IOS / IOS XE switch
 Run in the order listed. Each is separate because of what it can cost you if it is wrong.
@@ -274,6 +276,7 @@ python3 tests/test_sanitize_capture.py
 python3 tests/test_arp_inventory.py
 python3 tests/test_pdf_ips.py
 python3 tests/test_snmp_host_acl.py
+python3 tests/test_securecrt_snmp_acl.py
 ```
 
 ## Getting a report into STIG Viewer 3
