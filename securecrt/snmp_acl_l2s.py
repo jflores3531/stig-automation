@@ -63,6 +63,14 @@ import capture_l2s
 import capture_l2s_bulk as bulk
 import harden_l2s_bulk as harden
 
+# SecureCRT keeps one Python running between script runs, and Python imports a
+# module only once - so without this, the copy of a helper that runs is the one
+# loaded the first time, not the one on disk now, until SecureCRT restarts.
+if crt is not None:
+    import importlib
+    for _module in (capture_l2s, bulk, harden):
+        importlib.reload(_module)
+
 
 # Where the run log is written. Created if missing.
 OUTPUT_DIR = r'C:\Documents\netauto_snmp'

@@ -73,6 +73,14 @@ import capture_l2s_bulk as bulk
 import harden_l2s_bulk as harden
 import snmp_acl_l2s as snmp
 
+# SecureCRT keeps one Python running between script runs, and Python imports a
+# module only once - so without this, the copy of a helper that runs is the one
+# loaded the first time, not the one on disk now, until SecureCRT restarts.
+if crt is not None:
+    import importlib
+    for _module in (capture_l2s, bulk, harden, snmp):
+        importlib.reload(_module)
+
 
 OUTPUT_DIR = snmp.OUTPUT_DIR
 STOP_FILE = 'STOP'
@@ -114,6 +122,14 @@ def preview(settings):
 
 
 def main():
+    # The two files are updated together; an older snmp_acl_l2s.py beside a
+    # newer bulk script would push without adding log to existing permits.
+    if not hasattr(snmp, 'relog_plan'):
+        crt.Dialog.MessageBox(
+            'snmp_acl_l2s.py in this folder is an older version than this script:\n{0}\n\n'
+            'Copy the current snmp_acl_l2s.py there and run again. Nothing was sent.'
+            .format(snmp.__file__), 'SNMP ACL bulk - out of date')
+        return
     try:
         settings = snmp.settings_from_inventory()
     except snmp.AclError as error:
