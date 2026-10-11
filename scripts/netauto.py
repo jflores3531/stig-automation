@@ -221,6 +221,22 @@ def load_external_interfaces(device_name, path=INVENTORY_PATH):
     return inventory.get('external_interfaces_by_device', {}).get(device_name, [])
 
 
+def load_snmp(path=INVENTORY_PATH):
+    """Load the snmp section of the inventory - the notification receivers
+    (trap_hosts, each a receiver address mapped to the SNMPv3 username whose
+    keys protect the traps sent there), the existing named standard ACL to
+    insert into (acl_name), the entries to insert (permits), the optional
+    first sequence number for them (insert_at), and the resequence
+    start/increment.
+
+    Read by snmp_host_acl.py, which validates the shapes - this only loads.
+    Returns an empty dict if the inventory has no snmp section, so the caller
+    reports the missing keys by name rather than dying on a KeyError."""
+    with open(path) as f:
+        inventory = yaml.safe_load(f)
+    return inventory.get('snmp', {})
+
+
 def load_secrets(path=SECRETS_PATH):
     """Load plaintext secrets used by the *_stig_harden.py scripts (VTP password,
     NTP auth key, etc.) from secrets.yaml - gitignored, never committed. Returns

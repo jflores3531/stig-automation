@@ -97,6 +97,15 @@ Run in the order listed. Each is separate because of what it can cost you if it 
 | `ios_router_stig_harden_aaa.py` | AAA/RADIUS plus password complexity. `local` stays last, so SSH still works if RADIUS is unreachable. |
 | `ios_router_stig_harden_urpf.py` | uRPF (V-216989) on external interfaces. Needs `allow-default` — see Notes. |
 
+### SNMP
+Not a STIG fix — no rule in the four checklists ties SNMP to an ACL. The SNMPv3 rules that do
+exist (V-220604/605, V-215696/697) are about the auth/priv algorithms on the *user*, which the
+global harden scripts already push from `secrets.yaml`.
+
+| | |
+|---|---|
+| `snmp_host_acl.py` | **Configures devices.** SNMPv3 trap receivers (`snmp-server host <ip> version 3 priv <user>`) plus the matching permits inserted into an **existing** named standard ACL, then `ip access-list resequence`. A `permit` typed into a standard ACL is appended *after* the list's `deny`, where it matches nothing while looking correct in `show run` — so the entries go in front of it, at numbers read off the device or pinned with `--insert-at 11`. A pinned number already in use is refused: IOS would silently **replace** that entry. Reports what references the ACL before pushing (nothing → it filters nothing; a vty `access-class` → it grants SSH, not polling), then reads the list back and fails if a permit is missing *or* landed past the deny. |
+
 ## Requirements
 
 Which of the two paths applies is decided by whether the host lets you install anything.
@@ -152,6 +161,24 @@ python3 scripts/backup_config.py
 
 # Diff current running-config against last backup
 python3 scripts/config_diff.py R1
+
+# SNMPv3 trap receivers, plus the permits for them inserted into an existing
+# named standard ACL in front of its deny, then resequenced. Everything it
+# sends comes from inventory.yaml's snmp section.
+python3 scripts/snmp_host_acl.py SW01 --dry-run
+python3 scripts/snmp_host_acl.py SW01
+
+# Pin the position: three permits land at exactly 11, 12, 13. Without this the
+# run packs them into the gap just below the first deny instead - the same
+# 11, 12, 13 on a list whose last entry above the deny is 10, but 21, 22, 23 on
+# one that also has a permit at 20. A number already in use is refused.
+python3 scripts/snmp_host_acl.py SW01 --insert-at 11 --dry-run
+python3 scripts/snmp_host_acl.py SW01 --insert-at 11
+
+# Only if the gap before the deny is too narrow to hold the entries, which the
+# run tells you. It moves every existing entry, so a pinned --insert-at then
+# means a position in the renumbered list.
+python3 scripts/snmp_host_acl.py SW01 --resequence-first
 
 # STIG audit. Defaults to the IOS XE STIG; --checklist ios for classic IOS.
 # The two share no rule IDs, so the wrong one reports every rule NOT AUTOMATED.
@@ -246,6 +273,7 @@ python3 tests/test_checklist_target.py
 python3 tests/test_sanitize_capture.py
 python3 tests/test_arp_inventory.py
 python3 tests/test_pdf_ips.py
+python3 tests/test_snmp_host_acl.py
 ```
 
 ## Getting a report into STIG Viewer 3

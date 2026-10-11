@@ -34,6 +34,8 @@
 
     "vtp_domain": "VTP domain name. Required on NX-OS before a VTP password can be set (V-220676) - the 'vtp password' command is rejected with 'Domain not set' unless a domain exists first. The VTP password itself is a secret and lives in secrets.yaml, never here. Read by nxos_stig_harden_global.py.",
 
+    "snmp": "SNMPv3 notification receivers and the ACL that restricts who may poll, read by snmp_host_acl.py - operational tooling rather than a STIG fix, since no rule in the four checklists ties SNMP to an ACL. It pushes `snmp-server host <trap_hosts key> version 3 priv <trap_hosts value>`, then one `<seq> permit <spec>` per entry in permits inside acl_name, then `ip access-list resequence <acl_name> <start> <increment>`. THE trap_hosts VALUE IS A USERNAME, NOT AN ACL NAME: `snmp-server host` has no ACL field on IOS, and the trailing token is the SNMPv3 user whose auth/priv keys sign and encrypt the traps sent to that receiver. An ACL name typed there is accepted and then silently drops every notification to that host, which is why the script reads `show snmp user` and warns. The user itself is created from secrets.yaml's snmpv3 auth/priv passwords by l2_stig_harden_global.py and ios_router_stig_harden_global.py (V-220604/605, V-215696/697); no password belongs in this file. What the ACL attaches to is the GROUP - `snmp-server group <group> v3 priv access <acl_name>` - which snmp_host_acl.py deliberately does not push, so until that exists the ACL restricts nothing and the run says so. acl_name must ALREADY EXIST on the device as a named STANDARD list and is expected to end in an explicit deny: a standard ACL is first-match, so the permits go in FRONT of that deny - an entry appended after it is present in `show run` and matches nothing, which is the failure the whole script is shaped around. insert_at pins the first sequence number, so three permits land at exactly 11, 12 and 13 with insert_at 11; left null the script packs them into the gap immediately below the first deny instead, which is the same 11, 12, 13 on a list whose last entry above the deny is 10 and 21, 22, 23 on one that also has a permit at 20. Pin it where the ORDER matters - overlapping entries, or a deny mid-list - because the resequence afterwards renumbers the list in place and the order is all that survives it. A pinned number already in use is REFUSED rather than sent: IOS would REPLACE that entry in place, silently. permits are standard-ACL source specs passed through after the word `permit`, so 'host x.x.x.x' and 'x.x.x.0 0.0.0.255' are both valid, and entries already present are skipped rather than duplicated. Shipped empty so no site addressing is committed; with it empty snmp_host_acl.py refuses to run rather than pushing a receiver with no matching ACL entry.",
+
     "external_interfaces_by_device": "Router device name -> list of interface names that face the security boundary, e.g. ['GigabitEthernet0/2']. This is a topology fact that cannot be derived from a device's own running-config, so it must be declared. STIG rules scoped to 'external' versus 'internal' interfaces depend on it. A device with an empty list or no entry has ALL of its active interfaces treated as internal - which silently skips every external-interface rule for that device. Read by ios_router_audit.py and ios_router_stig_harden_urpf.py."
   },
 
@@ -71,6 +73,14 @@
   "default_access_vlan": null,
 
   "vtp_domain": "EXAMPLE",
+
+  "snmp": {
+    "acl_name": "SNMP_ACCESS",
+    "trap_hosts": { "x.x.x.x": "SNMPV3_USER" },
+    "permits": [],
+    "insert_at": null,
+    "resequence": { "start": 10, "increment": 10 }
+  },
 
   "external_interfaces_by_device": {
     "ROUTER01": ["GigabitEthernet0/2", "GigabitEthernet0/3"]
