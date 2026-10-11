@@ -110,6 +110,9 @@ def normalise_entry(text):
     text = MATCH_COUNT_RE.sub('', str(text)).strip().lower()
     text = text.replace(', wildcard bits ', ' ')
     text = re.sub(r'\bhost\s+', '', text)
+    # `log` changes what is recorded, not what is matched: a permit with it
+    # and one without are the same entry for "already there" and the read-back.
+    text = re.sub(r'\s+log$', '', text.strip())
     return re.sub(r'\s+', ' ', text).strip()
 
 
@@ -244,11 +247,16 @@ def snmp_host_command(ip, v3_user):
     return 'snmp-server host {0} version 3 priv {1}'.format(ip, v3_user)
 
 
+def with_log(text):
+    """Every permit pushed ends in `log` - see scripts/snmp_host_acl.py."""
+    return text if re.search(r'\slog$', text.strip()) else text.strip() + ' log'
+
+
 def acl_commands(name, planned):
     if not planned:
         return []
-    body = ['{0} {1}'.format(sequence, text) if sequence is not None else text
-            for sequence, text in planned]
+    body = ['{0} {1}'.format(sequence, with_log(text)) if sequence is not None
+            else with_log(text) for sequence, text in planned]
     return ['ip access-list standard {0}'.format(name)] + body + ['exit']
 
 

@@ -97,7 +97,7 @@ def preview(settings):
     lines.append('  ip access-list standard {0}'.format(acl_name))
     for offset, spec in enumerate(permits):
         number = insert_at + offset if insert_at is not None else '<n>'
-        lines.append('    {0} permit {1}'.format(number, spec))
+        lines.append('    {0} {1}'.format(number, snmp.with_log('permit ' + spec)))
     lines.append('  exit')
     lines.append('  ' + snmp.resequence_command(acl_name, start, increment))
     if insert_at is None:

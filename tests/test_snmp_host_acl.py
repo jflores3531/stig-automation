@@ -329,14 +329,19 @@ commands = snmp.acl_commands('SNMP_ACCESS', pinned)
 check('the ACL block opens in standard-list config mode',
       commands[0] == 'ip access-list standard SNMP_ACCESS', str(commands))
 check('each entry carries its sequence number first',
-      commands[1:4] == ['11 permit host 192.0.2.20', '12 permit 192.0.2.21',
-                        '13 permit 192.0.2.22'], str(commands))
+      commands[1:4] == ['11 permit host 192.0.2.20 log', '12 permit 192.0.2.21 log',
+                        '13 permit 192.0.2.22 log'], str(commands))
 # Without this, the resequence line that follows is sent while still in
 # config-acl mode, where IOS does not know it.
 check('the block exits config-acl mode for the resequence that follows',
       commands[-1] == 'exit', str(commands))
 check('an append with no numbers sends the bare permit',
-      snmp.acl_commands('SNMP_ACCESS', planned_append)[1] == 'permit host 192.0.2.20')
+      snmp.acl_commands('SNMP_ACCESS', planned_append)[1] == 'permit host 192.0.2.20 log')
+check('a permit already ending in log is not given a second one',
+      snmp.acl_commands('SNMP_ACCESS', [(11, 'permit host 192.0.2.20 log')])[1]
+      == '11 permit host 192.0.2.20 log')
+check('log is ignored when comparing entries',
+      snmp.normalise_entry('permit 192.0.2.20 log') == snmp.normalise_entry('permit host 192.0.2.20'))
 check('nothing planned means no ACL block at all',
       snmp.acl_commands('SNMP_ACCESS', []) == [])
 

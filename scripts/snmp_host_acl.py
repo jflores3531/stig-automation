@@ -8,7 +8,7 @@ Two commands, from inventory.yaml's `snmp` section:
     snmp-server host <trap_hosts key> version 3 priv <trap_hosts value>
     ip access-list resequence <acl_name> <start> <increment>
 
-and between them, one `<seq> permit <spec>` per entry in `snmp.permits` - at
+and between them, one `<seq> permit <spec> log` per entry in `snmp.permits` - at
 11, 12, 13 with `insert_at` set to 11, or at numbers read off the device when
 it is not. See WHERE THE ENTRIES LAND below; it is the one decision here worth
 making deliberately.
@@ -152,6 +152,9 @@ def normalise_entry(text):
     text = MATCH_COUNT_RE.sub('', str(text)).strip().lower()
     text = text.replace(', wildcard bits ', ' ')
     text = re.sub(r'\bhost\s+', '', text)
+    # `log` changes what is recorded, not what is matched: a permit with it
+    # and one without are the same entry for "already there" and the read-back.
+    text = re.sub(r'\s+log$', '', text.strip())
     return re.sub(r'\s+', ' ', text).strip()
 
 
@@ -341,13 +344,19 @@ def snmp_host_command(ip, v3_user):
     return f'snmp-server host {ip} version 3 priv {v3_user}'
 
 
+def with_log(text):
+    """Each permit this pushes ends in `log`, so a poll it lets through is
+    recorded the same way the deny below it records what it drops."""
+    return text if re.search(r'\slog$', text.strip()) else text.strip() + ' log'
+
+
 def acl_commands(name, planned):
     """The ACL block. The explicit `exit` closes config-acl mode, because the
     resequence line that follows is a global-config command and Netmiko sends
     this list flat without navigating modes on its own."""
     if not planned:
         return []
-    body = [f'{sequence} {text}' if sequence is not None else text
+    body = [f'{sequence} {with_log(text)}' if sequence is not None else with_log(text)
             for sequence, text in planned]
     return [f'ip access-list standard {name}'] + body + ['exit']
 
@@ -541,7 +550,7 @@ def main(argv=None):
             print(f'\nInto the existing standard ACL {acl_name}, at free sequence numbers in the '
                   f'gap before its first deny:')
             for spec in permits:
-                print(f'  permit {spec}')
+                print(f'  {with_log("permit " + spec)}')
             print('\nThe numbers themselves are read off the device - the gap above the deny is a '
                   'fact about that\nswitch, not about the inventory - and entries already present '
                   'are skipped. Pass --insert-at N\nto pin them instead.')
@@ -549,7 +558,7 @@ def main(argv=None):
             print(f'\nInto the existing standard ACL {acl_name}, pinned from sequence {insert_at}:')
             print(f'  ip access-list standard {acl_name}')
             for offset, spec in enumerate(permits):
-                print(f'  {insert_at + offset} permit {spec}')
+                print(f'  {insert_at + offset} {with_log("permit " + spec)}')
             print('  exit')
             print(f'\nEntries already in the list are skipped, so a run that finds one of these '
                   f'present sends\nfewer lines and the rest shift down. The numbers are refused '

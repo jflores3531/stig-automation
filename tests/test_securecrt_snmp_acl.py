@@ -163,8 +163,9 @@ def ios_render(text):
     """How IOS shows a standard entry back: no `host`, wildcard split by a comma."""
     action, _, rest = text.partition(' ')
     rest = re.sub(r'^host\s+', '', rest.strip())
+    rest, log = re.subn(r'\s+log$', '', rest)
     rest = re.sub(r'^(\S+)\s+(\d+\.\d+\.\d+\.\d+)$', r'\1, wildcard bits \2', rest)
-    return f'{action} {rest}'.strip()
+    return f'{action} {rest}{" log" if log else ""}'.strip()
 
 
 class Switch:
@@ -425,14 +426,14 @@ def test_single_completed(tmpdir):
     # 21, 22, 23 under the deny at 30, then renumbered 10/10 in order.
     check('the list ends renumbered with the permits before the deny',
           [switch.acl[s] for s in sorted(switch.acl)] == [
-              'permit 192.0.2.10', 'permit 192.0.2.64 0.0.0.31', 'permit host 192.0.2.20',
-              'permit 192.0.2.21', 'permit host 192.0.2.22', 'deny any log'], switch.acl)
+              'permit 192.0.2.10', 'permit 192.0.2.64 0.0.0.31', 'permit host 192.0.2.20 log',
+              'permit 192.0.2.21 log', 'permit host 192.0.2.22 log', 'deny any log'], switch.acl)
     check('the list is numbered 10/10 afterwards', sorted(switch.acl) == [10, 20, 30, 40, 50, 60])
     check('the trap host was pushed with the username',
           switch.hosts == ['snmp-server host 192.0.2.20 version 3 priv SNMPV3_USER'], switch.hosts)
     check('the inserts used the gap below the deny',
-          '21 permit host 192.0.2.20' in switch.configured
-          and '23 permit host 192.0.2.22' in switch.configured, switch.configured)
+          '21 permit host 192.0.2.20 log' in switch.configured
+          and '23 permit host 192.0.2.22 log' in switch.configured, switch.configured)
     check('the %SYS-5-CONFIG_I after `end` is not counted as a rejection',
           'rejected' not in text, text)
     check('nothing was saved', 'copy running-config startup-config' not in fake.Screen.sent
@@ -450,10 +451,11 @@ def test_single_pinned(tmpdir):
     section = dict(SNMP_SECTION, insert_at=11)
     fake = run_single(tmpdir, switch, section)
     check('11, 12 and 13 were sent',
-          ['11 permit host 192.0.2.20', '12 permit 192.0.2.21', '13 permit host 192.0.2.22']
+          ['11 permit host 192.0.2.20 log', '12 permit 192.0.2.21 log',
+           '13 permit host 192.0.2.22 log']
           == [c for c in switch.configured if re.match(r'^\d+ permit', c)], switch.configured)
     check('and they sit right after 10, before the old 20',
-          [switch.acl[s] for s in sorted(switch.acl)][1] == 'permit host 192.0.2.20', switch.acl)
+          [switch.acl[s] for s in sorted(switch.acl)][1] == 'permit host 192.0.2.20 log', switch.acl)
     check('completed', last_message(fake)[0] == 'SNMP ACL - COMPLETED')
 
 
@@ -511,7 +513,7 @@ def test_single_missing_acl(tmpdir):
 
 def test_single_failed_readback(tmpdir):
     print('\none switch: a permit the image rejects makes the verdict FAILED')
-    switch = Switch(acl=MANAGED, reject=('permit 192.0.2.21',))
+    switch = Switch(acl=MANAGED, reject=('permit 192.0.2.21 log',))
     fake = run_single(tmpdir, switch)
     title, text, _ = last_message(fake)
     check('the verdict is FAILED', title == 'SNMP ACL - FAILED', f'{title}\n{text}')
@@ -546,7 +548,7 @@ def test_bulk_verdict(tmpdir):
         'site/sw-2': Switch('SW2', acl=MANAGED),
         'site/sw-3': Switch('SW3', acl=None),
         'site/sw-4': Switch('SW4', acl=MANAGED, refs=' access-class SNMP_ACCESS in'),
-        'site/sw-5': Switch('SW5', acl=MANAGED, reject=('permit 192.0.2.21',)),
+        'site/sw-5': Switch('SW5', acl=MANAGED, reject=('permit 192.0.2.21 log',)),
         'site/sw-6': Switch('SW6', acl=MANAGED, users=''),
     }
     sessions = [(name, f'192.0.2.{i}') for i, name in enumerate(sorted(switches), 1)]
@@ -617,7 +619,7 @@ def test_bulk_save_completed_only(tmpdir):
     print('\nbulk: Yes at the save question saves completed switches and only those')
     switches = {
         'site/sw-1': Switch('SW1', acl=MANAGED),
-        'site/sw-2': Switch('SW2', acl=MANAGED, reject=('permit 192.0.2.21',)),
+        'site/sw-2': Switch('SW2', acl=MANAGED, reject=('permit 192.0.2.21 log',)),
         'site/sw-3': Switch('SW3', acl=None),
         'site/sw-4': Switch('SW4', acl=MANAGED, refs=' access-class SNMP_ACCESS in'),
         'site/sw-5': Switch('SW5', acl=MANAGED, reject=('write memory',)),
