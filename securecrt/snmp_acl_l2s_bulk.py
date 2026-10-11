@@ -76,9 +76,13 @@ import snmp_acl_l2s as snmp
 # SecureCRT keeps one Python running between script runs, and Python imports a
 # module only once - so without this, the copy of a helper that runs is the one
 # loaded the first time, not the one on disk now, until SecureCRT restarts.
+# Each helper's `crt` is cleared first: a helper runs its own main() when it
+# finds `crt` in its globals, and the last run handed it one - reloaded with it
+# still there, every helper would start as if SecureCRT had launched it.
 if crt is not None:
     import importlib
     for _module in (capture_l2s, bulk, harden, snmp):
+        _module.crt = None
         importlib.reload(_module)
 
 
