@@ -181,6 +181,7 @@ class Switch:
         self.mode = 'exec'
         self.hosts = []
         self.configured = []
+        self.saved = False
 
     def render_acl(self):
         if self.acl is None:
@@ -203,6 +204,9 @@ class Switch:
                                     if self.acl is not None else '')
             if command == 'show snmp user':
                 return self.users
+            if command == 'write memory':
+                self.saved = True
+                return 'Building configuration...\n[OK]'
             if command == 'configure terminal':
                 self.mode = 'config'
                 return 'Enter configuration commands, one per line.'
@@ -309,12 +313,16 @@ class FakeDialog:
             return 6 if self.crt.confirm else 7
         if 'renumber' in lowered or 'no room' in lowered:
             return 6 if self.crt.renumber else 7
+        if 'save' in lowered:
+            return 6 if self.crt.save else 7
         return 1
 
 
 class FakeCRT:
-    def __init__(self, output_dir, switch=None, switches=None, confirm=True, renumber=False):
+    def __init__(self, output_dir, switch=None, switches=None, confirm=True, renumber=False,
+                 save=False):
         self.output_dir = output_dir
+        self.save = save
         self.switch = switch or Switch(acl=MANAGED)
         self.switches = switches or {}
         self.confirm = confirm
@@ -379,8 +387,9 @@ def run_single(tmpdir, switch, section=SNMP_SECTION, confirm=True, renumber=Fals
     return fake
 
 
-def run_bulk(tmpdir, switches, sessions, section=SNMP_SECTION, renumber=False, confirm=True):
-    fake = FakeCRT(tmpdir, switches=switches, confirm=confirm, renumber=renumber)
+def run_bulk(tmpdir, switches, sessions, section=SNMP_SECTION, renumber=False, confirm=True,
+             save=False):
+    fake = FakeCRT(tmpdir, switches=switches, confirm=confirm, renumber=renumber, save=save)
     install(fake, with_inventory(tmpdir, section))
     bulk.find_sessions = lambda _filter='': list(sessions)
     try:
@@ -595,6 +604,41 @@ def test_bulk_renumber(tmpdir):
         shutil.rmtree(other)
 
 
+def test_bulk_no_save_by_answer(tmpdir):
+    print('\nbulk: No at the save question writes startup-config nowhere')
+    switches = {'site/sw-1': Switch('SW1', acl=MANAGED)}
+    fake = run_bulk(tmpdir, switches, [('site/sw-1', '192.0.2.1')], save=False)
+    check('completed', 'Completed on 1 of 1' in last_message(fake)[1], last_message(fake))
+    check('write memory never sent', 'write memory' not in fake.Screen.sent, fake.Screen.sent)
+    check('the verdict says nothing was saved', 'NOT written' in last_message(fake)[1])
+
+
+def test_bulk_save_completed_only(tmpdir):
+    print('\nbulk: Yes at the save question saves completed switches and only those')
+    switches = {
+        'site/sw-1': Switch('SW1', acl=MANAGED),
+        'site/sw-2': Switch('SW2', acl=MANAGED, reject=('permit 192.0.2.21',)),
+        'site/sw-3': Switch('SW3', acl=None),
+        'site/sw-4': Switch('SW4', acl=MANAGED, refs=' access-class SNMP_ACCESS in'),
+        'site/sw-5': Switch('SW5', acl=MANAGED, reject=('write memory',)),
+    }
+    sessions = [(name, f'192.0.2.{i}') for i, name in enumerate(sorted(switches), 1)]
+    fake = run_bulk(tmpdir, switches, sessions, save=True)
+    text = last_message(fake)[1]
+    check('the completed switch was saved', switches['site/sw-1'].saved)
+    check('the failed switch was not', not switches['site/sw-2'].saved)
+    check('the missing-ACL switch was not', not switches['site/sw-3'].saved)
+    check('the vty switch was not', not switches['site/sw-4'].saved)
+    check('the verdict counts the saves', 'Saved to startup-config on 1 of 2 completed.' in text,
+          text)
+    check('the unsaved completed one is named', '1 completed but NOT saved' in text, text)
+    rows = {row['session']: row for row in log_rows(tmpdir)}
+    check('the saved row says so', 'saved to startup-config' in rows['site/sw-1']['reason'],
+          rows.get('site/sw-1'))
+    check('the unsaved row warns', 'NOT saved' in rows['site/sw-5']['warnings'],
+          rows.get('site/sw-5'))
+
+
 def test_verdict_text():
     print('\nthe verdict reads the same however it is reached')
     text = crt_snmp.verdict({'completed': 5}, 5)
@@ -612,7 +656,8 @@ def main():
                  test_single_vty_defaults_to_no, test_single_no_room, test_single_missing_acl,
                  test_single_failed_readback, test_single_missing_user_is_a_warning,
                  test_single_bad_inventory, test_bulk_verdict, test_bulk_cancel,
-                 test_bulk_renumber):
+                 test_bulk_renumber, test_bulk_no_save_by_answer,
+                 test_bulk_save_completed_only):
         tmpdir = tempfile.mkdtemp()
         try:
             test(tmpdir)

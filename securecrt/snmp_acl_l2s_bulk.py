@@ -8,7 +8,15 @@ many it was pointed at.
 READ THIS FIRST - THIS SCRIPT CONFIGURES DEVICES
 It logs into switches on its own authority and writes to running-config.
 Run snmp_acl_l2s.py on ONE production switch first and check that switch by
-hand; this is for after that. It never writes startup-config.
+hand; this is for after that.
+
+SAVING
+The run asks once, up front, whether to save. Yes sends `write memory` on each
+switch that COMPLETED - the read-back below found every permit in front of the
+deny - and only on those, before disconnecting. That read-back is the check a
+person would otherwise do by hand on each switch. A switch that failed,
+was skipped or never answered is not saved, so a reload still reverts anything
+half-applied there. No leaves startup-config alone everywhere, as before.
 
 WHAT EACH SWITCH GETS
 Exactly what snmp_acl_l2s.py sends, from the same inventory.yaml `snmp`
@@ -42,6 +50,8 @@ present and in front of the deny, no rejected command - not from the commands
 having been accepted. `failed` is the only outcome where something was sent
 and is wrong; every other one left the switch as it was. The verdict is also
 written beside the log as <log>_verdict.txt, so it survives the dialog.
+When saving, the verdict also counts how many completed switches were saved;
+a `write memory` that does not answer [OK] is named in that switch's warnings.
 
 It never aborts a run. A switch that is offline, refusing credentials, not a
 Cisco switch, or missing the ACL is logged and the walk moves on. Drop a file
@@ -65,6 +75,19 @@ import snmp_acl_l2s as snmp
 OUTPUT_DIR = snmp.OUTPUT_DIR
 STOP_FILE = 'STOP'
 SESSIONS_SHOWN = 12
+SAVE_COMMAND = 'write memory'
+
+
+def save_config(prompt):
+    """Write running-config to startup-config. Returns '' when IOS answered
+    [OK], otherwise a short reason for the log."""
+    try:
+        reply = capture_l2s.run_command(SAVE_COMMAND, prompt)
+    except Exception as error:
+        return bulk.first_line(str(error))
+    if '[OK]' in reply:
+        return ''
+    return bulk.first_line(reply.strip()) or 'no [OK] in the reply'
 
 
 def preview(settings):
@@ -128,6 +151,13 @@ def main():
             'person to look at.'.format(settings[0]),
             'SNMP ACL bulk - renumber when needed?', snmp.MB_YESNO) == snmp.IDYES
 
+    save = crt.Dialog.MessageBox(
+        'Save to startup-config (write memory) on each switch that completes?\n\n'
+        'Only switches whose ACL read back correctly - every permit in front of the '
+        'deny - are saved. Failed, skipped and unreachable switches are not.\n\n'
+        'No leaves startup-config alone on every switch, so a reload reverts the run.',
+        'SNMP ACL bulk - save when completed?', snmp.MB_YESNO) == snmp.IDYES
+
     listed = '\n'.join('  ' + path for path, _host in sessions[:SESSIONS_SHOWN])
     if len(sessions) > SESSIONS_SHOWN:
         listed += '\n  ...and {0} more'.format(len(sessions) - SESSIONS_SHOWN)
@@ -136,13 +166,15 @@ def main():
             'THIS WRITES TO running-config ON EVERY ONE OF THEM.\n\n'
             'Each gets:\n{3}\n\n'
             'A switch whose {4} is a vty access-class is skipped.{5}\n'
-            'startup-config is NOT written.\n\n'
+            '{7}\n\n'
             'To stop early, create a file named {6} in the log folder.\n\nBegin?'
             .format(len(sessions),
                     ' ({0} duplicate session(s) collapsed)'.format(len(duplicates))
                     if duplicates else '', listed, preview(settings), settings[0],
                     '\nNo room under the deny: renumbered first.' if renumber else '',
-                    STOP_FILE),
+                    STOP_FILE,
+                    'Each COMPLETED switch is saved (write memory).' if save
+                    else 'startup-config is NOT written.'),
             'SNMP ACL bulk - confirm', snmp.MB_YESNO | snmp.MB_ICONWARNING) != snmp.IDYES:
         return
 
@@ -151,6 +183,7 @@ def main():
     stop_path = os.path.join(output_dir, STOP_FILE)
     stopped = False
     connect_state = {}
+    saves = {'saved': 0, 'unsaved': 0}
 
     def visit_one(index, session_path, host):
         crt.Session.SetStatusText('SNMP ACL {0}/{1}: {2}'.format(index, len(sessions),
@@ -162,6 +195,14 @@ def main():
             return
         prompt = capture_l2s.read_prompt()
         result = snmp.apply(prompt, settings, renumber_if_no_room=renumber, refuse_vty=True)
+        if save and result.outcome == snmp.COMPLETED:
+            problem = save_config(prompt)
+            if problem:
+                saves['unsaved'] += 1
+                result.warnings.append('NOT saved to startup-config: ' + problem)
+            else:
+                saves['saved'] += 1
+                result.reason += '; saved to startup-config'
         log.record(session_path, host, result.outcome, result.reason, result.hostname, result)
 
     crt.Screen.Synchronous = True
@@ -195,6 +236,12 @@ def main():
     # at switch 40 of 600 completed 40 at best, and saying "40 of 40" would
     # read as a finished fleet.
     summary = snmp.verdict(log.counts, len(sessions), log.warned)
+    if save:
+        summary += '\nSaved to startup-config on {0} of {1} completed.'.format(
+            saves['saved'], log.counts.get(snmp.COMPLETED, 0))
+        if saves['unsaved']:
+            summary += ('\n  {0} completed but NOT saved - write memory did not answer [OK]; '
+                        'see the warnings column.'.format(saves['unsaved']))
     if stopped:
         summary += '\nStopped early by the STOP file - {0} switch(es) not visited.'.format(
             len(sessions) - sum(n for name, n in log.counts.items() if name != 'duplicate'))
@@ -206,9 +253,12 @@ def main():
         verdict_path = '(not written)'
     crt.Dialog.MessageBox(
         '{0}\n\nRun log:\n{1}\nVerdict:\n{2}\n\nOne row per session, including the ones '
-        'nothing answered '
-        'from.\nstartup-config was NOT written on any switch. Check, then save deliberately.'
-        .format(summary, log.path, verdict_path), 'SNMP ACL bulk - verdict')
+        'nothing answered from.\n{3}'
+        .format(summary, log.path, verdict_path,
+                'Only completed switches were saved; nothing else was written to startup-config.'
+                if save else
+                'startup-config was NOT written on any switch. Check, then save deliberately.'),
+        'SNMP ACL bulk - verdict')
 
 
 if crt is not None:
