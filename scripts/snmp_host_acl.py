@@ -8,7 +8,9 @@ Two commands, from inventory.yaml's `snmp` section:
     snmp-server host <trap_hosts key> version 3 priv <trap_hosts value>
     ip access-list resequence <acl_name> <start> <increment>
 
-and between them, one `<seq> permit <spec> log` per entry in `snmp.permits` - at
+and between them, one `<seq> permit <spec> log` per entry in `snmp.permits`, plus
+`no <seq>` / `<seq> <same entry> log` for every permit already in the list
+without `log`, so every permit ends up logged - the new ones at
 11, 12, 13 with `insert_at` set to 11, or at numbers read off the device when
 it is not. See WHERE THE ENTRIES LAND below; it is the one decision here worth
 making deliberately.
@@ -350,15 +352,47 @@ def with_log(text):
     return text if re.search(r'\slog$', text.strip()) else text.strip() + ' log'
 
 
-def acl_commands(name, planned):
+def has_log(text):
+    return bool(re.search(r'\slog$', MATCH_COUNT_RE.sub('', str(text)).strip()))
+
+
+def relog_plan(entries):
+    """[(sequence, 'permit <body> log')] for every permit already in the list
+    without `log`, written back the way IOS accepts it.
+
+    Each is replaced at its own number - `no N`, then `N ... log` - rather than
+    the whole list being cleared and rebuilt. Only one entry is ever missing,
+    for one command, the order never changes, and a run cut off half way
+    leaves every line either as it was or with its log, never gone. Clearing
+    the list first would leave it empty for the length of the rebuild, and an
+    empty list is an implicit deny - for SSH too, where it is an access-class."""
+    return [(sequence, with_log(text.replace(', wildcard bits ', ' ')))
+            for sequence, text in entries
+            if text.startswith('permit') and not has_log(text)]
+
+
+def acl_commands(name, planned, relogged=()):
     """The ACL block. The explicit `exit` closes config-acl mode, because the
     resequence line that follows is a global-config command and Netmiko sends
     this list flat without navigating modes on its own."""
-    if not planned:
+    if not planned and not relogged:
         return []
     body = [f'{sequence} {with_log(text)}' if sequence is not None else with_log(text)
             for sequence, text in planned]
+    for sequence, text in relogged:
+        body += [f'no {sequence}', f'{sequence} {text}']
     return [f'ip access-list standard {name}'] + body + ['exit']
+
+
+def check_relogged(entries, relogged):
+    """(lost, unlogged), from the list read back: permits that were replaced
+    and are no longer there at all, and permits still without `log`."""
+    present = {normalise_entry(text) for _, text in entries}
+    lost = [(sequence, text) for sequence, text in relogged
+            if normalise_entry(text) not in present]
+    unlogged = [(sequence, text) for sequence, text in entries
+                if text.startswith('permit') and not has_log(text)]
+    return lost, unlogged
 
 
 def references(output, name):
@@ -564,6 +598,8 @@ def main(argv=None):
                   f'present sends\nfewer lines and the rest shift down. The numbers are refused '
                   f'outright if any is already in use\nor lands at or after the deny - both read '
                   f'off the device.')
+        print('\nEvery permit already in the list without log is replaced at its own number '
+              'with log added\n(`no N`, then `N ... log`). Which ones is read off the device.')
         print(f'\nThen, renumbering the list in place without changing its order:\n  {resequence}')
         if args.resequence_first:
             print(f'\n--resequence-first also runs it before the insert:\n  {resequence}')
@@ -639,11 +675,17 @@ def main(argv=None):
             return 2
 
         if already:
-            print(f'\nAlready in {acl_name}, left alone:')
+            print(f'\nAlready in {acl_name}, not added again:')
             for spec in already:
                 print(f'  permit {spec}')
 
-        commands = host_commands + acl_commands(acl_name, planned)
+        relogged = relog_plan(entries)
+        if relogged:
+            print(f'\nExisting permit(s) without log, replaced at their own number:')
+            for sequence, text in relogged:
+                print(f'  {sequence} {text}')
+
+        commands = host_commands + acl_commands(acl_name, planned, relogged)
         # The resequence runs even when nothing was inserted: the list still
         # carries whatever numbering it had, and tidying it changes no access
         # decision, so a re-run that only renumbers is harmless.
@@ -664,7 +706,20 @@ def main(argv=None):
             print(f'  {sequence:>5} {text}')
 
         missing, unreachable, deny_sequence = check_applied(final, permits)
+        lost, unlogged = check_relogged(final, relogged)
         failed = False
+        if lost:
+            failed = True
+            print(f'\nFAILED: {len(lost)} permit(s) were removed to add log and are not back '
+                  f'- re-add them by hand under `ip access-list standard {acl_name}`:',
+                  file=sys.stderr)
+            for sequence, text in lost:
+                print(f'  {sequence} {text}', file=sys.stderr)
+        if unlogged:
+            failed = True
+            print(f'\nFAILED: {len(unlogged)} permit(s) still have no log:', file=sys.stderr)
+            for sequence, text in unlogged:
+                print(f'  {sequence} {text}', file=sys.stderr)
         if missing:
             failed = True
             print(f'\nFAILED: {len(missing)} permit(s) are not in {acl_name} after the push - the '

@@ -21,7 +21,9 @@ half-applied there. No leaves startup-config alone everywhere, as before.
 WHAT EACH SWITCH GETS
 Exactly what snmp_acl_l2s.py sends, from the same inventory.yaml `snmp`
 section: `snmp-server host ... version 3 priv <user>`, the permits inserted in
-front of the ACL's deny at numbers read off THAT switch, and the resequence.
+front of the ACL's deny at numbers read off THAT switch, `log` added to every
+existing permit that lacks it (replaced at its own number, one at a time), and
+the resequence.
 Each switch's ACL is read before anything is sent, so the sequence numbers are
 right for each switch rather than for the one the run was tested on.
 
@@ -105,7 +107,9 @@ def preview(settings):
     else:
         lines.append('\n  Pinned at {0}: a switch where any of those numbers is taken, or sits '
                      'past the deny, is skipped.'.format(insert_at))
-    lines.append('  Permits already in a switch\'s list are left alone there.')
+    lines.append('  Permits already in a switch\'s list are not added again.')
+    lines.append('  Every permit there without log is replaced at its own number with log '
+                 '(no N, then N ... log).')
     return '\n'.join(lines)
 
 

@@ -345,6 +345,26 @@ check('log is ignored when comparing entries',
 check('nothing planned means no ACL block at all',
       snmp.acl_commands('SNMP_ACCESS', []) == [])
 
+relog = snmp.relog_plan([(10, 'permit 192.0.2.10'), (20, 'permit 192.0.2.64, wildcard bits 0.0.0.31'),
+                         (30, 'permit 192.0.2.30 log'), (40, 'deny any log')])
+check('relog_plan picks only the permits without log',
+      relog == [(10, 'permit 192.0.2.10 log'), (20, 'permit 192.0.2.64 0.0.0.31 log')], str(relog))
+check('a permit with log and a match count is already logged',
+      snmp.relog_plan([(10, 'permit 192.0.2.10 log (12 matches)')]) == [])
+check('each is replaced in place: no N, then N with log',
+      snmp.acl_commands('SNMP_ACCESS', [], relog)[1:5]
+      == ['no 10', '10 permit 192.0.2.10 log', 'no 20', '20 permit 192.0.2.64 0.0.0.31 log'],
+      str(snmp.acl_commands('SNMP_ACCESS', [], relog)))
+check('relogs alone still open and close the ACL block',
+      snmp.acl_commands('SNMP_ACCESS', [], relog)[0] == 'ip access-list standard SNMP_ACCESS'
+      and snmp.acl_commands('SNMP_ACCESS', [], relog)[-1] == 'exit')
+lost, unlogged = snmp.check_relogged([(10, 'permit 192.0.2.10 log'), (30, 'permit 192.0.2.30')],
+                                     relog)
+check('a replaced permit missing after the push is reported as lost',
+      lost == [(20, 'permit 192.0.2.64 0.0.0.31 log')], str(lost))
+check('a permit still without log is reported', unlogged == [(30, 'permit 192.0.2.30')],
+      str(unlogged))
+
 print()
 print('reading the result back off the device, which is the only proof')
 after = snmp.parse_acl("""Standard IP access list SNMP_ACCESS

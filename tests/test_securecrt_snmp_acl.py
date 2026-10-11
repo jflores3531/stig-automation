@@ -107,6 +107,15 @@ def test_parity():
         entries = a[1]
         check(f'first_deny on the {label} list',
               netmiko_snmp.first_deny(entries) == crt_snmp.first_deny(entries))
+        check(f'relog_plan on the {label} list',
+              netmiko_snmp.relog_plan(entries) == crt_snmp.relog_plan(entries))
+        relogged = netmiko_snmp.relog_plan(entries)
+        check(f'check_relogged on the {label} list',
+              netmiko_snmp.check_relogged(entries, relogged)
+              == crt_snmp.check_relogged(entries, relogged))
+        check(f'acl_commands with relogs on the {label} list',
+              netmiko_snmp.acl_commands('A', [], relogged)
+              == crt_snmp.acl_commands('A', [], relogged))
         for permits in PERMIT_SETS:
             for insert_at in (None, 1, 11, 12, 25, 31):
                 a = outcome(netmiko_snmp, lambda m: m.plan_insert(entries, permits, insert_at))
@@ -218,8 +227,11 @@ class Switch:
             return '%SYS-5-CONFIG_I: Configured from console by admin on vty0'
         if self.mode == 'acl':
             match = re.match(r'^(\d+)\s+((?:permit|deny)\s.*)$', command)
+            removal = re.match(r'^no\s+(\d+)$', command)
             if match:
                 self.acl[int(match.group(1))] = match.group(2)
+            elif removal:
+                self.acl.pop(int(removal.group(1)), None)
             elif command.startswith(('permit', 'deny')):
                 self.acl[(max(self.acl) if self.acl else 0) + 10] = command
             elif command == 'exit':
@@ -426,7 +438,8 @@ def test_single_completed(tmpdir):
     # 21, 22, 23 under the deny at 30, then renumbered 10/10 in order.
     check('the list ends renumbered with the permits before the deny',
           [switch.acl[s] for s in sorted(switch.acl)] == [
-              'permit 192.0.2.10', 'permit 192.0.2.64 0.0.0.31', 'permit host 192.0.2.20 log',
+              'permit 192.0.2.10 log', 'permit 192.0.2.64 0.0.0.31 log',
+              'permit host 192.0.2.20 log',
               'permit 192.0.2.21 log', 'permit host 192.0.2.22 log', 'deny any log'], switch.acl)
     check('the list is numbered 10/10 afterwards', sorted(switch.acl) == [10, 20, 30, 40, 50, 60])
     check('the trap host was pushed with the username',
@@ -453,7 +466,7 @@ def test_single_pinned(tmpdir):
     check('11, 12 and 13 were sent',
           ['11 permit host 192.0.2.20 log', '12 permit 192.0.2.21 log',
            '13 permit host 192.0.2.22 log']
-          == [c for c in switch.configured if re.match(r'^\d+ permit', c)], switch.configured)
+          == [c for c in switch.configured if re.match(r'^1[1-9] permit', c)], switch.configured)
     check('and they sit right after 10, before the old 20',
           [switch.acl[s] for s in sorted(switch.acl)][1] == 'permit host 192.0.2.20 log', switch.acl)
     check('completed', last_message(fake)[0] == 'SNMP ACL - COMPLETED')
@@ -606,6 +619,37 @@ def test_bulk_renumber(tmpdir):
         shutil.rmtree(other)
 
 
+def test_relog_existing(tmpdir):
+    print('\none switch: every existing permit without log gets it, at its own number')
+    acl = {10: 'permit 192.0.2.10', 20: 'permit 192.0.2.64 0.0.0.31',
+           30: 'permit host 192.0.2.30 log', 40: 'deny any log'}
+    switch = Switch(acl=acl)
+    fake = run_single(tmpdir, switch)
+    check('completed', last_message(fake)[0] == 'SNMP ACL - COMPLETED', last_message(fake))
+    check('each was replaced in place, not the list cleared',
+          ['no 10', '10 permit 192.0.2.10 log', 'no 20', '20 permit 192.0.2.64 0.0.0.31 log']
+          == [c for c in switch.configured if re.match(r'^(no )?[12]0\b', c)], switch.configured)
+    check('the one that already had log was not touched', 'no 30' not in switch.configured)
+    check('the deny was not touched', 'no 40' not in switch.configured)
+    check('every permit now ends in log',
+          all(text.endswith(' log') for text in switch.acl.values()), switch.acl)
+    check('the order is unchanged', [switch.acl[s] for s in sorted(switch.acl)][:3] == [
+        'permit 192.0.2.10 log', 'permit 192.0.2.64 0.0.0.31 log', 'permit host 192.0.2.30 log'],
+        switch.acl)
+    rows = log_rows(tmpdir)
+    check('the log says how many got log', rows and 'log added to 2 existing permit(s)'
+          in rows[0]['reason'], rows)
+
+
+def test_relog_rejected_is_failed(tmpdir):
+    print('\none switch: a re-add the switch refuses leaves the verdict FAILED, not completed')
+    switch = Switch(acl=MANAGED, reject=('10 permit 192.0.2.10 log',))
+    fake = run_single(tmpdir, switch)
+    title, text, _ = last_message(fake)
+    check('the verdict is FAILED', title == 'SNMP ACL - FAILED', f'{title}\n{text}')
+    check('and names the entry that is gone', 'GONE after adding log' in text, text)
+
+
 def test_bulk_no_save_by_answer(tmpdir):
     print('\nbulk: No at the save question writes startup-config nowhere')
     switches = {'site/sw-1': Switch('SW1', acl=MANAGED)}
@@ -659,7 +703,8 @@ def main():
                  test_single_failed_readback, test_single_missing_user_is_a_warning,
                  test_single_bad_inventory, test_bulk_verdict, test_bulk_cancel,
                  test_bulk_renumber, test_bulk_no_save_by_answer,
-                 test_bulk_save_completed_only):
+                 test_bulk_save_completed_only, test_relog_existing,
+                 test_relog_rejected_is_failed):
         tmpdir = tempfile.mkdtemp()
         try:
             test(tmpdir)

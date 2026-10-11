@@ -252,12 +252,36 @@ def with_log(text):
     return text if re.search(r'\slog$', text.strip()) else text.strip() + ' log'
 
 
-def acl_commands(name, planned):
-    if not planned:
+def has_log(text):
+    return bool(re.search(r'\slog$', MATCH_COUNT_RE.sub('', str(text)).strip()))
+
+
+def relog_plan(entries):
+    """Every existing permit without `log`, replaced at its own number - see
+    scripts/snmp_host_acl.py for why one at a time and not clear-and-rebuild."""
+    return [(sequence, with_log(text.replace(', wildcard bits ', ' ')))
+            for sequence, text in entries
+            if text.startswith('permit') and not has_log(text)]
+
+
+def acl_commands(name, planned, relogged=()):
+    if not planned and not relogged:
         return []
     body = ['{0} {1}'.format(sequence, with_log(text)) if sequence is not None
             else with_log(text) for sequence, text in planned]
+    for sequence, text in relogged:
+        body += ['no {0}'.format(sequence), '{0} {1}'.format(sequence, text)]
     return ['ip access-list standard {0}'.format(name)] + body + ['exit']
+
+
+def check_relogged(entries, relogged):
+    """(lost, unlogged): replaced permits no longer there, permits still without log."""
+    present = {normalise_entry(text) for _, text in entries}
+    lost = [(sequence, text) for sequence, text in relogged
+            if normalise_entry(text) not in present]
+    unlogged = [(sequence, text) for sequence, text in entries
+                if text.startswith('permit') and not has_log(text)]
+    return lost, unlogged
 
 
 def references(output, name):
@@ -431,6 +455,7 @@ class Result:
         self.commands = []
         self.planned = []
         self.already = []
+        self.relogged = []
         self.warnings = []
         # Set when the list was renumbered before the insert. That command has
         # already gone by the time anyone is asked about the rest.
@@ -523,8 +548,9 @@ def apply(prompt, settings, renumber_if_no_room=False, confirm=None, refuse_vty=
             result.warnings.append('SNMPv3 user {0} does not exist - traps to {1} are dropped'
                                    .format(v3_user, ip))
 
+    result.relogged = relog_plan(entries)
     result.commands = [snmp_host_command(ip, user) for ip, user in hosts] \
-        + acl_commands(acl_name, result.planned) + [resequence]
+        + acl_commands(acl_name, result.planned, result.relogged) + [resequence]
     if confirm is not None and not confirm(result):
         result.outcome = SKIPPED
         result.reason = ('cancelled - the list was renumbered, nothing else sent'
@@ -542,6 +568,7 @@ def apply(prompt, settings, renumber_if_no_room=False, confirm=None, refuse_vty=
             str(error)
         return result
     missing, unreachable, deny_sequence = check_applied(result.after, permits)
+    lost, unlogged = check_relogged(result.after, result.relogged)
 
     problems = []
     if rejected:
@@ -552,12 +579,21 @@ def apply(prompt, settings, renumber_if_no_room=False, confirm=None, refuse_vty=
         problems.append('after the deny at {0}: {1}'.format(
             deny_sequence, '; '.join('{0} permit {1}'.format(seq, spec)
                                      for spec, seq in unreachable)))
+    if lost:
+        problems.append('GONE after adding log: ' + '; '.join(
+            '{0} {1}'.format(seq, text) for seq, text in lost))
+    if unlogged:
+        problems.append('still without log: ' + '; '.join(
+            '{0} {1}'.format(seq, text) for seq, text in unlogged))
     if problems:
         result.outcome, result.reason = FAILED, ' | '.join(problems)
     else:
         result.reason = ('all {0} permit(s) in front of the deny at {1}'.format(
             len(permits), deny_sequence) if deny_sequence is not None
             else 'all {0} permit(s) present; no explicit deny'.format(len(permits)))
+        if result.relogged:
+            result.reason += '; log added to {0} existing permit(s)'.format(
+                len(result.relogged))
     return result
 
 
@@ -646,10 +682,13 @@ def confirm_dialog(result, settings):
                                            'nothing until `snmp-server group <group> v3 priv '
                                            'access {0}` exists.'.format(acl_name))
     if result.already:
-        lines.append('\nAlready in the list, left alone:\n'
+        lines.append('\nAlready in the list, not added again:\n'
                      + '\n'.join('  permit ' + spec for spec in result.already))
     if result.renumbered:
         lines.append('\nAlready sent, as agreed: ' + result.renumbered)
+    if result.relogged:
+        lines.append('\n{0} existing permit(s) without log are replaced at their own number '
+                     '(no N, then N ... log).'.format(len(result.relogged)))
     lines.append('\nCommands to send:\n' + '\n'.join('  ' + c for c in result.commands))
     flags = MB_YESNO | MB_ICONWARNING
     on_vty = vty_references(result.references)
