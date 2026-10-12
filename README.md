@@ -40,6 +40,7 @@ not pushed, which STIG readings were argued over — is in [`docs/DESIGN.md`](do
 | `arp_inventory.py` | What is live on a subinterface, from the router's ARP table, as a CSV. |
 | `pdf_ips.py` | Addresses out of a PDF network diagram, with the page and label beside each. |
 | `merge_walk_csvs.py` | Merges the per-run CSVs the SecureCRT walks write into one file, newest row per switch. |
+| `compare_inventory_ips.py` | IP addresses an older inventory CSV has that a newer one is missing, each with the old row's hostname and model, then the ones that are new. `--out` writes the missing rows to a CSV. |
 | `backup_config.py` | Back up running-config + VLANs; a latest copy per device plus a pruned archive. |
 | `config_diff.py` | Compare current running-config/VLANs against the last backup. |
 | `save_config.py` | running-config to startup-config. Run it *after* a harden pass **and** its audit. |
@@ -277,6 +278,7 @@ python3 tests/test_arp_inventory.py
 python3 tests/test_pdf_ips.py
 python3 tests/test_snmp_host_acl.py
 python3 tests/test_securecrt_snmp_acl.py
+python3 tests/test_compare_inventory_ips.py
 ```
 
 ## Getting a report into STIG Viewer 3
