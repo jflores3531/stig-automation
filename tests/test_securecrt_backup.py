@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verification for securecrt/backup_l2s.py.
+"""Verification for securecrt/backup_l2s.py and backup_l2s_bulk.py.
 
 Run directly: `python3 tests/test_securecrt_backup.py`. No framework, no
 SecureCRT, no devices - a stand-in session answers the show commands.
@@ -14,7 +14,9 @@ PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 
 import capture_l2s
+import capture_l2s_bulk as bulk
 import backup_l2s
+import backup_l2s_bulk
 
 failures = []
 
@@ -115,6 +117,161 @@ def run(tmpdir, **kwargs):
     return fake
 
 
+# ---------------------------------------------------------------------------
+# The bulk run: a stand-in SecureCRT holding several switches, one per session.
+# ---------------------------------------------------------------------------
+
+class BulkSession:
+    def __init__(self, crt_stub):
+        self.crt = crt_stub
+        self.Connected = False
+
+    def Connect(self, connect_string, _suppress=False):
+        session = connect_string.split('"')[1]
+        if session not in self.crt.switches:
+            self.crt.last_error = 'The connection attempt timed out. No response from host.'
+            raise Exception(self.crt.last_error)
+        prompt, config, vlans = self.crt.switches[session]
+        self.crt.prompt = prompt
+        self.crt.answers = {'terminal length 0': '', 'show running-config': config,
+                            'show vlan brief': vlans}
+        self.Connected = True
+
+    def Disconnect(self):
+        self.Connected = False
+
+    def SetStatusText(self, _text):
+        pass
+
+
+class BulkDialog(FakeDialog):
+    def Prompt(self, _message, title='', _default='', _password=False):
+        return '' if 'scope' in title.lower() else self.crt.output_dir
+
+    def MessageBox(self, message, title='', _flags=0):
+        self.crt.messages.append((title, message))
+        return 6 if 'confirm' in title.lower() else 1
+
+
+class BulkCRT(FakeCRT):
+    def __init__(self, output_dir, switches):
+        FakeCRT.__init__(self, output_dir)
+        self.switches = switches
+        self.last_error = ''
+        self.Session = BulkSession(self)
+        self.Dialog = BulkDialog(self)
+
+    def GetLastErrorMessage(self):
+        return self.last_error
+
+
+def run_bulk(tmpdir, switches, sessions):
+    fake = BulkCRT(tmpdir, switches)
+    original_find = bulk.find_sessions
+    for module in (capture_l2s, bulk, backup_l2s, backup_l2s_bulk):
+        module.crt = fake
+    bulk.find_sessions = lambda _filter='': list(sessions)
+    try:
+        backup_l2s_bulk.main()
+    finally:
+        for module in (capture_l2s, bulk, backup_l2s, backup_l2s_bulk):
+            module.crt = None
+        bulk.find_sessions = original_find
+    return fake
+
+
+def log_rows(tmpdir):
+    import csv
+    rows = []
+    for name in sorted(os.listdir(tmpdir)):
+        if name.startswith('backup_log_') and name.endswith('.csv'):
+            with open(os.path.join(tmpdir, name), encoding='utf-8', newline='') as handle:
+                rows.extend(csv.DictReader(handle))
+    return rows
+
+
+def named(hostname, **changes):
+    config = CONFIG.replace('ACCESS-SW01', hostname)
+    for old, new in changes.items():
+        config = config.replace(old, new)
+    return config
+
+
+def test_bulk(tmpdir):
+    print('\nbulk: every session backed up, the rest accounted for, one verdict')
+    switches = {
+        'site/sw-1': ('SW1#', named('SW-ONE'), VLANS),
+        'site/sw-2': ('SW2#', named('SW-TWO'), VLANS),
+        'site/sw-3': ('SW3#', named('SW-THREE').rsplit('\nend', 1)[0], VLANS),
+        'site/sw-4': ('SW4>', named('SW-FOUR'), VLANS),
+        'site/sw-5': ('SW5#', named('SW-ONE', **{'vlan 20': 'vlan 99'}), VLANS),
+    }
+    sessions = [(name, f'192.0.2.{i}') for i, name in enumerate(sorted(switches), 1)]
+    sessions.append(('site/sw-dead', '192.0.2.99'))
+    sessions.append(('site/sw-1-copy', '192.0.2.1'))
+    fake = run_bulk(tmpdir, switches, sessions)
+    title, text = fake.messages[-1]
+    check('the closing dialog is the verdict', title == 'Switch backup bulk - verdict', title)
+    check('backed up 3 of 6 (the duplicate session is not a switch)',
+          'Backed up 3 of 6 switch(es).' in text, text)
+    check('the rest are counted by outcome', 'refused 2' in text and 'unreachable 1' in text, text)
+
+    files = sorted(n for n in os.listdir(tmpdir) if n.endswith('.txt') and '_verdict' not in n)
+    check('one file per switch backed up, named by hostname',
+          files == ['SW-ONE.txt', 'SW-ONE_192.0.2.5.txt', 'SW-TWO.txt'], files)
+    check('the first SW-ONE is not overwritten by the second',
+          'vlan 20' in read(os.path.join(tmpdir, 'SW-ONE.txt'))
+          and 'vlan 99' in read(os.path.join(tmpdir, 'SW-ONE_192.0.2.5.txt')))
+    check('each has its VLANs', all('! --- show vlan brief ---' in read(os.path.join(tmpdir, f))
+                                    for f in files))
+    check('the header carries the session address',
+          '! IP Address: 192.0.2.2' in read(os.path.join(tmpdir, 'SW-TWO.txt')))
+
+    rows = {row['session']: row for row in log_rows(tmpdir)}
+    check('a row for every session, the duplicate included', len(rows) == 7, sorted(rows))
+    check('the clash is explained in its row',
+          'hostname also used this run by site/sw-1' in rows['site/sw-5']['detail'],
+          rows.get('site/sw-5'))
+    check('the cut-short config is refused, with the reason',
+          rows['site/sw-3']['outcome'] == 'refused'
+          and 'Config not read' in rows['site/sw-3']['detail'], rows.get('site/sw-3'))
+    check('user EXEC mode is refused', rows['site/sw-4']['outcome'] == 'refused'
+          and 'enable' in rows['site/sw-4']['detail'], rows.get('site/sw-4'))
+    check('nothing but reads were sent anywhere', set(fake.Screen.sent) <= {
+        'terminal length 0', 'show running-config', 'show vlan brief'}, set(fake.Screen.sent))
+    verdicts = [n for n in os.listdir(tmpdir) if n.endswith('_verdict.txt')]
+    check('the verdict is written beside the log', len(verdicts) == 1, os.listdir(tmpdir))
+
+    print('\nbulk, again: a switch that fails now keeps its last good backup')
+    before = read(os.path.join(tmpdir, 'SW-TWO.txt'))
+    switches['site/sw-2'] = ('SW2#', named('SW-TWO').rsplit('\nend', 1)[0], VLANS)
+    run_bulk(tmpdir, switches, [('site/sw-1', '192.0.2.1'), ('site/sw-2', '192.0.2.2')])
+    check('SW-TWO.txt is the earlier backup, untouched',
+          read(os.path.join(tmpdir, 'SW-TWO.txt')) == before)
+    latest = [r for r in log_rows(tmpdir) if r['session'] == 'site/sw-1'][-1]
+    check('and SW-ONE was replaced, saying so', 'replaced the previous backup' in latest['detail'],
+          latest)
+
+
+def test_bulk_cancel(tmpdir):
+    print('\nbulk: No at the confirmation connects to nothing')
+    fake = BulkCRT(tmpdir, {'site/sw-1': ('SW1#', CONFIG, VLANS)})
+    fake.Dialog.MessageBox = lambda message, title='', _flags=0: 7
+    original_find = bulk.find_sessions
+    for module in (capture_l2s, bulk, backup_l2s, backup_l2s_bulk):
+        module.crt = fake
+    bulk.find_sessions = lambda _filter='': [('site/sw-1', '192.0.2.1')]
+    try:
+        backup_l2s_bulk.main()
+    finally:
+        for module in (capture_l2s, bulk, backup_l2s, backup_l2s_bulk):
+            module.crt = None
+        bulk.find_sessions = original_find
+    check('nothing sent', fake.Screen.sent == [], fake.Screen.sent)
+    check('no backup written', not any(n.endswith('.txt') for n in os.listdir(tmpdir)),
+          os.listdir(tmpdir))
+
+
 def read(path):
     with open(path, encoding='utf-8') as handle:
         return handle.read()
@@ -179,7 +336,7 @@ def test_router(tmpdir):
 
 
 def main():
-    for test in (test_backup, test_refusals, test_router):
+    for test in (test_backup, test_refusals, test_router, test_bulk, test_bulk_cancel):
         tmpdir = tempfile.mkdtemp()
         try:
             test(tmpdir)

@@ -132,6 +132,19 @@ def write_replacing(path, text):
     os.replace(temporary, path)
 
 
+def save(output_dir, hostname, address, config, vlans, name=None):
+    """Write the backup into output_dir. Returns (path, replaced). `name`
+    overrides the hostname as the file's name; the bulk run uses it only when
+    two switches in one run report the same hostname."""
+    path = os.path.join(output_dir, safe_filename(name or hostname) + '.txt')
+    replaced = os.path.exists(path)
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+    write_replacing(path, render(hostname, address, config, vlans,
+                                 time.strftime('%Y-%m-%d %H:%M:%S')))
+    return path, replaced
+
+
 def remote_address():
     try:
         return crt.Session.RemoteAddress or ''
@@ -165,16 +178,12 @@ def main():
         # where the write fails with Permission denied.
         if not os.path.isabs(output_dir):
             output_dir = os.path.join(OUTPUT_DIR, output_dir)
-        path = os.path.join(output_dir, safe_filename(hostname) + '.txt')
-        replaced = os.path.exists(path)
         try:
-            if not os.path.isdir(output_dir):
-                os.makedirs(output_dir)
-            write_replacing(path, render(hostname, remote_address(), config, vlans,
-                                         time.strftime('%Y-%m-%d %H:%M:%S')))
+            path, replaced = save(output_dir, hostname, remote_address(), config, vlans)
         except OSError as error:
-            crt.Dialog.MessageBox('Could not write {0}:\n{1}\n\nRun the script again and give a '
-                                  'folder you can write to.'.format(path, error), 'Backup failed')
+            crt.Dialog.MessageBox('Could not write into {0}:\n{1}\n\nRun the script again and '
+                                  'give a folder you can write to.'.format(output_dir, error),
+                                  'Backup failed')
             return
 
         crt.Dialog.MessageBox(
