@@ -63,6 +63,7 @@ has never seen stops an unattended run on a modal dialog; connect to it once by 
 |---|---|
 | `capture_l2s.py` | One open session: send the read-only commands, audit them, write the `.cklb`. Cannot connect to anything, so it cannot be aimed at the wrong device. |
 | `capture_l2s_bulk.py` | The same across every saved session, unattended. One `run_log_<stamp>.csv` accounting for every session, including the ones nothing answered from. |
+| `backup_l2s.py` | One open session: running-config + `show vlan brief` into `<hostname>.txt`, the same layout as `backup_config.py`. Re-running replaces that switch's file; a failed run leaves the last backup untouched. Read-only. |
 | `inventory_l2s.py` | `show version` per session into one `inventory_<stamp>.csv`. A stack is one row per chassis. Minutes where the audit takes an evening. |
 | `harden_l2s_bulk.py` | **Configures devices.** Logging/audit, access control, SSH crypto, the V-220534 service block. vty limit opt-in. Never writes startup-config. |
 | `harden_access_ports_bulk.py` | **Configures devices.** The access-port fixes on every host-facing port. Never sends a trunk command. Reads and expands interface templates before classifying any port. |
