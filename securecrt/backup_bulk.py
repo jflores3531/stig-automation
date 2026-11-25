@@ -1,7 +1,7 @@
 # $language = "Python3"
 # $interface = "1.0"
 
-"""Run backup_l2s.py against every saved SecureCRT session, unattended: each
+"""Run backup.py against every saved SecureCRT session, unattended: each
 switch's running-config and VLAN database into <hostname>.txt, then a verdict -
 how many switches it backed up, out of how many it was pointed at.
 
@@ -44,9 +44,9 @@ crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
-import capture_l2s_bulk as bulk
-import backup_l2s as backup
+import cklb_collect
+import cklb_collect_bulk as bulk
+import backup as backup
 
 # SecureCRT keeps one Python running between script runs, and Python imports a
 # module only once - so without this, the copy of a helper that runs is the one
@@ -56,7 +56,7 @@ import backup_l2s as backup
 # still there, every helper would start as if SecureCRT had launched it.
 if crt is not None:
     import importlib
-    for _module in (capture_l2s, bulk, backup):
+    for _module in (cklb_collect, bulk, backup):
         _module.crt = None
         importlib.reload(_module)
 
@@ -166,7 +166,7 @@ def main():
             _ip, label = bulk.session_name_parts(session_path)
             log.record(session_path, host, outcome, comment, label)
             return
-        prompt = capture_l2s.read_prompt()
+        prompt = cklb_collect.read_prompt()
         try:
             hostname, config, vlans = backup.collect(prompt)
         except backup.BackupError as refused:
@@ -199,7 +199,7 @@ def main():
             # Nothing that happens to one switch may end the walk.
             try:
                 visit_one(index, session_path, host)
-            except capture_l2s.CollectionError as refused:
+            except cklb_collect.CollectionError as refused:
                 try:
                     log.record(session_path, host, REFUSED, refused.reason)
                 except Exception:
@@ -234,7 +234,7 @@ def main():
 
 
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     bulk.crt = crt
     backup.crt = crt
     main()

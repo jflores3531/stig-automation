@@ -33,8 +33,8 @@ sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import capture_l2s
-import capture_l2s_bulk as bulk
+import cklb_collect
+import cklb_collect_bulk as bulk
 import harden_access_ports_bulk as access
 import stig_common
 from fixtures import OUTPUTS
@@ -253,26 +253,26 @@ def test_an_unreadable_template_stops_that_switch():
             self.Screen = Screen(answers)
 
     good = dict(TEMPLATE_OUTPUT)
-    capture_l2s.crt = Stub({access.TEMPLATE_COMMAND_PREFIX + n: v for n, v in good.items()})
+    cklb_collect.crt = Stub({access.TEMPLATE_COMMAND_PREFIX + n: v for n, v in good.items()})
     try:
         bodies = access.read_interface_templates(CONFIG, 'SW#')
         check('all three templates are read when the switch answers',
               sorted(bodies) == ['PARKED', 'UPLINK', 'USER-PORT'], sorted(bodies))
     finally:
-        capture_l2s.crt = None
+        cklb_collect.crt = None
 
-    capture_l2s.crt = Stub({access.TEMPLATE_COMMAND_PREFIX + 'UPLINK': '% Template not found'})
+    cklb_collect.crt = Stub({access.TEMPLATE_COMMAND_PREFIX + 'UPLINK': '% Template not found'})
     try:
         access.read_interface_templates(CONFIG, 'SW#')
         check('an unreadable template raises rather than being skipped past', False)
-    except capture_l2s.CollectionError as refused:
+    except cklb_collect.CollectionError as refused:
         check('an unreadable template refuses the switch',
               'unreadable' in refused.reason, refused.reason)
         check('and the reason names which template',
               'USER-PORT' in refused.reason or 'UPLINK' in refused.reason
               or 'PARKED' in refused.reason, refused.reason)
     finally:
-        capture_l2s.crt = None
+        cklb_collect.crt = None
 
 
 def test_the_unused_vlan_is_read_from_inventory_when_it_is_there():

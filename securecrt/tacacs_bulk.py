@@ -41,17 +41,17 @@ crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
-import capture_l2s_bulk as bulk
-import harden_l2s_bulk as harden
-import snmp_acl_l2s as snmp
-import snmp_acl_l2s_bulk as snmp_bulk
+import cklb_collect
+import cklb_collect_bulk as bulk
+import harden_bulk as harden
+import snmp_acl as snmp
+import snmp_acl_bulk as snmp_bulk
 import tacacs
 
-# See snmp_acl_l2s.py for why each helper is reloaded.
+# See snmp_acl.py for why each helper is reloaded.
 if crt is not None:
     import importlib
-    for _module in (capture_l2s, bulk, harden, snmp, snmp_bulk, tacacs):
+    for _module in (cklb_collect, bulk, harden, snmp, snmp_bulk, tacacs):
         _module.crt = None
         importlib.reload(_module)
 
@@ -155,7 +155,7 @@ def main():
             _ip, label = bulk.session_name_parts(session_path)
             log.record(session_path, host, outcome, comment, label)
             return
-        prompt = capture_l2s.read_prompt()
+        prompt = cklb_collect.read_prompt()
         result = tacacs.apply(prompt, settings)
         if save and result.outcome == tacacs.COMPLETED and result.ops:
             problem = snmp_bulk.save_config(prompt)
@@ -176,7 +176,7 @@ def main():
             # Nothing that happens to one switch may end the walk.
             try:
                 visit_one(index, session_path, host)
-            except capture_l2s.CollectionError as refused:
+            except cklb_collect.CollectionError as refused:
                 try:
                     log.record(session_path, host, 'refused', refused.reason)
                 except Exception:
@@ -224,7 +224,7 @@ def main():
 
 
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     bulk.crt = crt
     harden.crt = crt
     snmp.crt = crt

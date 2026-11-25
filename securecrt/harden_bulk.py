@@ -5,8 +5,8 @@
 SecureCRT session, unattended.
 
 READ THIS FIRST - THIS SCRIPT CONFIGURES DEVICES
-Every other script in this folder is read-only and says so: capture_l2s.py,
-capture_l2s_bulk.py and inventory_l2s.py send `show` commands and one
+Every other script in this folder is read-only and says so: cklb_collect.py,
+cklb_collect_bulk.py and inventory.py send `show` commands and one
 session-scoped `terminal length 0`, and each of their docstrings promises that
 nothing is configured on any device. This one breaks that promise deliberately,
 which is why it is a separate file with a separate name rather than a flag on
@@ -70,8 +70,8 @@ crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
-import capture_l2s_bulk as bulk
+import cklb_collect
+import cklb_collect_bulk as bulk
 
 
 # Where the run log is written. Created if missing.
@@ -270,7 +270,7 @@ def highest_vty_line(prompt):
     left answering that the run reports as closed, so the caller skips the vty
     block entirely rather than act on the 4 returned alongside a False."""
     try:
-        output = capture_l2s.run_command('show running-config | include ^line vty', prompt)
+        output = cklb_collect.run_command('show running-config | include ^line vty', prompt)
     except Exception:
         return 4, False
     numbers = [int(n) for line in (output or '').splitlines() for n in re.findall(r'\d+', line)]
@@ -303,9 +303,9 @@ def send_config(commands, prompt):
     transcript = []
     for command in ['configure terminal'] + list(commands) + ['end']:
         crt.Screen.Send(command + '\r')
-        answer = crt.Screen.ReadString(CONFIG_PROMPT, capture_l2s.READ_TIMEOUT_SECONDS)
+        answer = crt.Screen.ReadString(CONFIG_PROMPT, cklb_collect.READ_TIMEOUT_SECONDS)
         if answer is None:
-            raise capture_l2s.CollectionError(
+            raise cklb_collect.CollectionError(
                 'timed out after `{0}`'.format(command),
                 'Timed out waiting for a prompt after sending `{0}`.'.format(command),
                 'Config timeout')
@@ -339,13 +339,13 @@ def ssh_crypto_state(prompt):
     pass in the run log."""
     parts = []
     try:
-        status = capture_l2s.run_command('show ip ssh', prompt) or ''
+        status = cklb_collect.run_command('show ip ssh', prompt) or ''
     except Exception as error:
         status = ''
         parts.append('show ip ssh not read: ' + bulk.first_line(str(error)))
     version = re.search(r'SSH\s+Enabled\s*-\s*version\s*(\d+(?:\.\d+)?)', status, re.I)
     try:
-        config = capture_l2s.run_command('show running-config | include ^ip ssh', prompt) or ''
+        config = cklb_collect.run_command('show running-config | include ^ip ssh', prompt) or ''
     except Exception as error:
         return 'not read: ' + bulk.first_line(str(error))
     lines = [line.strip() for line in config.splitlines() if line.strip().startswith('ip ssh')]
@@ -533,12 +533,12 @@ def main():
             log.record(session_path, host or ip, outcome, comment=comment, hostname=label)
             return
 
-        prompt = capture_l2s.read_prompt()
+        prompt = cklb_collect.read_prompt()
         if prompt.endswith('>'):
             log.record(session_path, host, 'refused', comment='Session is in user EXEC mode')
             return
-        reply = capture_l2s.run_command('terminal length 0', prompt)
-        wrong_device = capture_l2s.not_a_switch(reply)
+        reply = cklb_collect.run_command('terminal length 0', prompt)
+        wrong_device = cklb_collect.not_a_switch(reply)
         if wrong_device:
             log.record(session_path, host, 'refused',
                        comment='Not a Cisco switch: ' + wrong_device)
@@ -589,7 +589,7 @@ def main():
             # rule the read-only walks run under, and for the same reason.
             try:
                 visit_one(index, session_path, host)
-            except capture_l2s.CollectionError as refused:
+            except cklb_collect.CollectionError as refused:
                 try:
                     log.record(session_path, host, 'refused', comment=refused.reason)
                 except Exception:
@@ -618,10 +618,10 @@ def main():
         'Harden finished')
 
 
-# See capture_l2s.py's tail: SecureCRT injects `crt` before running, so this is
+# See cklb_collect.py's tail: SecureCRT injects `crt` before running, so this is
 # truthy there and None on a plain import, which is what lets the tests drive
 # main() with a stand-in and no terminal anywhere.
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     bulk.crt = crt
     main()

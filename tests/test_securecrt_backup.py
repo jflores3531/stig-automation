@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verification for securecrt/backup_l2s.py and backup_l2s_bulk.py.
+"""Verification for securecrt/backup.py and backup_bulk.py.
 
 Run directly: `python3 tests/test_securecrt_backup.py`. No framework, no
 SecureCRT, no devices - a stand-in session answers the show commands.
@@ -13,10 +13,10 @@ import tempfile
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 
-import capture_l2s
-import capture_l2s_bulk as bulk
-import backup_l2s
-import backup_l2s_bulk
+import cklb_collect
+import cklb_collect_bulk as bulk
+import backup
+import backup_bulk
 
 failures = []
 
@@ -109,11 +109,11 @@ class FakeCRT:
 
 def run(tmpdir, **kwargs):
     fake = FakeCRT(tmpdir, **kwargs)
-    capture_l2s.crt = backup_l2s.crt = fake
+    cklb_collect.crt = backup.crt = fake
     try:
-        backup_l2s.main()
+        backup.main()
     finally:
-        capture_l2s.crt = backup_l2s.crt = None
+        cklb_collect.crt = backup.crt = None
     return fake
 
 
@@ -168,13 +168,13 @@ class BulkCRT(FakeCRT):
 def run_bulk(tmpdir, switches, sessions):
     fake = BulkCRT(tmpdir, switches)
     original_find = bulk.find_sessions
-    for module in (capture_l2s, bulk, backup_l2s, backup_l2s_bulk):
+    for module in (cklb_collect, bulk, backup, backup_bulk):
         module.crt = fake
     bulk.find_sessions = lambda _filter='': list(sessions)
     try:
-        backup_l2s_bulk.main()
+        backup_bulk.main()
     finally:
-        for module in (capture_l2s, bulk, backup_l2s, backup_l2s_bulk):
+        for module in (cklb_collect, bulk, backup, backup_bulk):
             module.crt = None
         bulk.find_sessions = original_find
     return fake
@@ -258,13 +258,13 @@ def test_bulk_cancel(tmpdir):
     fake = BulkCRT(tmpdir, {'site/sw-1': ('SW1#', CONFIG, VLANS)})
     fake.Dialog.MessageBox = lambda message, title='', _flags=0: 7
     original_find = bulk.find_sessions
-    for module in (capture_l2s, bulk, backup_l2s, backup_l2s_bulk):
+    for module in (cklb_collect, bulk, backup, backup_bulk):
         module.crt = fake
     bulk.find_sessions = lambda _filter='': [('site/sw-1', '192.0.2.1')]
     try:
-        backup_l2s_bulk.main()
+        backup_bulk.main()
     finally:
-        for module in (capture_l2s, bulk, backup_l2s, backup_l2s_bulk):
+        for module in (cklb_collect, bulk, backup, backup_bulk):
             module.crt = None
         bulk.find_sessions = original_find
     check('nothing sent', fake.Screen.sent == [], fake.Screen.sent)

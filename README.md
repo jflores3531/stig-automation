@@ -62,15 +62,15 @@ has never seen stops an unattended run on a modal dialog; connect to it once by 
 
 | | |
 |---|---|
-| `capture_l2s.py` | One open session: send the read-only commands, audit them, write the `.cklb`. Cannot connect to anything, so it cannot be aimed at the wrong device. |
-| `capture_l2s_bulk.py` | The same across every saved session, unattended. One `run_log_<stamp>.csv` accounting for every session, including the ones nothing answered from. |
-| `backup_l2s.py` | One open session: running-config + `show vlan brief` into `<hostname>.txt`, the same layout as `backup_config.py`. Re-running replaces that switch's file; a failed run leaves the last backup untouched. Read-only. |
-| `backup_l2s_bulk.py` | The same backup across every saved session, unattended, then a verdict: *Backed up X of Y switch(es)*. A switch that fails keeps its last good backup; two switches reporting one hostname in a run get `<hostname>_<address>.txt` for the second rather than overwriting the first. One `backup_log_<stamp>.csv` row per session plus a `_verdict.txt`. Read-only. |
-| `inventory_l2s.py` | `show version` per session into one `inventory_<stamp>.csv`. A stack is one row per chassis. Minutes where the audit takes an evening. |
-| `harden_l2s_bulk.py` | **Configures devices.** Logging/audit, access control, SSH crypto, the V-220534 service block. vty limit opt-in. Never writes startup-config. |
+| `cklb_collect.py` | One open session: send the read-only commands, audit them, write the `.cklb`. Cannot connect to anything, so it cannot be aimed at the wrong device. |
+| `cklb_collect_bulk.py` | The same across every saved session, unattended. One `run_log_<stamp>.csv` accounting for every session, including the ones nothing answered from. |
+| `backup.py` | One open session: running-config + `show vlan brief` into `<hostname>.txt`, the same layout as `backup_config.py`. Re-running replaces that switch's file; a failed run leaves the last backup untouched. Read-only. |
+| `backup_bulk.py` | The same backup across every saved session, unattended, then a verdict: *Backed up X of Y switch(es)*. A switch that fails keeps its last good backup; two switches reporting one hostname in a run get `<hostname>_<address>.txt` for the second rather than overwriting the first. One `backup_log_<stamp>.csv` row per session plus a `_verdict.txt`. Read-only. |
+| `inventory.py` | `show version` per session into one `inventory_<stamp>.csv`. A stack is one row per chassis. Minutes where the audit takes an evening. |
+| `harden_bulk.py` | **Configures devices.** Logging/audit, access control, SSH crypto, the V-220534 service block. vty limit opt-in. Never writes startup-config. |
 | `harden_access_ports_bulk.py` | **Configures devices.** The access-port fixes on every host-facing port. Never sends a trunk command. Reads and expands interface templates before classifying any port. |
-| `snmp_acl_l2s.py` | **Configures one switch** — the open session. `snmp_host_acl.py`'s push over SecureCRT: shows the ACL and the exact commands, sends nothing until Yes, reads the list back, and gives that switch a verdict (completed / failed / skipped). Run this on one production switch first. |
-| `snmp_acl_l2s_bulk.py` | **Configures devices.** The same push across every saved session, then a verdict: *Completed on X of Y switch(es)*, with failed and not-changed counted apart. Skips a switch whose ACL is a vty `access-class`. Asks once whether to save: Yes runs `write memory` only on switches whose ACL read back correctly. One `snmp_acl_bulk_log_<stamp>.csv` row per session plus a `_verdict.txt`. |
+| `snmp_acl.py` | **Configures one switch** — the open session. `snmp_host_acl.py`'s push over SecureCRT: shows the ACL and the exact commands, sends nothing until Yes, reads the list back, and gives that switch a verdict (completed / failed / skipped). Run this on one production switch first. |
+| `snmp_acl_bulk.py` | **Configures devices.** The same push across every saved session, then a verdict: *Completed on X of Y switch(es)*, with failed and not-changed counted apart. Skips a switch whose ACL is a vty `access-class`. Asks once whether to save: Yes runs `write memory` only on switches whose ACL read back correctly. One `snmp_acl_bulk_log_<stamp>.csv` row per session plus a `_verdict.txt`. |
 | `tacacs.py` | **Configures one switch** — the open session. Adds, removes, and takes TACACS+ servers out of the server group, as listed in `inventory.yaml`'s `tacacs` section (`add`, `remove`, `remove_from_group`), with the key from `secrets.yaml`'s `tacacs_key`. Shows the TACACS+ config as it is now and the exact commands, key masked, and sends nothing until Yes. A server is found by its address under whatever name the switch gave it. `remove` takes a server out of every TACACS+ group before deleting it. Never touches `aaa new-model` or the login method lists. Skips a switch without `aaa new-model`, and one where the push would leave a group a method list uses with no servers. Reads the config back and gives a verdict (completed / failed / skipped). |
 | `tacacs_bulk.py` | **Configures devices.** The same push across every saved session, then a verdict: *Completed on X of Y switch(es)*. Asks once whether to save: Yes runs `write memory` only on switches that changed and read back as declared. One `tacacs_bulk_log_<stamp>.csv` row per session plus a `_verdict.txt`. The key is never written to a dialog or log. |
 
@@ -241,7 +241,7 @@ python3 scripts/arp_inventory.py R1 --from-file pasted-arp.txt --interface Gi0/0
 python3 scripts/pdf_ips.py diagram.pdf -o addressing.csv
 python3 scripts/pdf_ips.py diagram.pdf --all-text   # what it saw, when an answer looks wrong
 
-# Fleet-sized: capture_l2s_bulk.py walks every saved SecureCRT session and
+# Fleet-sized: cklb_collect_bulk.py walks every saved SecureCRT session and
 # leaves one checklist per switch. Where that machine cannot run the audit it
 # collects captures instead, audited elsewhere in one pass (Windows cmd).
 for %f in (C:\captures\*.capture) do ^

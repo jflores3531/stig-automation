@@ -72,7 +72,7 @@ def main():
         old = write(tmp, 'inventory_old.csv', OLD)
         new = write(tmp, 'inventory_new.csv', NEW)
 
-        print('an inventory_l2s.py CSV against a newer one')
+        print('an inventory.py CSV against a newer one')
         missing, added, *_rest = cmp.compare(old, new)
         check('exactly the two gone addresses are missing, in numeric order',
               missing == ['192.0.2.9', '192.0.2.10'], missing)

@@ -26,11 +26,11 @@ sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.join(PROJECT, 'tests'))
 
-import capture_l2s
-import capture_l2s_bulk as bulk
-import harden_l2s_bulk as harden
-import snmp_acl_l2s as snmp
-import snmp_acl_l2s_bulk as snmp_bulk
+import cklb_collect
+import cklb_collect_bulk as bulk
+import harden_bulk as harden
+import snmp_acl as snmp
+import snmp_acl_bulk as snmp_bulk
 import tacacs
 import tacacs_bulk
 from test_securecrt_snmp_acl import FakeCRT
@@ -177,7 +177,7 @@ def with_files(tmpdir, section, key=KEY):
     return path
 
 
-MODULES = (capture_l2s, bulk, harden, snmp, snmp_bulk, tacacs, tacacs_bulk)
+MODULES = (cklb_collect, bulk, harden, snmp, snmp_bulk, tacacs, tacacs_bulk)
 ORIGINAL_INVENTORY_PATH = tacacs.inventory_path
 ORIGINAL_FIND = bulk.find_sessions
 ORIGINAL_OUTPUT = tacacs.OUTPUT_DIR

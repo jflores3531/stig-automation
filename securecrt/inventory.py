@@ -24,7 +24,7 @@ trip, and the same row built from `show version` alone.
 Nothing is configured on any device, no capture or checklist is written, and
 the only non-show command sent is `terminal length 0`, which is session-scoped.
 
-WHY THIS IS SEPARATE FROM capture_l2s_bulk.py
+WHY THIS IS SEPARATE FROM cklb_collect_bulk.py
 That script audits: it collects seven commands per switch, of which
 `show running-config` is much the slowest, and produces a STIG Viewer checklist
 per device. This one asks between one and three short ones - `show version`
@@ -43,7 +43,7 @@ answered and said no. Those are different problems with different fixes.
 A switch SecureCRT has never connected to before does not stop the walk on its
 New Host Key dialog: the connect string carries /ACCEPTHOSTKEYS, which makes
 the same trust decision that dialog's default button does. See
-capture_l2s_bulk.ACCEPT_HOST_KEYS.
+cklb_collect_bulk.ACCEPT_HOST_KEYS.
 
 Each run writes its own CSV and visits every session in the list. There is no
 resume, and none is wanted: the run is short enough to repeat, and one file per
@@ -51,7 +51,7 @@ run is a snapshot of the fleet at a moment rather than an accumulated history
 somebody has to de-duplicate.
 
 WHAT IT NEEDS BESIDE IT
-capture_l2s.py and capture_l2s_bulk.py. This file reuses their session
+cklb_collect.py and cklb_collect_bulk.py. This file reuses their session
 discovery, connect handling and `show version` readers rather than carrying a
 second copy that could drift - the readers in particular, since an inventory
 that disagreed with the audit about which release a switch runs would be worse
@@ -74,8 +74,8 @@ crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
-import capture_l2s_bulk as bulk
+import cklb_collect
+import cklb_collect_bulk as bulk
 
 
 # Where the CSV is written. Created if missing; if it cannot be created the
@@ -93,9 +93,9 @@ STOP_FILE = 'STOP'
 # standalone switch. It would be wrong on a stack: it names the active member's
 # serial and no other, while an inventory has to account for every chassis. So
 # the other two are asked exactly when its switch table names more than one -
-# see capture_l2s.is_standalone, and stack_members for how the three join.
+# see cklb_collect.is_standalone, and stack_members for how the three join.
 INVENTORY_COMMAND = 'show version'
-MEMBER_COMMANDS = capture_l2s.STACK_COMMANDS
+MEMBER_COMMANDS = cklb_collect.STACK_COMMANDS
 
 # hostname is the switch's own where the walk got far enough to ask, and the
 # saved session's name where it did not - a row for a device nobody reached
@@ -154,36 +154,36 @@ def read_inventory(prompt=None):
     """Send the inventory commands to the connected session and return
     {command: output}.
 
-    Raises capture_l2s.CollectionError if the session is not a Cisco switch in
+    Raises cklb_collect.CollectionError if the session is not a Cisco switch in
     enable mode, or if the output arrives truncated or empty - the same guards
     the capture collector uses, for the same reason: a row built from a shell
     error looks exactly like a row built from a switch."""
     if prompt is None:
-        prompt = capture_l2s.read_prompt()
+        prompt = cklb_collect.read_prompt()
     if not prompt:
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'no prompt', 'Could not read the device prompt.', 'No prompt found')
     if prompt.endswith('>'):
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'user EXEC mode', 'Session is in user EXEC mode.', 'Not in enable mode')
     if not prompt.endswith('#'):
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'unexpected prompt', 'Prompt does not look like a Cisco EXEC prompt.',
             'Unexpected prompt')
 
-    reply = capture_l2s.run_command('terminal length 0', prompt)
-    wrong_device = capture_l2s.not_a_switch(reply)
+    reply = cklb_collect.run_command('terminal length 0', prompt)
+    wrong_device = cklb_collect.not_a_switch(reply)
     if wrong_device:
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'not a Cisco switch', 'Not a Cisco switch: ' + wrong_device, 'Not a Cisco switch')
 
-    output = capture_l2s.run_command(INVENTORY_COMMAND, prompt)
+    output = cklb_collect.run_command(INVENTORY_COMMAND, prompt)
     if not output.strip():
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'empty output: ' + INVENTORY_COMMAND,
             "'{0}' returned nothing.".format(INVENTORY_COMMAND), 'Empty output')
-    if capture_l2s.looks_paginated(output):
-        raise capture_l2s.CollectionError(
+    if cklb_collect.looks_paginated(output):
+        raise cklb_collect.CollectionError(
             'paginated: ' + INVENTORY_COMMAND,
             "'{0}' came back truncated.".format(INVENTORY_COMMAND), 'Output truncated')
     # A prompt ending in '#' is not proof of a Cisco switch - root's shell
@@ -191,7 +191,7 @@ def read_inventory(prompt=None):
     # error passes the checks above. `show version` from a Cisco device says
     # so; anything else is not something to write an inventory row about.
     if 'cisco' not in output.lower():
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'not a Cisco switch',
             "'{0}' output does not mention Cisco.".format(INVENTORY_COMMAND),
             'Not a Cisco switch')
@@ -204,16 +204,16 @@ def read_inventory(prompt=None):
     # is what makes this a walk rather than an evening.
     #
     # A table missing altogether is not read as one switch - see
-    # capture_l2s.is_standalone. That is the case where `show version` is least
+    # cklb_collect.is_standalone. That is the case where `show version` is least
     # able to answer for the hardware and `show license udi` is the fallback.
-    if capture_l2s.is_standalone(output):
+    if cklb_collect.is_standalone(output):
         return outputs
     # Unlike `show version`, these two are allowed to fail: a platform that is
     # not stackable answers `show switch` with an error, and some releases have
     # no `show license udi` at all. Neither is a reason to lose the row - the
     # join falls back to what `show version` said about the one switch.
     for command in MEMBER_COMMANDS:
-        outputs[command] = capture_l2s.run_command(command, prompt)
+        outputs[command] = cklb_collect.run_command(command, prompt)
     return outputs
 
 
@@ -286,13 +286,13 @@ def main():
             return
         try:
             outputs = read_inventory()
-        except capture_l2s.CollectionError as refused:
+        except cklb_collect.CollectionError as refused:
             csv.record(session_path, host, 'refused', refused.reason)
             return
         version = outputs[INVENTORY_COMMAND]
         csv.record(session_path, host, 'inventoried',
-                   hostname=capture_l2s.show_version_hostname(version),
-                   members=capture_l2s.stack_members(
+                   hostname=cklb_collect.show_version_hostname(version),
+                   members=cklb_collect.stack_members(
                        version,
                        outputs.get('show switch', ''),
                        outputs.get('show license udi', '')))
@@ -330,10 +330,10 @@ def main():
         'Inventory finished')
 
 
-# See capture_l2s.py's tail: SecureCRT injects `crt` before running, so this is
+# See cklb_collect.py's tail: SecureCRT injects `crt` before running, so this is
 # truthy there and None on a plain import, which is what lets the tests drive
 # main() with a stand-in and no terminal anywhere.
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     bulk.crt = crt
     main()

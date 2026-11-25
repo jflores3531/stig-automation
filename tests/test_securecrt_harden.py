@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verification for securecrt/harden_l2s_bulk.py - the walk that configures.
+"""Verification for securecrt/harden_bulk.py - the walk that configures.
 
 Run it directly: `python3 tests/test_securecrt_harden.py`. No framework, no
 SecureCRT, no devices.
@@ -36,9 +36,9 @@ sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import capture_l2s
-import capture_l2s_bulk as bulk
-import harden_l2s_bulk as harden
+import cklb_collect
+import cklb_collect_bulk as bulk
+import harden_bulk as harden
 from fixtures import OUTPUTS
 
 failures = []
@@ -182,7 +182,7 @@ def run_harden(tmpdir, sessions, behaviour=None, with_vty=False, reject=(),
     outputs['show running-config | include ^ip ssh'] = ssh_output
     outputs['show ip ssh'] = show_ip_ssh
     fake = FakeCRT(tmpdir, behaviour or {}, outputs, with_vty, reject, syslog)
-    harden.crt = capture_l2s.crt = bulk.crt = fake
+    harden.crt = cklb_collect.crt = bulk.crt = fake
     original = bulk.find_sessions
     original_inventory = harden.inventory_path
     if inventory is not None:
@@ -193,7 +193,7 @@ def run_harden(tmpdir, sessions, behaviour=None, with_vty=False, reject=(),
     finally:
         bulk.find_sessions = original
         harden.inventory_path = original_inventory
-        harden.crt = capture_l2s.crt = bulk.crt = None
+        harden.crt = cklb_collect.crt = bulk.crt = None
     return fake
 
 

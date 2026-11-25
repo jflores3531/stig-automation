@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verification for securecrt/capture_l2s.py.
+"""Verification for securecrt/cklb_collect.py.
 
 Run directly: `python3 tests/test_securecrt_script.py`. No framework, no
 SecureCRT, no device.
@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 
 import capture
-import capture_l2s
+import cklb_collect
 import fixtures
 from fixtures import OUTPUTS
 
@@ -111,11 +111,11 @@ class FakeCRT:
 def run_script(**kwargs):
     """Drive the real main() with a stubbed SecureCRT."""
     fake = FakeCRT(**kwargs)
-    capture_l2s.crt = fake
+    cklb_collect.crt = fake
     try:
-        capture_l2s.main()
+        cklb_collect.main()
     finally:
-        capture_l2s.crt = None
+        cklb_collect.crt = None
     return fake
 
 
@@ -173,35 +173,35 @@ Switch Ports Model              SW Version        SW Image              Mode
 def test_constants_match_capture_module():
     print('standalone copies match capture.py')
     check('delimiter prefix identical',
-          capture_l2s.DELIMITER_PREFIX == capture.DELIMITER_PREFIX,
-          f'{capture_l2s.DELIMITER_PREFIX!r} vs {capture.DELIMITER_PREFIX!r}')
+          cklb_collect.DELIMITER_PREFIX == capture.DELIMITER_PREFIX,
+          f'{cklb_collect.DELIMITER_PREFIX!r} vs {capture.DELIMITER_PREFIX!r}')
     check('delimiter suffix identical',
-          capture_l2s.DELIMITER_SUFFIX == capture.DELIMITER_SUFFIX)
+          cklb_collect.DELIMITER_SUFFIX == capture.DELIMITER_SUFFIX)
     check('delimiter line identical for a sample command',
-          capture_l2s.format_delimiter('show vtp password')
+          cklb_collect.format_delimiter('show vtp password')
           == capture.format_delimiter('show vtp password'))
     # The collector sends the required commands and the optional ones alike -
     # it is the only chance to read the switch, so a command left out here is
     # one no later audit of that capture can ever have.
     check('command list identical',
-          tuple(capture_l2s.COMMANDS)
+          tuple(cklb_collect.COMMANDS)
           == tuple(capture.AUDIT_COMMANDS_L2S) + tuple(capture.OPTIONAL_COMMANDS_L2S),
-          f'{capture_l2s.COMMANDS} vs '
+          f'{cklb_collect.COMMANDS} vs '
           f'{capture.AUDIT_COMMANDS_L2S + capture.OPTIONAL_COMMANDS_L2S}')
     check('empty-is-an-answer list identical',
-          tuple(capture_l2s.EMPTY_IS_AN_ANSWER) == tuple(capture.EMPTY_IS_AN_ANSWER),
-          f'{capture_l2s.EMPTY_IS_AN_ANSWER} vs {capture.EMPTY_IS_AN_ANSWER}')
+          tuple(cklb_collect.EMPTY_IS_AN_ANSWER) == tuple(capture.EMPTY_IS_AN_ANSWER),
+          f'{cklb_collect.EMPTY_IS_AN_ANSWER} vs {capture.EMPTY_IS_AN_ANSWER}')
     # The per-device sixth command. The collector spells it, the loader demands
     # it by the same spelling, and a capture whose section headers disagree with
     # what the audit asks for is one the audit refuses.
     check('interface template command identical',
-          capture_l2s.template_command('USER_PORT') == capture.template_command('USER_PORT'),
-          capture_l2s.template_command('USER_PORT'))
+          cklb_collect.template_command('USER_PORT') == capture.template_command('USER_PORT'),
+          cklb_collect.template_command('USER_PORT'))
     sourcing = ' source template A\n source template A\n source template B\n'
     check('and both find the same names in a config, in order and without repeats',
-          capture_l2s.sourced_template_names(sourcing)
+          cklb_collect.sourced_template_names(sourcing)
           == capture.sourced_template_names(sourcing) == ['A', 'B'],
-          capture_l2s.sourced_template_names(sourcing))
+          cklb_collect.sourced_template_names(sourcing))
 
     # The bulk walker's run log names each switch's hostname, model and release,
     # and cannot import the audit's readers for them - nothing in securecrt/ may
@@ -213,11 +213,11 @@ def test_constants_match_capture_module():
     audit = audit_version_readers()
     import stig_common
     for name, ours, theirs, expected in (
-            ('model', capture_l2s.show_version_model,
+            ('model', cklb_collect.show_version_model,
              audit['_show_version_model'], 'C9300-48P'),
-            ('release', capture_l2s.show_version_release,
+            ('release', cklb_collect.show_version_release,
              audit['_show_version_release'], '17.12.4'),
-            ('serial', capture_l2s.show_version_serial,
+            ('serial', cklb_collect.show_version_serial,
              stig_common.parse_serial_number, 'FOC0000X0XX')):
         for label, output in (('the Catalyst form', fixtures.SHOW_VERSION),
                               ('the switch table alone', SHOW_VERSION_TABLE_ONLY),
@@ -231,13 +231,13 @@ def test_constants_match_capture_module():
         check(f'{name} is right on the fixture', ours(fixtures.SHOW_VERSION) == expected,
               ours(fixtures.SHOW_VERSION))
     check('and the hostname is the config\'s, which is what names the checklist',
-          capture_l2s.running_config_hostname(fixtures.RUNNING_CONFIG) == 'TESTSW01',
-          capture_l2s.running_config_hostname(fixtures.RUNNING_CONFIG))
+          cklb_collect.running_config_hostname(fixtures.RUNNING_CONFIG) == 'TESTSW01',
+          cklb_collect.running_config_hostname(fixtures.RUNNING_CONFIG))
 
 
 def test_render_round_trips():
     print('\nrendered text parses back through capture.py')
-    parsed = capture.parse(capture_l2s.render(OUTPUTS))
+    parsed = capture.parse(cklb_collect.render(OUTPUTS))
     check('every section recovered', set(parsed) == set(OUTPUTS), sorted(parsed))
     for command, original in OUTPUTS.items():
         check(f'{command!r} verbatim', parsed.get(command) == original.strip('\n'))
@@ -246,12 +246,12 @@ def test_render_round_trips():
 def test_strip_echo():
     print('\ncommand echo removed, indentation kept')
     text = 'show running-config\r\nBuilding configuration...\r\n!\r\n hostname X\r\n'
-    stripped = capture_l2s.strip_echo(text, 'show running-config')
+    stripped = cklb_collect.strip_echo(text, 'show running-config')
     check('echo line dropped', not stripped.startswith('show running-config'))
     check('first real line kept', stripped.startswith('Building configuration...'))
     check('indentation preserved', ' hostname X' in stripped)
     check('a command whose output starts with its own text is safe',
-          capture_l2s.strip_echo('show vtp password\r\nshow vtp password is unset\r\n',
+          cklb_collect.strip_echo('show vtp password\r\nshow vtp password is unset\r\n',
                                  'show vtp password') == 'show vtp password is unset')
 
 
@@ -259,12 +259,12 @@ def test_full_run(tmpdir):
     print('\nfull run against a stubbed SecureCRT (audit auto-runs, folder opening suppressed)')
     out = os.path.join(tmpdir, 'run')
     os.makedirs(out, exist_ok=True)
-    capture_l2s.OPEN_OUTPUT_FOLDER = False
+    cklb_collect.OPEN_OUTPUT_FOLDER = False
     fake = run_script(path=out)
     check('paging disabled first', fake.Screen.sent[0] == 'terminal length 0',
           fake.Screen.sent[:2])
     check('every command sent',
-          fake.Screen.sent[1:] == list(capture_l2s.COMMANDS), fake.Screen.sent[1:])
+          fake.Screen.sent[1:] == list(cklb_collect.COMMANDS), fake.Screen.sent[1:])
     check('synchronous mode restored', fake.Screen.Synchronous is False)
     check('reported success', any('written' in t.lower() for t, _ in fake.Dialog.messages),
           fake.Dialog.messages)
@@ -322,16 +322,16 @@ def test_interface_templates_are_collected(tmpdir):
     print('\ntemplates the config sources are collected in a second pass')
     templated = OUTPUTS['show running-config'].replace(
         ' description user port\n', ' description user port\n source template USER_PORT\n')
-    template_command = capture_l2s.template_command('USER_PORT')
+    template_command = cklb_collect.template_command('USER_PORT')
     outputs = {**OUTPUTS, 'show running-config': templated,
                template_command: 'Template Name : USER_PORT\n switchport mode access'}
 
     out = os.path.join(tmpdir, 'templated')
     os.makedirs(out, exist_ok=True)
-    capture_l2s.OPEN_OUTPUT_FOLDER = False
+    cklb_collect.OPEN_OUTPUT_FOLDER = False
     fake = run_script(path=out, outputs=outputs)
     check('the template command is sent, after the fixed ones',
-          fake.Screen.sent[1:] == list(capture_l2s.COMMANDS) + [template_command],
+          fake.Screen.sent[1:] == list(cklb_collect.COMMANDS) + [template_command],
           fake.Screen.sent[1:])
     check('and the run still produces a checklist',
           any(name.endswith('.cklb') for name in os.listdir(out)), os.listdir(out))
@@ -342,7 +342,7 @@ def test_interface_templates_are_collected(tmpdir):
     os.makedirs(plain_out, exist_ok=True)
     plain = run_script(path=plain_out)
     check('a switch with no templates is asked nothing extra',
-          plain.Screen.sent[1:] == list(capture_l2s.COMMANDS), plain.Screen.sent[1:])
+          plain.Screen.sent[1:] == list(cklb_collect.COMMANDS), plain.Screen.sent[1:])
 
 
 def test_refusals(tmpdir):
@@ -374,7 +374,7 @@ def test_refusals(tmpdir):
     # other guard here waves it through.
     ok, titles = wrote_nothing('bash', outputs={
         command: 'bash: {0}: command not found'.format(command.split()[0])
-        for command in capture_l2s.COMMANDS})
+        for command in cklb_collect.COMMANDS})
     check('a bash session with a root # prompt is refused',
           ok and 'cisco' in titles, titles)
 
@@ -395,7 +395,7 @@ def test_refusals(tmpdir):
     check('a running-config that stops before `end` is refused',
           ok and 'truncated' in titles, titles)
     check('and the whole config is still accepted, so this is not just "shorter"',
-          capture_l2s.config_cut_short(whole) == '', capture_l2s.config_cut_short(whole))
+          cklb_collect.config_cut_short(whole) == '', cklb_collect.config_cut_short(whole))
 
     # ...but not for the one command whose empty output is the answer. A switch
     # with no SNMPv3 users prints nothing, and that is the V-220604/605 finding
@@ -422,11 +422,11 @@ def test_refusals(tmpdir):
 
     before = set(os.listdir(tmpdir))
     fake = FakeCRT(path='')
-    capture_l2s.crt = fake
+    cklb_collect.crt = fake
     try:
-        capture_l2s.main()
+        cklb_collect.main()
     finally:
-        capture_l2s.crt = None
+        cklb_collect.crt = None
     check('cancelling the save dialog writes nothing', set(os.listdir(tmpdir)) == before)
 
 

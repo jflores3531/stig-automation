@@ -78,16 +78,16 @@ crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
-import capture_l2s_bulk as bulk
-import harden_l2s_bulk as harden
-import snmp_acl_l2s as snmp
+import cklb_collect
+import cklb_collect_bulk as bulk
+import harden_bulk as harden
+import snmp_acl as snmp
 
 # SecureCRT keeps one Python running between script runs and imports a module
-# only once - see snmp_acl_l2s.py for why each helper is reloaded here.
+# only once - see snmp_acl.py for why each helper is reloaded here.
 if crt is not None:
     import importlib
-    for _module in (capture_l2s, bulk, harden, snmp):
+    for _module in (cklb_collect, bulk, harden, snmp):
         _module.crt = None
         importlib.reload(_module)
 
@@ -561,8 +561,8 @@ SHOW_AAA = 'show running-config | include ^aaa'
 
 
 def read_state(prompt):
-    return parse_state(capture_l2s.run_command(SHOW_TACACS, prompt),
-                       capture_l2s.run_command(SHOW_AAA, prompt))
+    return parse_state(cklb_collect.run_command(SHOW_TACACS, prompt),
+                       cklb_collect.run_command(SHOW_AAA, prompt))
 
 
 def rejected_lines(transcript, settings):
@@ -622,18 +622,18 @@ def apply(prompt, settings, confirm=None):
     `confirm(result)` sees the plan before anything is sent and returns whether
     to go ahead; the bulk run passes None, having been confirmed once.
 
-    Raises capture_l2s.CollectionError for a session that is not a usable
+    Raises cklb_collect.CollectionError for a session that is not a usable
     switch; every TACACS+ problem comes back as a Result."""
     if not prompt.endswith('#'):
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'user EXEC mode' if prompt.endswith('>') else 'unexpected prompt',
             'This session is not in privileged EXEC ({0}). Run "enable" first.'.format(prompt),
             'Not in enable mode')
     hostname = prompt.rstrip('#').strip()
-    reply = capture_l2s.run_command('terminal length 0', prompt)
-    wrong_device = capture_l2s.not_a_switch(reply)
+    reply = cklb_collect.run_command('terminal length 0', prompt)
+    wrong_device = cklb_collect.not_a_switch(reply)
     if wrong_device:
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'not a Cisco switch: ' + wrong_device,
             'This session does not look like a Cisco switch:\n  {0}'.format(wrong_device),
             'Not a Cisco switch')
@@ -791,10 +791,10 @@ def main():
     crt.Screen.Synchronous = True
     try:
         try:
-            prompt = capture_l2s.read_prompt()
+            prompt = cklb_collect.read_prompt()
             result = apply(prompt, settings,
                            confirm=lambda planned: confirm_dialog(planned, settings))
-        except capture_l2s.CollectionError as refused:
+        except cklb_collect.CollectionError as refused:
             crt.Dialog.MessageBox('{0}\n\nNothing was sent.'.format(refused), refused.title)
             return
 
@@ -822,7 +822,7 @@ def main():
 # SecureCRT injects `crt` before running, so this is truthy there and None on a
 # plain import - which is what lets the bulk walk and the tests import this.
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     bulk.crt = crt
     harden.crt = crt
     snmp.crt = crt

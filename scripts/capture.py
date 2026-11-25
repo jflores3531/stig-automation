@@ -144,7 +144,7 @@ def config_cut_short(running_config):
     nothing further to say. Only this platform's captures reach here - the
     NX-OS audit does not use this loader, and NX-OS prints no `end`.
 
-    Duplicated in securecrt/capture_l2s.py, which cannot import from here: the
+    Duplicated in securecrt/cklb_collect.py, which cannot import from here: the
     collector runs inside SecureCRT's embedded Python on a machine that may
     have nothing else on it. Both are covered by tests/test_capture.py."""
     for line in reversed((running_config or '').splitlines()):

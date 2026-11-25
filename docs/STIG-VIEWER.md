@@ -11,7 +11,7 @@ python scripts/l2_stig_audit.py SW01 --capture-to captures\SW01.capture
 ```
 
 Or collect it from SecureCRT, on a machine where nothing else may touch the network:
-`securecrt\capture_l2s.py`, run from an already-connected session (Script > Run...). That one
+`securecrt\cklb_collect.py`, run from an already-connected session (Script > Run...). That one
 writes the finished checklist and nothing else - no capture, no report - so if that is the whole
 of what you need, skip to step 4.
 

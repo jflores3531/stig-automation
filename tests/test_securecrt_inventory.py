@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verification for securecrt/inventory_l2s.py - the fleet inventory walk.
+"""Verification for securecrt/inventory.py - the fleet inventory walk.
 
 Run it directly: `python3 tests/test_securecrt_inventory.py`. No framework, no
 SecureCRT, no devices.
@@ -31,9 +31,9 @@ sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import capture_l2s
-import capture_l2s_bulk as bulk
-import inventory_l2s as inventory
+import cklb_collect
+import cklb_collect_bulk as bulk
+import inventory as inventory
 from fixtures import OUTPUTS, SHOW_VERSION
 
 failures = []
@@ -131,7 +131,7 @@ class FakeCRT:
 def run_inventory(tmpdir, sessions, behaviour=None, outputs=None):
     fake = FakeCRT(tmpdir, behaviour or {}, outputs if outputs is not None else OUTPUTS)
     inventory.crt = fake
-    capture_l2s.crt = fake
+    cklb_collect.crt = fake
     bulk.crt = fake
     original = bulk.find_sessions
     bulk.find_sessions = lambda _filter='': list(sessions)
@@ -139,7 +139,7 @@ def run_inventory(tmpdir, sessions, behaviour=None, outputs=None):
         inventory.main()
     finally:
         bulk.find_sessions = original
-        inventory.crt = capture_l2s.crt = bulk.crt = None
+        inventory.crt = cklb_collect.crt = bulk.crt = None
     return fake
 
 
@@ -461,34 +461,34 @@ def test_reads_a_real_3850_stack_table():
     one worth having a real sample of - `03.06.05E` is neither the `17.12.04`
     of a 9300 nor a number the reader can assume the shape of."""
     print('\nthe switch table of a real 3850 stack, column for column')
-    members, whole = capture_l2s.switch_table_rows(REAL_3850_STACK_VERSION)
+    members, whole = cklb_collect.switch_table_rows(REAL_3850_STACK_VERSION)
     check('all four members are read', sorted(members) == [1, 2, 3, 4], sorted(members))
     check('and the table is seen through to its end', whole, whole)
     check('never mistaken for a standalone switch',
-          not capture_l2s.is_standalone(REAL_3850_STACK_VERSION))
+          not cklb_collect.is_standalone(REAL_3850_STACK_VERSION))
     check('with the model and release off the row, not guessed',
           members.get(1) == ('WS-C3850-48U', '03.06.05E'), members.get(1))
     check('and the release normalised the way the audit normalises it',
-          capture_l2s.show_version_release(REAL_3850_STACK_VERSION) == '3.6.5E',
-          capture_l2s.show_version_release(REAL_3850_STACK_VERSION))
+          cklb_collect.show_version_release(REAL_3850_STACK_VERSION) == '3.6.5E',
+          cklb_collect.show_version_release(REAL_3850_STACK_VERSION))
 
 
 def test_readers_agree_with_the_audit():
     """The inventory and the checklist beside it must not disagree about which
-    release a switch runs. Both read `show version` through capture_l2s, so
+    release a switch runs. Both read `show version` through cklb_collect, so
     this asserts the inventory uses those readers rather than a third copy."""
     print('\nthe inventory reads `show version` the way everything else does')
-    check('model', capture_l2s.show_version_model(SHOW_VERSION) == 'C9300-48P')
-    check('serial', capture_l2s.show_version_serial(SHOW_VERSION) == 'FOC0000X0XX')
-    check('release', capture_l2s.show_version_release(SHOW_VERSION) == '17.12.4')
+    check('model', cklb_collect.show_version_model(SHOW_VERSION) == 'C9300-48P')
+    check('serial', cklb_collect.show_version_serial(SHOW_VERSION) == 'FOC0000X0XX')
+    check('release', cklb_collect.show_version_release(SHOW_VERSION) == '17.12.4')
     check('hostname, from the `<name> uptime is` line',
-          capture_l2s.show_version_hostname(SHOW_VERSION) == 'TESTSW01')
+          cklb_collect.show_version_hostname(SHOW_VERSION) == 'TESTSW01')
     # The name `show version` prints agrees with the config's `hostname`, which
     # is what the STIG walk and the checklist use. They have to: a switch
     # appearing under two names in two files is a switch nobody can match up.
     check('and it agrees with the name the STIG walk uses',
-          capture_l2s.show_version_hostname(SHOW_VERSION)
-          == capture_l2s.running_config_hostname(OUTPUTS['show running-config']))
+          cklb_collect.show_version_hostname(SHOW_VERSION)
+          == cklb_collect.running_config_hostname(OUTPUTS['show running-config']))
 
 
 if __name__ == '__main__':

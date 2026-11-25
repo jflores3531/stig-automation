@@ -68,31 +68,31 @@ It is pushed with `allow-default`. Strict-mode uRPF validates a packet's source 
 
 Unlike an `access-class`, uRPF filters **per packet** rather than at connection admission, so an already-established session is not exempt from it. That makes it categorically different from the ACL and AAA scripts: their pattern of applying a change and then checking connectivity does not apply here, because a bad push drops the packets carrying the correction. This one is verified against `inventory.yaml`'s classification before the push, not after.
 
-### `securecrt/capture_l2s_bulk.py` — unattended collection across a fleet
-`capture_l2s.py` cannot connect to anything. It attaches to the SecureCRT session already in front of it, which makes it impossible to aim at the wrong device and impossible to run without a human having logged in first. That property is most of its security argument.
+### `securecrt/cklb_collect_bulk.py` — unattended collection across a fleet
+`cklb_collect.py` cannot connect to anything. It attaches to the SecureCRT session already in front of it, which makes it impossible to aim at the wrong device and impossible to run without a human having logged in first. That property is most of its security argument.
 
-The bulk collector gives it up: it opens its own session to each saved SecureCRT session in turn, on credentials SecureCRT already holds. That is a materially different thing to put in front of whoever approved the audit tooling, and it deserves its own approval rather than riding along on `capture_l2s.py`'s — which is why it is a second file and not a `--all` flag on the first.
+The bulk collector gives it up: it opens its own session to each saved SecureCRT session in turn, on credentials SecureCRT already holds. That is a materially different thing to put in front of whoever approved the audit tooling, and it deserves its own approval rather than riding along on `cklb_collect.py`'s — which is why it is a second file and not a `--all` flag on the first.
 
 It never aborts. A switch that is offline, in a login quiet period, or refusing credentials is logged and skipped: across several hundred switches not all of them answer on a given night, and a collector that stops at the first problem would never finish one.
 
 Auditing stays outside the loop. Running it per switch inside the collector would start a Python subprocess per device and, worse, make a failed audit indistinguishable from a failed capture in the log. Collection and audit are separate passes for that reason.
 
-Both files are copied together: the bulk script imports the guards, the command list and the capture format from `capture_l2s.py` rather than restating them, so the two cannot drift.
+Both files are copied together: the bulk script imports the guards, the command list and the capture format from `cklb_collect.py` rather than restating them, so the two cannot drift.
 
 ### Host keys are added deliberately, not by a walk
-`ACCEPT_HOST_KEYS` is `False` in `capture_l2s_bulk.py`, and the three SecureCRT walks inherit it. `/ACCEPTHOSTKEYS` makes an unattended run answer the **New Host Key** dialog the way its default button does, which is convenient and is also the walk deciding, on its own, to trust a key nobody has seen. Host-key checking is the part of SSH that says the switch is the switch; a fleet walk is the wrong place to waive it.
+`ACCEPT_HOST_KEYS` is `False` in `cklb_collect_bulk.py`, and the three SecureCRT walks inherit it. `/ACCEPTHOSTKEYS` makes an unattended run answer the **New Host Key** dialog the way its default button does, which is convenient and is also the walk deciding, on its own, to trust a key nobody has seen. Host-key checking is the part of SSH that says the switch is the switch; a fleet walk is the wrong place to waive it.
 
 The cost is real and belongs stated rather than buried: a session whose key is not already in SecureCRT's database raises that dialog, and a modal box stops an unattended run until somebody clicks it. Connect to a new switch once by hand and the walks handle it from then on. Setting it `True` restores the old behaviour. The retry that recovers from a SecureCRT build rejecting the flag outright is unrelated and applies either way.
 
 ### `securecrt/harden_access_ports_bulk.py` — the access-port half, over SecureCRT
-The same argument as `harden_l2s_bulk.py`: `l2_stig_harden_access_ports.py` needs netmiko, and netmiko cannot be installed on the machine these switches are reachable from. Same fixes, same order, different transport, with the port classifier and template expander duplicated because `securecrt/` may not import from the repository — and `tests/test_securecrt_access_ports.py` running both implementations over the same configs rather than diffing source, since two tools disagreeing about which port is a trunk is the worst way to discover drift.
+The same argument as `harden_bulk.py`: `l2_stig_harden_access_ports.py` needs netmiko, and netmiko cannot be installed on the machine these switches are reachable from. Same fixes, same order, different transport, with the port classifier and template expander duplicated because `securecrt/` may not import from the repository — and `tests/test_securecrt_access_ports.py` running both implementations over the same configs rather than diffing source, since two tools disagreeing about which port is a trunk is the worst way to discover drift.
 
 It never sends a trunk command and never enters a trunk-classified interface, which is why it reads every sourced interface template off the switch and expands it before classifying anything. A switch whose templates cannot be read is refused and logged rather than guessed at: an unread `UPLINK` template is exactly the case that would have `switchport mode access` sent to an uplink.
 
-It takes the config-push machinery from `harden_l2s_bulk` rather than copying it, so the per-command read that fixes the synchronous-mode buffer overrun exists in one place instead of two.
+It takes the config-push machinery from `harden_bulk` rather than copying it, so the per-command read that fixes the synchronous-mode buffer overrun exists in one place instead of two.
 
-### `securecrt/harden_l2s_bulk.py` — the one script in `securecrt/` that configures
-Every other file in that folder is read-only and says so in its docstring. This one writes to running-config on a whole fleet, so it is a separate file with a separate name rather than a flag, for the same reason `capture_l2s_bulk.py` is separate from `capture_l2s.py`: the approval it needs is not the approval the read-only walks got.
+### `securecrt/harden_bulk.py` — the one script in `securecrt/` that configures
+Every other file in that folder is read-only and says so in its docstring. This one writes to running-config on a whole fleet, so it is a separate file with a separate name rather than a flag, for the same reason `cklb_collect_bulk.py` is separate from `cklb_collect.py`: the approval it needs is not the approval the read-only walks got.
 
 It exists because `scripts/l2_stig_harden_logging_access.py` cannot run where these switches are reachable from. That script needs netmiko, netmiko cannot be installed on that machine, and that single fact is why `securecrt/` exists at all. Same fixes, same order, different transport.
 
@@ -228,7 +228,7 @@ An audit reads `show running-config` and treats it as the device's configuration
 
 Two consequences worth naming:
 
-- **Which commands a capture must carry is now a function of the config it carries.** The template names are only knowable from running-config, so `capture.load_l2s()` loads twice: once for the fixed commands, then again demanding a section per template the config sources. A capture that sources templates it does not carry is refused, by the same rule that refuses one missing `show vtp password` — the alternative is a report full of findings against interfaces whose configuration was never read, and those verdicts read exactly like real ones. `securecrt/capture_l2s.py` collects the same second pass, so captures taken the normal way already carry it.
+- **Which commands a capture must carry is now a function of the config it carries.** The template names are only knowable from running-config, so `capture.load_l2s()` loads twice: once for the fixed commands, then again demanding a section per template the config sources. A capture that sources templates it does not carry is refused, by the same rule that refuses one missing `show vtp password` — the alternative is a report full of findings against interfaces whose configuration was never read, and those verdicts read exactly like real ones. `securecrt/cklb_collect.py` collects the same second pass, so captures taken the normal way already carry it.
 - **Expansion must not become a pass.** Splicing commands into a block could just as easily hide a genuine gap, which is the failure this project exists to avoid, so `tests/test_interface_templates.py` pins both directions: a templated port draws no findings for what its template configures, and a template missing BPDU Guard still produces the BPDU Guard finding against every port sourcing it.
 
 The same reading of a real report against the switch that produced it found two more false FAILs of the recognition kind, both fixed with `tests/test_false_fails.py` pinning them:
@@ -350,11 +350,11 @@ The work switches are reachable only through PowerShell or SecureCRT, and both o
 
 A capture is refused if any command came back with nothing: a command that returned nothing and a feature that is switched off look identical, and a check handed empty text reports a verdict as confidently as one handed real config.
 
-`show snmp user` is the exception. It prints nothing at all when no SNMPv3 users are defined — a legal switch state, and a non-compliant one that V-220604/605 exist to catch. Refusing the capture there abandons the entire collection over the very finding it was sent to collect, and it fails at collection time, before there is a report to explain it. The section must still be present, so a command that was never run is still caught; it is only allowed to be empty. `_snmpv3_user_live_check` reads empty output as "no SNMPv3 user with an authentication protocol found" and FAILs, which is the right verdict. The exemption list is duplicated in `securecrt/capture_l2s.py` (standalone by design) and `tests/test_securecrt_script.py` asserts the two cannot drift.
+`show snmp user` is the exception. It prints nothing at all when no SNMPv3 users are defined — a legal switch state, and a non-compliant one that V-220604/605 exist to catch. Refusing the capture there abandons the entire collection over the very finding it was sent to collect, and it fails at collection time, before there is a report to explain it. The section must still be present, so a command that was never run is still caught; it is only allowed to be empty. `_snmpv3_user_live_check` reads empty output as "no SNMPv3 user with an authentication protocol found" and FAILs, which is the right verdict. The exemption list is duplicated in `securecrt/cklb_collect.py` (standalone by design) and `tests/test_securecrt_script.py` asserts the two cannot drift.
 
 ## Inventory is a different question from compliance
 
-`securecrt/inventory_l2s.py` walks the same saved sessions the STIG collector
+`securecrt/inventory.py` walks the same saved sessions the STIG collector
 does and asks one command, `show version`, where that one asks seven. The split
 is not tidiness. `show running-config` is much the slowest of the seven on a
 large switch, so an audit of six hundred devices is an evening and an inventory

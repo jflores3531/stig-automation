@@ -4,7 +4,7 @@
 """Fill in a STIG Viewer 3 checklist for every saved SecureCRT session, unattended.
 
 For an inventory of the fleet rather than an audit of it - hostname, address,
-model, serial and release, in minutes rather than hours - use inventory_l2s.py
+model, serial and release, in minutes rather than hours - use inventory.py
 beside this file. It asks one command per switch instead of seven.
 
 Run this from SecureCRT (Script > Run...) with no session connected, or with
@@ -33,17 +33,17 @@ cannot - only these two files were copied to a locked-down machine, say - the
 run offers to collect captures alone, which is what this script did before it
 audited anything, and the command above turns them into checklists elsewhere.
 
-WHY THIS IS A SEPARATE SCRIPT FROM capture_l2s.py
-capture_l2s.py cannot connect to anything. It attaches to the session in front
+WHY THIS IS A SEPARATE SCRIPT FROM cklb_collect.py
+cklb_collect.py cannot connect to anything. It attaches to the session in front
 of it, which makes it impossible to point at the wrong device and impossible to
 run without a human having already logged in. This script gives that property
 up: it logs into every switch in the list on its own authority. That is a
 materially different thing to put in front of whoever approved the audit
 tooling, and it deserves its own approval rather than riding along on
-capture_l2s.py's.
+cklb_collect.py's.
 
 Both files must be copied together - this one imports the guards, the command
-list and the capture format from capture_l2s.py rather than duplicating them,
+list and the capture format from cklb_collect.py rather than duplicating them,
 so the two cannot drift. Neither imports anything from the wider repository.
 
 WHAT IT DOES NOT DO
@@ -58,12 +58,12 @@ import os.path
 import time
 
 # `crt` is injected by SecureCRT into this script's globals, not into the
-# modules it imports - so capture_l2s gets it handed over explicitly below.
+# modules it imports - so cklb_collect gets it handed over explicitly below.
 crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
+import cklb_collect
 
 
 # Where the checklists and the run log are written. Deliberately a stable path
@@ -372,7 +372,7 @@ def describe_connect_failure(error_text, connect_string=''):
 
 
 # The run log's columns. This is the STIG walk's record of what happened to
-# each switch, not an inventory of the fleet - inventory_l2s.py answers that
+# each switch, not an inventory of the fleet - inventory.py answers that
 # question, in minutes rather than hours, and carries the serial and the
 # release. Duplicating them here would leave two files disagreeing about a
 # switch the day one of them is a week old.
@@ -584,7 +584,7 @@ def main():
     # it collects should say so before it connects to six hundred devices, not
     # after - and the answer is the same for all of them, since it is a fact
     # about this machine.
-    repo, python, why_not = capture_l2s.find_audit()
+    repo, python, why_not = cklb_collect.find_audit()
     runner = (repo, python) if repo else None
     if not runner:
         if crt.Dialog.MessageBox(
@@ -684,18 +684,18 @@ def main():
             return
 
         try:
-            hostname, outputs = capture_l2s.collect()
-        except capture_l2s.CollectionError as refused:
+            hostname, outputs = cklb_collect.collect()
+        except cklb_collect.CollectionError as refused:
             log.record(session_path, host, 'refused', refused.reason)
             return
 
         # Read once, here, and handed to every row this switch produces: the
         # log says what hardware and software were found whatever happens to
         # the checklist afterwards.
-        model = capture_l2s.show_version_model(outputs.get('show version', ''))
+        model = cklb_collect.show_version_model(outputs.get('show version', ''))
         # The config's hostname rather than the prompt's, so a row and the
         # checklist it produced name the same switch - the audit reads this one.
-        named = capture_l2s.running_config_hostname(
+        named = cklb_collect.running_config_hostname(
             outputs.get('show running-config', '')) or hostname
 
         def record(outcome, comment=''):
@@ -705,7 +705,7 @@ def main():
         path = os.path.join(output_dir, key)
         try:
             with open(path, 'w', encoding='utf-8') as capture_file:
-                capture_file.write(capture_l2s.render(outputs))
+                capture_file.write(cklb_collect.render(outputs))
         except OSError as error:
             record('write failed', str(error)[:120])
             return
@@ -718,7 +718,7 @@ def main():
             record('captured', key)
             return
 
-        checklist, detail = capture_l2s.run_audit(path, hostname, work_dir, runner=runner)
+        checklist, detail = cklb_collect.run_audit(path, hostname, work_dir, runner=runner)
         if not checklist:
             record('audit failed', first_line(detail))
             return
@@ -729,7 +729,7 @@ def main():
             record('write failed', str(error)[:120])
             return
 
-        capture_l2s.remove_file(path)
+        cklb_collect.remove_file(path)
         claimed[name] = key
         append_index(output_dir, key, name, hostname)
         record('checklisted',
@@ -787,9 +787,9 @@ def main():
         'Bulk capture finished')
 
 
-# See capture_l2s.py's tail: SecureCRT injects `crt` before running, so this is
+# See cklb_collect.py's tail: SecureCRT injects `crt` before running, so this is
 # truthy there and None on a plain import, which is what lets the tests drive
 # main() with a stand-in and no terminal anywhere.
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     main()

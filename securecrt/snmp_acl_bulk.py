@@ -1,13 +1,13 @@
 # $language = "Python3"
 # $interface = "1.0"
 
-"""Run snmp_acl_l2s.py's push against every saved SecureCRT session,
+"""Run snmp_acl.py's push against every saved SecureCRT session,
 unattended, and end with a verdict: how many switches it completed, out of how
 many it was pointed at.
 
 READ THIS FIRST - THIS SCRIPT CONFIGURES DEVICES
 It logs into switches on its own authority and writes to running-config.
-Run snmp_acl_l2s.py on ONE production switch first and check that switch by
+Run snmp_acl.py on ONE production switch first and check that switch by
 hand; this is for after that.
 
 SAVING
@@ -19,7 +19,7 @@ was skipped or never answered is not saved, so a reload still reverts anything
 half-applied there. No leaves startup-config alone everywhere, as before.
 
 WHAT EACH SWITCH GETS
-Exactly what snmp_acl_l2s.py sends, from the same inventory.yaml `snmp`
+Exactly what snmp_acl.py sends, from the same inventory.yaml `snmp`
 section: `snmp-server host ... version 3 priv <user>`, the permits inserted in
 front of the ACL's deny at numbers read off THAT switch, `log` added to every
 existing permit that lacks it (replaced at its own number, one at a time), and
@@ -68,10 +68,10 @@ crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
-import capture_l2s_bulk as bulk
-import harden_l2s_bulk as harden
-import snmp_acl_l2s as snmp
+import cklb_collect
+import cklb_collect_bulk as bulk
+import harden_bulk as harden
+import snmp_acl as snmp
 
 # SecureCRT keeps one Python running between script runs, and Python imports a
 # module only once - so without this, the copy of a helper that runs is the one
@@ -81,7 +81,7 @@ import snmp_acl_l2s as snmp
 # still there, every helper would start as if SecureCRT had launched it.
 if crt is not None:
     import importlib
-    for _module in (capture_l2s, bulk, harden, snmp):
+    for _module in (cklb_collect, bulk, harden, snmp):
         _module.crt = None
         importlib.reload(_module)
 
@@ -96,7 +96,7 @@ def save_config(prompt):
     """Write running-config to startup-config. Returns '' when IOS answered
     [OK], otherwise a short reason for the log."""
     try:
-        reply = capture_l2s.run_command(SAVE_COMMAND, prompt)
+        reply = cklb_collect.run_command(SAVE_COMMAND, prompt)
     except Exception as error:
         return bulk.first_line(str(error))
     if '[OK]' in reply:
@@ -126,12 +126,12 @@ def preview(settings):
 
 
 def main():
-    # The two files are updated together; an older snmp_acl_l2s.py beside a
+    # The two files are updated together; an older snmp_acl.py beside a
     # newer bulk script would push without adding log to existing permits.
     if not hasattr(snmp, 'relog_plan'):
         crt.Dialog.MessageBox(
-            'snmp_acl_l2s.py in this folder is an older version than this script:\n{0}\n\n'
-            'Copy the current snmp_acl_l2s.py there and run again. Nothing was sent.'
+            'snmp_acl.py in this folder is an older version than this script:\n{0}\n\n'
+            'Copy the current snmp_acl.py there and run again. Nothing was sent.'
             .format(snmp.__file__), 'SNMP ACL bulk - out of date')
         return
     try:
@@ -217,7 +217,7 @@ def main():
             _ip, label = bulk.session_name_parts(session_path)
             log.record(session_path, host, outcome, comment, label)
             return
-        prompt = capture_l2s.read_prompt()
+        prompt = cklb_collect.read_prompt()
         result = snmp.apply(prompt, settings, renumber_if_no_room=renumber, refuse_vty=True)
         if save and result.outcome == snmp.COMPLETED:
             problem = save_config(prompt)
@@ -238,7 +238,7 @@ def main():
             # Nothing that happens to one switch may end the walk.
             try:
                 visit_one(index, session_path, host)
-            except capture_l2s.CollectionError as refused:
+            except cklb_collect.CollectionError as refused:
                 try:
                     log.record(session_path, host, 'refused', refused.reason)
                 except Exception:
@@ -286,7 +286,7 @@ def main():
 
 
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     bulk.crt = crt
     harden.crt = crt
     snmp.crt = crt

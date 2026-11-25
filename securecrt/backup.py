@@ -30,22 +30,22 @@ import os.path
 import time
 
 # `crt` is injected by SecureCRT into this script's globals, not into the
-# modules it imports - so capture_l2s gets it handed over at the bottom.
+# modules it imports - so cklb_collect gets it handed over at the bottom.
 crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
+import cklb_collect
 
 # SecureCRT keeps one Python running between script runs, and Python imports a
 # module only once - so without this, the copy of a helper that runs is the one
 # loaded the first time, not the one on disk now, until SecureCRT restarts.
-# Its `crt` is cleared first: capture_l2s runs its own main() when it finds
+# Its `crt` is cleared first: cklb_collect runs its own main() when it finds
 # `crt` in its globals, and an earlier run may have handed it one.
 if crt is not None:
     import importlib
-    capture_l2s.crt = None
-    importlib.reload(capture_l2s)
+    cklb_collect.crt = None
+    importlib.reload(cklb_collect)
 
 
 # Where backups go. Created if missing; the save dialog shows it and lets it be
@@ -84,30 +84,30 @@ def collect(prompt):
         raise BackupError('The prompt does not look like a Cisco EXEC prompt: "{0}"\n\nPress '
                           'Enter in the session and try again.'.format(prompt), 'Unexpected prompt')
 
-    wrong_device = capture_l2s.not_a_switch(capture_l2s.run_command('terminal length 0', prompt))
+    wrong_device = cklb_collect.not_a_switch(cklb_collect.run_command('terminal length 0', prompt))
     if wrong_device:
         raise BackupError('This session does not look like a Cisco switch:\n  {0}'
                           .format(wrong_device), 'Not a Cisco switch')
 
-    config = capture_l2s.run_command(CONFIG_COMMAND, prompt)
-    for problem in (capture_l2s.not_ios_config(config), capture_l2s.config_cut_short(config)):
+    config = cklb_collect.run_command(CONFIG_COMMAND, prompt)
+    for problem in (cklb_collect.not_ios_config(config), cklb_collect.config_cut_short(config)):
         if problem:
             raise BackupError('"{0}" {1}.\n\nNothing was written, and any earlier backup of '
                               'this switch is untouched.'.format(CONFIG_COMMAND, problem),
                               'Config not read')
-    if capture_l2s.looks_paginated(config):
+    if cklb_collect.looks_paginated(config):
         raise BackupError('"{0}" came back paged, so it is incomplete.\n\nNothing was written.'
                           .format(CONFIG_COMMAND), 'Config not read')
 
-    vlans = capture_l2s.run_command(VLAN_COMMAND, prompt)
+    vlans = cklb_collect.run_command(VLAN_COMMAND, prompt)
     if any(marker in vlans for marker in NOT_SUPPORTED):
         vlans = None
-    elif not vlans.strip() or capture_l2s.looks_paginated(vlans):
+    elif not vlans.strip() or cklb_collect.looks_paginated(vlans):
         raise BackupError('"{0}" came back empty or paged.\n\nNothing was written, and any '
                           'earlier backup of this switch is untouched.'.format(VLAN_COMMAND),
                           'VLANs not read')
 
-    hostname = capture_l2s.running_config_hostname(config) or prompt.rstrip('#').strip()
+    hostname = cklb_collect.running_config_hostname(config) or prompt.rstrip('#').strip()
     return hostname, config, vlans
 
 
@@ -161,9 +161,9 @@ def main():
     crt.Screen.Synchronous = True
     try:
         try:
-            prompt = capture_l2s.read_prompt()
+            prompt = cklb_collect.read_prompt()
             hostname, config, vlans = collect(prompt)
-        except capture_l2s.CollectionError as refused:
+        except cklb_collect.CollectionError as refused:
             crt.Dialog.MessageBox(str(refused), refused.title)
             return
         except BackupError as refused:
@@ -200,5 +200,5 @@ def main():
 
 
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     main()

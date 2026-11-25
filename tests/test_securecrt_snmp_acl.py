@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verification for securecrt/snmp_acl_l2s.py and snmp_acl_l2s_bulk.py.
+"""Verification for securecrt/snmp_acl.py and snmp_acl_bulk.py.
 
 Run directly: `python3 tests/test_securecrt_snmp_acl.py`. No framework, no
 SecureCRT, no devices.
@@ -33,11 +33,11 @@ PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT, 'scripts'))
 sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 
-import capture_l2s
-import capture_l2s_bulk as bulk
-import harden_l2s_bulk as harden
-import snmp_acl_l2s as crt_snmp
-import snmp_acl_l2s_bulk as crt_bulk
+import cklb_collect
+import cklb_collect_bulk as bulk
+import harden_bulk as harden
+import snmp_acl as crt_snmp
+import snmp_acl_bulk as crt_bulk
 import snmp_host_acl as netmiko_snmp
 
 failures = []
@@ -371,7 +371,7 @@ def with_inventory(tmpdir, section):
 
 
 def install(fake, inventory):
-    for module in (capture_l2s, bulk, harden, crt_snmp, crt_bulk):
+    for module in (cklb_collect, bulk, harden, crt_snmp, crt_bulk):
         module.crt = fake
     crt_snmp.inventory_path = lambda: inventory
 
@@ -382,7 +382,7 @@ ORIGINAL_OUTPUT = crt_snmp.OUTPUT_DIR
 
 
 def uninstall():
-    for module in (capture_l2s, bulk, harden, crt_snmp, crt_bulk):
+    for module in (cklb_collect, bulk, harden, crt_snmp, crt_bulk):
         module.crt = None
     crt_snmp.inventory_path = ORIGINAL_INVENTORY_PATH
     bulk.find_sessions = ORIGINAL_FIND

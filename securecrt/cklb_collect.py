@@ -645,7 +645,7 @@ PROMPT_POLL_MS = 500
 
 # Polls between carriage returns while waiting. The screen is read first and
 # nudged only if nothing has arrived, so a session already sitting at its
-# prompt - which is how capture_l2s.py has always found one - is read exactly
+# prompt - which is how cklb_collect.py has always found one - is read exactly
 # as it used to be, without anything being sent to it at all.
 PROMPT_NUDGE_EVERY = 10
 
@@ -705,7 +705,7 @@ def read_prompt(timeout_seconds=PROMPT_TIMEOUT_SECONDS):
     prompt", on a switch that was answering perfectly well.
 
     So the prompt is waited for rather than assumed. The screen is read first,
-    so a session already sitting at its prompt - which is how capture_l2s.py
+    so a session already sitting at its prompt - which is how cklb_collect.py
     has always found one - is read exactly as it used to be, immediately and
     without anything being sent to it. Only if nothing prompt-like is there
     does this start nudging with a bare carriage return, which at an EXEC
@@ -796,7 +796,7 @@ class CollectionError(Exception):
     Carries two forms of the same problem: `.reason` is a short phrase for a
     bulk run's log (one line per switch, six hundred of them), and str() is the
     full explanation a single-switch run puts in a dialog. Splitting them is
-    what lets capture_l2s_bulk.py reuse every guard below without any of the
+    what lets cklb_collect_bulk.py reuse every guard below without any of the
     dialogs - a modal box inside an unattended overnight loop would stop the
     run dead until someone clicked it."""
 

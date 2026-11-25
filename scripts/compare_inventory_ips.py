@@ -8,7 +8,7 @@ whatever the old file said about it (hostname, model - the columns it has), so
 the list can be chased without opening the old file. Then, shorter, the
 addresses that are new. --out writes the missing ones to a CSV as well.
 
-Made for securecrt/inventory_l2s.py's inventory_<stamp>.csv, or a merged one
+Made for securecrt/inventory.py's inventory_<stamp>.csv, or a merged one
 from merge_walk_csvs.py, but it reads any CSV. The address comes from:
 
   --column NAME, if given;

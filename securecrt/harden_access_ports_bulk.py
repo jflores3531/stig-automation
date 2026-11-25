@@ -60,7 +60,7 @@ Both stay findings, and every run says so.
 It never writes startup-config, and it never aborts: a switch that is offline,
 refusing credentials or not a Cisco switch is logged and skipped.
 
-Copy this with capture_l2s.py, capture_l2s_bulk.py and harden_l2s_bulk.py -
+Copy this with cklb_collect.py, cklb_collect_bulk.py and harden_bulk.py -
 it takes session discovery and connect handling from the second and the
 config-push machinery from the third rather than carrying copies that drift.
 """
@@ -76,9 +76,9 @@ crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
-import capture_l2s_bulk as bulk
-import harden_l2s_bulk as pusher
+import cklb_collect
+import cklb_collect_bulk as bulk
+import harden_bulk as pusher
 
 
 OUTPUT_DIR = r'C:\Documents\netauto_hardening'
@@ -209,10 +209,10 @@ def read_interface_templates(running_config, prompt):
     script would configure as an access port."""
     bodies = {}
     for name in sourced_template_names(running_config):
-        output = capture_l2s.run_command(TEMPLATE_COMMAND_PREFIX + name, prompt)
+        output = cklb_collect.run_command(TEMPLATE_COMMAND_PREFIX + name, prompt)
         body = parse_interface_template(output)
         if not body:
-            raise capture_l2s.CollectionError(
+            raise cklb_collect.CollectionError(
                 'template {0} unreadable'.format(name),
                 'The config sources interface template {0}, and the switch returned '
                 'nothing usable for it. Ports configured by that template cannot be '
@@ -281,7 +281,7 @@ def port_commands(access_ports, shut_ports, unused_vlan):
 def inventory_unused_vlan(path=None):
     """inventory.yaml's `unused_vlan`, or None.
 
-    Same reasoning as harden_l2s_bulk's syslog reader: nothing in this folder
+    Same reasoning as harden_bulk's syslog reader: nothing in this folder
     may import from the wider repository, but inventory.yaml is written as JSON,
     so the standard library opens it and a missing file is simply None."""
     import json
@@ -354,7 +354,7 @@ def main():
         return
 
     # Read rather than asked for where the file answers, same as the syslog
-    # collectors in harden_l2s_bulk.
+    # collectors in harden_bulk.
     unused_vlan = inventory_unused_vlan()
     vlan_source = 'inventory.yaml'
     if unused_vlan is None:
@@ -428,20 +428,20 @@ def main():
             log.record(session_path, host or ip, outcome, comment=comment, hostname=label)
             return
 
-        prompt = capture_l2s.read_prompt()
+        prompt = cklb_collect.read_prompt()
         if prompt.endswith('>'):
             log.record(session_path, host, 'refused', comment='Session is in user EXEC mode')
             return
-        reply = capture_l2s.run_command('terminal length 0', prompt)
-        wrong_device = capture_l2s.not_a_switch(reply)
+        reply = cklb_collect.run_command('terminal length 0', prompt)
+        wrong_device = cklb_collect.not_a_switch(reply)
         if wrong_device:
             log.record(session_path, host, 'refused',
                        comment='Not a Cisco switch: ' + wrong_device)
             return
 
         hostname = prompt.rstrip('#').strip()
-        running_config = capture_l2s.run_command('show running-config', prompt)
-        cut_short = capture_l2s.config_cut_short(running_config)
+        running_config = cklb_collect.run_command('show running-config', prompt)
+        cut_short = cklb_collect.config_cut_short(running_config)
         if cut_short:
             log.record(session_path, host, 'refused', comment=cut_short, hostname=hostname)
             return
@@ -487,7 +487,7 @@ def main():
             # Nothing that happens to one switch may end the walk.
             try:
                 visit_one(index, session_path, host)
-            except capture_l2s.CollectionError as refused:
+            except cklb_collect.CollectionError as refused:
                 try:
                     log.record(session_path, host, 'refused', comment=refused.reason)
                 except Exception:
@@ -520,7 +520,7 @@ def main():
 # SecureCRT injects `crt` before running, so this is truthy there and None on a
 # plain import, which is what lets the tests drive main() with a stand-in.
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     bulk.crt = crt
     pusher.crt = crt
     main()

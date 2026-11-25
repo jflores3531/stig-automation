@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verification for securecrt/capture_l2s_bulk.py - the unattended walker.
+"""Verification for securecrt/cklb_collect_bulk.py - the unattended walker.
 
 Run it directly: `python3 tests/test_securecrt_bulk.py`. No framework, no
 SecureCRT, no devices.
@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.join(PROJECT, 'securecrt'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture
-import capture_l2s
-import capture_l2s_bulk as bulk
+import cklb_collect
+import cklb_collect_bulk as bulk
 from fixtures import OUTPUTS
 
 failures = []
@@ -201,7 +201,7 @@ def run_walker(tmpdir, sessions, behaviour, host_outputs=None, folder='',
     fake = FakeCRT(tmpdir, behaviour, host_outputs or OUTPUTS, folder,
                    reject_host_key_flag, banner_lines, drop_after_polls)
     bulk.crt = fake
-    capture_l2s.crt = fake
+    cklb_collect.crt = fake
     original_find = bulk.find_sessions
     original_accept = bulk.ACCEPT_HOST_KEYS
     if accept_host_keys is not None:
@@ -213,7 +213,7 @@ def run_walker(tmpdir, sessions, behaviour, host_outputs=None, folder='',
         bulk.find_sessions = original_find
         bulk.ACCEPT_HOST_KEYS = original_accept
         bulk.crt = None
-        capture_l2s.crt = None
+        cklb_collect.crt = None
     return fake
 
 
@@ -310,7 +310,7 @@ def test_not_a_switch_is_refused(tmpdir):
     command with an error, so nothing is empty and nothing is truncated."""
     print('\na session that is not a Cisco switch writes nothing')
     bash = {command: f'bash: {command.split()[0]}: command not found'
-            for command in capture_l2s.COMMANDS}
+            for command in cklb_collect.COMMANDS}
     run_walker(tmpdir, [('jumphost', '10.0.3.1')], {}, host_outputs=bash)
     check('logged as refused', outcomes(tmpdir).get('jumphost') == 'refused', outcomes(tmpdir))
     check('no checklist and no capture written',
@@ -437,12 +437,12 @@ def test_audit_failure_keeps_its_capture(tmpdir):
     capture rather than throwing away the trip - and says so under its own
     outcome, so it is never mistaken for a switch that was never reached."""
     print('\na failed audit keeps its capture and says so')
-    original = capture_l2s.run_audit
-    capture_l2s.run_audit = lambda *_args, **_kwargs: (None, 'the audit itself failed:\nboom')
+    original = cklb_collect.run_audit
+    cklb_collect.run_audit = lambda *_args, **_kwargs: (None, 'the audit itself failed:\nboom')
     try:
         run_walker(tmpdir, [('sw-a', '10.0.7.1')], {})
     finally:
-        capture_l2s.run_audit = original
+        cklb_collect.run_audit = original
     check('logged under its own outcome, not as a capture failure',
           outcomes(tmpdir).get('sw-a') == 'audit failed', outcomes(tmpdir))
     check('the capture is kept, so the trip is not wasted',
@@ -503,7 +503,7 @@ def test_log_columns(tmpdir):
     check('the columns are the ones a person reads, in order',
           bulk.LOG_COLUMNS[:4] == ('hostname', 'ip_address', 'model', 'comment'),
           bulk.LOG_COLUMNS)
-    # Serial and release belong to inventory_l2s.py, which answers that
+    # Serial and release belong to inventory.py, which answers that
     # question in minutes. Two files carrying them would disagree the day one
     # of them is a week old.
     check('and it does not duplicate the inventory script\'s columns',
@@ -630,7 +630,7 @@ def test_a_banner_still_arriving_is_waited_out(tmpdir):
     and the collection is refused on a switch that was answering perfectly
     well.
 
-    Invisible by hand, which is what made it expensive: run capture_l2s.py
+    Invisible by hand, which is what made it expensive: run cklb_collect.py
     against a session a person logged into and the banner finished scrolling
     long before the script started."""
     print('\na banner still arriving is waited out, not mistaken for no prompt')
@@ -667,16 +667,16 @@ def test_a_banner_still_arriving_is_waited_out(tmpdir):
     check('the fixture really is the trap - a banner line ending in #',
           BANNER_LINE.endswith('#'), BANNER_LINE)
     check('and it is not accepted as a prompt',
-          not capture_l2s._looks_like_a_prompt(BANNER_LINE), BANNER_LINE)
+          not cklb_collect._looks_like_a_prompt(BANNER_LINE), BANNER_LINE)
     check('while a real prompt still is',
-          capture_l2s._looks_like_a_prompt('TESTSW01#')
-          and capture_l2s._looks_like_a_prompt('TESTSW01(config-if)#'))
+          cklb_collect._looks_like_a_prompt('TESTSW01#')
+          and cklb_collect._looks_like_a_prompt('TESTSW01(config-if)#'))
     checklist = checklists(tmpdir)
     check('the checklist is named for the switch, not for a line of banner',
           len(checklist) == 1 and checklist[0].startswith('TESTSW01_'), checklist)
 
     # The other half of the bargain: waiting must not change what a session
-    # already at its prompt does. capture_l2s.py attaches to one a person
+    # already at its prompt does. cklb_collect.py attaches to one a person
     # logged into, and it should still be read on sight, with nothing sent to
     # it and nothing waited out.
     settled = run_walker(tmpdir, [('node-b/sw-2', '10.0.13.2')], {})
@@ -721,7 +721,7 @@ def test_a_session_that_drops_is_not_reported_as_no_prompt(tmpdir):
     check('and named as a dropped session rather than an unreadable prompt',
           'dropped' in comment and 'no prompt' not in comment, comment)
     check('it gave up when the session went, not at the timeout',
-          sum(fake.slept) < capture_l2s.PROMPT_TIMEOUT_SECONDS * 1000, sum(fake.slept))
+          sum(fake.slept) < cklb_collect.PROMPT_TIMEOUT_SECONDS * 1000, sum(fake.slept))
 
 
 def test_an_unrecognised_failure_says_what_was_tried(tmpdir):
@@ -809,12 +809,12 @@ def test_no_audit_here_falls_back_to_captures(tmpdir):
     that discovered this per switch would visit six hundred devices and produce
     nothing."""
     print('\nwithout an audit here, the walk still collects')
-    original = capture_l2s.find_audit
-    capture_l2s.find_audit = lambda: (None, None, 'l2_stig_audit.py not found')
+    original = cklb_collect.find_audit
+    cklb_collect.find_audit = lambda: (None, None, 'l2_stig_audit.py not found')
     try:
         fake = run_walker(tmpdir, [('sw-a', '10.0.9.1'), ('sw-b', '10.0.9.2')], {})
     finally:
-        capture_l2s.find_audit = original
+        cklb_collect.find_audit = original
 
     check('it says so before connecting to anything',
           any('audit' in title.lower() for title, _ in fake.messages), fake.messages)

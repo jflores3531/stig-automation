@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Merge the per-run CSVs the SecureCRT walkers leave behind into one file.
 
-securecrt/inventory_l2s.py and securecrt/capture_l2s_bulk.py each write one
+securecrt/inventory.py and securecrt/cklb_collect_bulk.py each write one
 CSV per run - inventory_<stamp>.csv or run_log_<stamp>.csv - by design: a run
 scoped to the whole fleet is one snapshot, and there is deliberately no
-resume logic tying separate runs together (inventory_l2s.py's own docstring
+resume logic tying separate runs together (inventory.py's own docstring
 says so). Scoping runs by distribution node instead of the whole fleet turns
 that into one CSV per node, which is the right unit for running the walk but
 not for reading the result - a spreadsheet wants the fleet in one file.

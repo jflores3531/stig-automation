@@ -106,7 +106,7 @@ LOGGING_FIXES = {
 
 ACCESS_CONTROL_FIXES = {
     # Two attempts is what the bulk walker allows itself, deliberately under
-    # the three that trip this - see capture_l2s_bulk.LOGIN_ATTEMPTS.
+    # the three that trip this - see cklb_collect_bulk.LOGIN_ATTEMPTS.
     'V-220524/220576 (lockout after 3 failed attempts)':
         'login block-for 900 attempts 3 within 120',
 }

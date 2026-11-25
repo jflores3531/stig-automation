@@ -5,7 +5,7 @@
 matching permits into its EXISTING named standard ACL - in front of the deny,
 not after it - then resequence the list. Run from the one session that is
 already open (Script > Run...). This is the production first step:
-snmp_acl_l2s_bulk.py does the same thing across every saved session once this
+snmp_acl_bulk.py does the same thing across every saved session once this
 has been seen to work on one switch.
 
 READ THIS FIRST - THIS SCRIPT CONFIGURES THE SWITCH
@@ -59,9 +59,9 @@ crt = globals().get('crt')
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import capture_l2s
-import capture_l2s_bulk as bulk
-import harden_l2s_bulk as harden
+import cklb_collect
+import cklb_collect_bulk as bulk
+import harden_bulk as harden
 
 # SecureCRT keeps one Python running between script runs, and Python imports a
 # module only once - so without this, the copy of a helper that runs is the one
@@ -71,7 +71,7 @@ import harden_l2s_bulk as harden
 # still there, every helper would start as if SecureCRT had launched it.
 if crt is not None:
     import importlib
-    for _module in (capture_l2s, bulk, harden):
+    for _module in (cklb_collect, bulk, harden):
         _module.crt = None
         importlib.reload(_module)
 
@@ -110,7 +110,7 @@ DEFAULT_INCREMENT = 10
 class AclError(Exception):
     """The ACL makes the insert wrong. Unlike the netmiko script's, this one
     carries a short `.reason` as well as the full message - the same split as
-    capture_l2s.CollectionError - because a bulk run writes one line per switch
+    cklb_collect.CollectionError - because a bulk run writes one line per switch
     and the full explanation belongs in a dialog."""
 
     def __init__(self, reason, message):
@@ -491,29 +491,29 @@ def apply(prompt, settings, renumber_if_no_room=False, confirm=None, refuse_vty=
     None, having been confirmed once for the whole list, and refuse_vty=True,
     because the vty warning a person reads here would go unread there.
 
-    Raises capture_l2s.CollectionError for a session that is not a usable
+    Raises cklb_collect.CollectionError for a session that is not a usable
     switch; every ACL problem comes back as a Result instead."""
     acl_name, permits, hosts, (start, increment), insert_at = settings
     if not prompt.endswith('#'):
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'user EXEC mode' if prompt.endswith('>') else 'unexpected prompt',
             'This session is not in privileged EXEC ({0}). Run "enable" first.'.format(prompt),
             'Not in enable mode')
     hostname = prompt.rstrip('#').strip()
-    reply = capture_l2s.run_command('terminal length 0', prompt)
-    wrong_device = capture_l2s.not_a_switch(reply)
+    reply = cklb_collect.run_command('terminal length 0', prompt)
+    wrong_device = cklb_collect.not_a_switch(reply)
     if wrong_device:
-        raise capture_l2s.CollectionError(
+        raise cklb_collect.CollectionError(
             'not a Cisco switch: ' + wrong_device,
             'This session does not look like a Cisco switch:\n  {0}'.format(wrong_device),
             'Not a Cisco switch')
 
     show_acl = 'show ip access-lists ' + acl_name
-    reference_output = capture_l2s.run_command('show running-config | include ' + acl_name,
+    reference_output = cklb_collect.run_command('show running-config | include ' + acl_name,
                                                prompt)
-    user_output = capture_l2s.run_command('show snmp user', prompt)
+    user_output = cklb_collect.run_command('show snmp user', prompt)
     try:
-        entries = parse_acl(capture_l2s.run_command(show_acl, prompt), acl_name)
+        entries = parse_acl(cklb_collect.run_command(show_acl, prompt), acl_name)
     except AclError as error:
         return Result(SKIPPED, error.reason, str(error), hostname)
 
@@ -543,7 +543,7 @@ def apply(prompt, settings, renumber_if_no_room=False, confirm=None, refuse_vty=
             result.detail = '; '.join(rejected_lines(transcript))
             return result
         try:
-            entries = parse_acl(capture_l2s.run_command(show_acl, prompt), acl_name)
+            entries = parse_acl(cklb_collect.run_command(show_acl, prompt), acl_name)
             result.planned, result.already = plan_insert(entries, permits, insert_at)
         except AclError as again:
             result.outcome, result.reason, result.detail = FAILED, again.reason, str(again)
@@ -574,7 +574,7 @@ def apply(prompt, settings, renumber_if_no_room=False, confirm=None, refuse_vty=
 
     # Read back: "accepted" and "in front of the deny" are different claims.
     try:
-        result.after = parse_acl(capture_l2s.run_command(show_acl, prompt), acl_name)
+        result.after = parse_acl(cklb_collect.run_command(show_acl, prompt), acl_name)
     except AclError as error:
         result.outcome, result.reason, result.detail = FAILED, 'read-back: ' + error.reason, \
             str(error)
@@ -726,7 +726,7 @@ def report(result):
         lines += ['', 'Warnings:'] + ['  ' + w for w in result.warnings]
     if result.outcome == COMPLETED:
         lines += ['', 'Nothing was written to startup-config. Check the list, then save. '
-                      'Once this switch looks right, snmp_acl_l2s_bulk.py does the rest.']
+                      'Once this switch looks right, snmp_acl_bulk.py does the rest.']
     return title, '\n'.join(lines)
 
 
@@ -746,7 +746,7 @@ def main():
     crt.Screen.Synchronous = True
     try:
         try:
-            prompt = capture_l2s.read_prompt()
+            prompt = cklb_collect.read_prompt()
             result = apply(prompt, settings,
                            confirm=lambda planned: confirm_dialog(planned, settings))
             if result.reason == NO_ROOM and crt.Dialog.MessageBox(
@@ -755,7 +755,7 @@ def main():
                     'SNMP ACL - no room', MB_YESNO) == IDYES:
                 result = apply(prompt, settings, renumber_if_no_room=True,
                                confirm=lambda planned: confirm_dialog(planned, settings))
-        except capture_l2s.CollectionError as refused:
+        except cklb_collect.CollectionError as refused:
             crt.Dialog.MessageBox('{0}\n\nNothing was sent.'.format(refused), refused.title)
             return
 
@@ -780,7 +780,7 @@ def main():
 # SecureCRT injects `crt` before running, so this is truthy there and None on a
 # plain import - which is what lets the bulk walk and the tests import this.
 if crt is not None:
-    capture_l2s.crt = crt
+    cklb_collect.crt = crt
     bulk.crt = crt
     harden.crt = crt
     main()
