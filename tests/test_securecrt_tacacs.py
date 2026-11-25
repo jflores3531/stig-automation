@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Verification for securecrt/tacacs_l2s.py and tacacs_l2s_bulk.py.
+"""Verification for securecrt/tacacs.py and tacacs_bulk.py.
 
 Run directly: `python3 tests/test_securecrt_tacacs.py`. No framework, no
 SecureCRT, no devices.
@@ -31,8 +31,8 @@ import capture_l2s_bulk as bulk
 import harden_l2s_bulk as harden
 import snmp_acl_l2s as snmp
 import snmp_acl_l2s_bulk as snmp_bulk
-import tacacs_l2s as tacacs
-import tacacs_l2s_bulk as tacacs_bulk
+import tacacs
+import tacacs_bulk
 from test_securecrt_snmp_acl import FakeCRT
 
 failures = []

@@ -3,7 +3,7 @@
 
 """Add TACACS+ servers to one switch, remove them from it, or take them out of
 the server group, as declared in inventory.yaml's `tacacs` section. Run from
-the one session that is already open (Script > Run...). tacacs_l2s_bulk.py does
+the one session that is already open (Script > Run...). tacacs_bulk.py does
 the same across every saved session once this has been seen to work on one
 switch.
 
@@ -771,7 +771,7 @@ def report(result, settings):
     if result.outcome == COMPLETED and result.ops:
         lines += ['', 'Nothing was written to startup-config. Test a TACACS+ login in a NEW '
                       'session before closing this one, then save. Once this switch looks '
-                      'right, tacacs_l2s_bulk.py does the rest.']
+                      'right, tacacs_bulk.py does the rest.']
     return title, '\n'.join(lines)
 
 

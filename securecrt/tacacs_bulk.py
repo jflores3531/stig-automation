@@ -1,17 +1,17 @@
 # $language = "Python3"
 # $interface = "1.0"
 
-"""Run tacacs_l2s.py's push against every saved SecureCRT session,
+"""Run tacacs.py's push against every saved SecureCRT session,
 unattended, and end with a verdict: how many switches it completed, out of how
 many it was pointed at.
 
 READ THIS FIRST - THIS SCRIPT CONFIGURES DEVICES
 It logs into switches on its own authority and writes to running-config.
-Run tacacs_l2s.py on ONE production switch first, test a TACACS+ login on it
+Run tacacs.py on ONE production switch first, test a TACACS+ login on it
 in a new session, and only then run this.
 
 WHAT EACH SWITCH GETS
-Exactly what tacacs_l2s.py sends, from the same inventory.yaml `tacacs`
+Exactly what tacacs.py sends, from the same inventory.yaml `tacacs`
 section and secrets.yaml `tacacs_key`: servers in `remove` taken out of every
 TACACS+ group and deleted, servers in `remove_from_group` taken out of
 group_name, servers in `add` defined (or reused) and put in group_name. Each
@@ -46,7 +46,7 @@ import capture_l2s_bulk as bulk
 import harden_l2s_bulk as harden
 import snmp_acl_l2s as snmp
 import snmp_acl_l2s_bulk as snmp_bulk
-import tacacs_l2s as tacacs
+import tacacs
 
 # See snmp_acl_l2s.py for why each helper is reloaded.
 if crt is not None:
