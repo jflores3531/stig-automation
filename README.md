@@ -87,7 +87,7 @@ has never seen stops an unattended run on a modal dialog; connect to it once by 
 }
 ```
 
-On a switch, `192.0.2.5` becomes `tacacs server TACACS_192_0_2_5` and joins `aaa group server tacacs+ TACACS_SERVERS`. `192.0.2.9` is taken out of every TACACS+ group and then deleted. `192.0.2.10` leaves `TACACS_SERVERS`, but its definition stays. The key comes from `secrets.yaml`: `tacacs_key: <key>`.
+On a switch, `192.0.2.5` becomes `tacacs server TACACS1` (the lowest number free on that switch, so `TACACS3` if `TACACS1` and `TACACS2` already exist) and joins `aaa group server tacacs+ TACACS_SERVERS`. `192.0.2.9` is taken out of every TACACS+ group and then deleted. `192.0.2.10` leaves `TACACS_SERVERS`, but its definition stays. The key comes from `secrets.yaml`: `tacacs_key: <key>`.
 
 ### Hardening — IOS / IOS XE switch
 Run in the order listed. Each is separate because of what it can cost you if it is wrong.

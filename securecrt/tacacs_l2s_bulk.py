@@ -16,9 +16,11 @@ section and secrets.yaml `tacacs_key`: servers in `remove` taken out of every
 TACACS+ group and deleted, servers in `remove_from_group` taken out of
 group_name, servers in `add` defined (or reused) and put in group_name. Each
 switch is read first, so a server is found under whatever name THAT switch
-gave it. The same refusals apply: no `aaa new-model`, a server name already
-used for another address, or a push that would empty a group a login method
-list uses - each is skipped with nothing sent.
+gave it, and a new server is named with the lowest number free on THAT switch
+(TACACS1, TACACS2, ...), so the same server may carry a different number on
+different switches. The same refusals apply: no `aaa new-model`, or a push
+that would empty a group a login method list uses - each is skipped with
+nothing sent.
 
 SAVING
 Asked once, up front. Yes sends `write memory` only on switches that
@@ -69,8 +71,9 @@ def preview(settings):
             settings.group, ', '.join(settings.remove_from_group)))
     if settings.add:
         lines.append('  Into {0}: {1}'.format(settings.group, ', '.join(settings.add)))
-        lines.append('    a new one is `tacacs server {0}` with the key from secrets.yaml{1}'
-                     .format(settings.server_name(settings.add[0]),
+        lines.append('    a new one is `tacacs server {0}<n>`, the lowest number free on '
+                     'that switch, with the key from secrets.yaml{1}'
+                     .format(settings.prefix,
                              ', timeout {0}'.format(settings.timeout)
                              if settings.timeout is not None else ''))
         lines.append('    one already defined is reused and its key left alone')
@@ -125,8 +128,8 @@ def main():
             '{0} switch(es) to configure{1}:\n{2}\n\n'
             'THIS WRITES TO running-config ON EVERY ONE OF THEM.\n\n'
             'Each gets:\n{3}\n\n'
-            'Skipped with nothing sent: no aaa new-model, a server name taken by another '
-            'address, or a push that would empty a group a login method list uses.\n'
+            'Skipped with nothing sent: no aaa new-model, or a push that would empty a '
+            'group a login method list uses.\n'
             '{4}\n\n'
             'To stop early, create a file named {5} in the log folder.\n\nBegin?'
             .format(len(sessions),

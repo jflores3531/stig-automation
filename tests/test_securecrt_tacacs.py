@@ -262,8 +262,12 @@ def test_settings():
     print('\nsettings: bad shapes stop the run before anything is sent')
     settings = tacacs.load_config(SECTION, KEY)
     check('a good section loads', settings.add == ['192.0.2.5', '192.0.2.6'])
-    check('a new server is named from its address',
-          settings.server_name('192.0.2.5') == 'TACACS_192_0_2_5')
+    check('a new server is TACACS1 on a switch with none',
+          settings.next_name(set()) == 'TACACS1')
+    check('the lowest free number is used',
+          settings.next_name({'TACACS1', 'tacacs3'}) == 'TACACS2')
+    check('a name differing only in case counts as taken',
+          settings.next_name({'tacacs1'}) == 'TACACS2')
     check('a bare string is refused', 'LIST' in refused(dict(SECTION, add='192.0.2.5')))
     check('the x.x.x.x placeholder is refused',
           'not an IPv4' in refused(dict(SECTION, add=['x.x.x.x'])))
@@ -333,7 +337,7 @@ def test_add_new(tmpdir):
     check('with the key from secrets.yaml',
           all(info['key'] == KEY for info in switch.servers.values()), switch.servers)
     check('and in the group', switch.groups.get('TACGRP') == [
-        'server name TACACS_192_0_2_5', 'server name TACACS_192_0_2_6'], switch.groups)
+        'server name TACACS1', 'server name TACACS2'], switch.groups)
     confirm = [m for m in fake.messages if m[0] == 'TACACS - confirm']
     check('the confirmation shows the masked key', confirm and 'key ********' in confirm[0][1],
           confirm)
@@ -343,7 +347,7 @@ def test_add_new(tmpdir):
     check('nothing was saved', not switch.saved)
     rows = log_rows(tmpdir)
     check('the row names what was added',
-          rows and 'TACACS_192_0_2_5 192.0.2.5' in rows[0]['added'], rows)
+          rows and 'TACACS1 192.0.2.5' in rows[0]['added'], rows)
 
 
 def test_timeout(tmpdir):
@@ -428,15 +432,18 @@ def test_lockout_guard(tmpdir):
 
     other = tempfile.mkdtemp()
     try:
-        switch = Switch(servers={'ISE1': {'address': '192.0.2.9', 'key': 'k'}},
-                        groups={'TACGRP': ['server name ISE1']})
+        switch = Switch(servers={'TACACS1': {'address': '192.0.2.9', 'key': 'k'}},
+                        groups={'TACGRP': ['server name TACACS1']})
         fake = run_single(other, switch, dict(SECTION, add=['192.0.2.5'], remove=['192.0.2.9']))
     finally:
         shutil.rmtree(other)
     check('with a replacement in the same run it goes ahead',
           last(fake)[0] == 'TACACS - COMPLETED', last(fake))
     check('the replacement is the group now',
-          switch.groups['TACGRP'] == ['server name TACACS_192_0_2_5'], switch.groups)
+          switch.groups['TACGRP'] == ['server name TACACS2'], switch.groups)
+    check('the removed TACACS1 name is not reused in the same run',
+          'TACACS1' not in switch.servers
+          and switch.servers.get('TACACS2', {}).get('address') == '192.0.2.5', switch.servers)
 
     other = tempfile.mkdtemp()
     try:
@@ -459,13 +466,21 @@ def test_no_new_model(tmpdir):
     check('aaa new-model is not pushed', 'aaa new-model' not in fake.Screen.sent)
 
 
-def test_name_collision(tmpdir):
-    print('\none switch: a generated name already used for another address is refused')
-    switch = Switch(servers={'TACACS_192_0_2_5': {'address': '192.0.2.99', 'key': 'k'}})
+def test_numbering(tmpdir):
+    print('\none switch: new servers take the lowest numbers free on that switch')
+    switch = Switch(servers={'TACACS1': {'address': '192.0.2.99', 'key': 'k'},
+                             'TACACS3': {'address': '192.0.2.98', 'key': 'k'}})
     fake = run_single(tmpdir, switch)
-    check('not changed', last(fake)[0] == 'TACACS - not changed', last(fake))
-    check('the address was not overwritten',
-          switch.servers['TACACS_192_0_2_5']['address'] == '192.0.2.99')
+    check('completed', last(fake)[0] == 'TACACS - COMPLETED', last(fake))
+    check('192.0.2.5 is TACACS2 and 192.0.2.6 is TACACS4',
+          switch.servers.get('TACACS2', {}).get('address') == '192.0.2.5'
+          and switch.servers.get('TACACS4', {}).get('address') == '192.0.2.6', switch.servers)
+    check('the existing servers keep their addresses',
+          switch.servers['TACACS1']['address'] == '192.0.2.99'
+          and switch.servers['TACACS3']['address'] == '192.0.2.98', switch.servers)
+    check('no existing name was redefined',
+          'tacacs server TACACS1' not in switch.configured
+          and 'tacacs server TACACS3' not in switch.configured, switch.configured)
 
 
 def test_rejected_key(tmpdir):
@@ -540,7 +555,7 @@ def main():
     test_parse()
     for test in (test_read_secret, test_add_new, test_timeout, test_rerun_sends_nothing,
                  test_add_reuses_existing, test_remove, test_remove_from_group,
-                 test_lockout_guard, test_no_new_model, test_name_collision, test_rejected_key,
+                 test_lockout_guard, test_no_new_model, test_numbering, test_rejected_key,
                  test_cancel, test_bad_inventory, test_bulk, test_bulk_cancel):
         tmpdir = tempfile.mkdtemp()
         try:

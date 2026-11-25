@@ -32,9 +32,10 @@ inventory.yaml's `tacacs` section:
                        every TACACS+ group first, then the definition.
   remove_from_group    addresses to take out of group_name only. The server
                        definition stays, so it can still be used elsewhere.
-  server_name_prefix   names the new servers: TACACS + 192.0.2.5 is
-                       `tacacs server TACACS_192_0_2_5`. One name per address,
-                       so a re-run finds what the last run added.
+  server_name_prefix   names the new servers: the prefix and the lowest number
+                       not already a server name on THAT switch - TACACS1,
+                       TACACS2, ... A re-run finds what the last run added by
+                       its address, so it is never added twice.
   timeout              optional seconds per server; null leaves the default.
 
 An address listed in two of add / remove / remove_from_group is refused before
@@ -59,8 +60,7 @@ commands having been accepted:
               group, every removed server is gone from the switch, and every
               server taken out of the group is out of it. No command rejected.
   failed      something was sent and the read-back disagrees.
-  skipped     nothing was sent: no aaa new-model, a server name already used
-              for another address, or the lockout guard.
+  skipped     nothing was sent: no aaa new-model, or the lockout guard.
 
 The same row is written to a CSV in OUTPUT_DIR.
 """
@@ -133,8 +133,15 @@ class Settings:
         self.timeout = timeout
         self.key = key
 
-    def server_name(self, ip):
-        return '{0}_{1}'.format(self.prefix, ip.replace('.', '_'))
+    def next_name(self, taken):
+        """The prefix and the lowest number not in `taken` - TACACS1, TACACS2.
+        Compared without case: a name differing only in case is too easy to
+        mistake for the existing server when reading the config."""
+        used = {str(name).lower() for name in taken}
+        number = 1
+        while '{0}{1}'.format(self.prefix, number).lower() in used:
+            number += 1
+        return '{0}{1}'.format(self.prefix, number)
 
 
 def _addresses(section, field):
@@ -434,6 +441,10 @@ def plan(state, settings):
             ops.append(('legacy_remove', ip))
     # 3. New servers, then into the group.
     joins = []
+    # Every name on the switch counts as taken, including one this run removes:
+    # reusing it in the same push would make the log ambiguous about which
+    # server TACACS1 was.
+    taken = set(state.servers)
     for ip in settings.add:
         names = state.names_for(ip)
         if names:
@@ -441,15 +452,10 @@ def plan(state, settings):
         elif ip in state.legacy:
             member = ('ip', ip)
         else:
-            name = settings.server_name(ip)
-            taken = state.servers.get(name)
-            if taken is not None:
-                raise TacacsError(
-                    'server name already in use',
-                    '`tacacs server {0}` already exists here for {1}, not {2}. Defining it '
-                    'again would REPLACE its address silently. Nothing was sent - rename that '
-                    'server or change tacacs.server_name_prefix.'.format(
-                        name, taken['address'] or 'no address', ip))
+            # A free number, never an existing name: `tacacs server <existing>`
+            # would REPLACE that server's address silently.
+            name = settings.next_name(taken)
+            taken.add(name)
             ops.append(('server_add', name, ip))
             member = ('name', name)
         if not state.in_group(settings.group, ip):
