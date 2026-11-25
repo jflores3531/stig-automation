@@ -30,7 +30,7 @@ not pushed, which STIG readings were argued over — is in [`docs/DESIGN.md`](do
 |---|---|
 | `netauto.py` | Inventory loading, credential prompting, Netmiko SSH, privilege escalation. |
 | `stig_common.py` | The audit engine: reads a `.cklb`, checks the device, reports PASS/FAIL/NOT APPLICABLE/NOT AUTOMATED. Each answered rule also names what it was read from and the filtered command that shows the same evidence on the switch. |
-| `inventory.yaml` | Devices and hardening config — NTP/syslog/RADIUS addresses, VLAN IDs, management subnet. No credentials. Written as JSON. |
+| `inventory.yaml` | Devices and hardening config — NTP/syslog/RADIUS addresses, TACACS+ servers to add/remove, VLAN IDs, management subnet. No credentials. Written as JSON. |
 | `secrets.yaml` *(gitignored)* | Secrets for the `*_harden*.py` scripts. Copy `secrets.yaml.example`. |
 | `yaml.py` | Stand-in for PyYAML where nothing can be installed — `safe_load` via the stdlib `json` parser. |
 
@@ -71,6 +71,23 @@ has never seen stops an unattended run on a modal dialog; connect to it once by 
 | `harden_access_ports_bulk.py` | **Configures devices.** The access-port fixes on every host-facing port. Never sends a trunk command. Reads and expands interface templates before classifying any port. |
 | `snmp_acl_l2s.py` | **Configures one switch** — the open session. `snmp_host_acl.py`'s push over SecureCRT: shows the ACL and the exact commands, sends nothing until Yes, reads the list back, and gives that switch a verdict (completed / failed / skipped). Run this on one production switch first. |
 | `snmp_acl_l2s_bulk.py` | **Configures devices.** The same push across every saved session, then a verdict: *Completed on X of Y switch(es)*, with failed and not-changed counted apart. Skips a switch whose ACL is a vty `access-class`. Asks once whether to save: Yes runs `write memory` only on switches whose ACL read back correctly. One `snmp_acl_bulk_log_<stamp>.csv` row per session plus a `_verdict.txt`. |
+| `tacacs_l2s.py` | **Configures one switch** — the open session. Adds, removes, and takes TACACS+ servers out of the server group, as listed in `inventory.yaml`'s `tacacs` section (`add`, `remove`, `remove_from_group`), with the key from `secrets.yaml`'s `tacacs_key`. Shows the TACACS+ config as it is now and the exact commands, key masked, and sends nothing until Yes. A server is found by its address under whatever name the switch gave it. `remove` takes a server out of every TACACS+ group before deleting it. Never touches `aaa new-model` or the login method lists. Skips a switch without `aaa new-model`, and one where the push would leave a group a method list uses with no servers. Reads the config back and gives a verdict (completed / failed / skipped). |
+| `tacacs_l2s_bulk.py` | **Configures devices.** The same push across every saved session, then a verdict: *Completed on X of Y switch(es)*. Asks once whether to save: Yes runs `write memory` only on switches that changed and read back as declared. One `tacacs_bulk_log_<stamp>.csv` row per session plus a `_verdict.txt`. The key is never written to a dialog or log. |
+
+**TACACS+ servers** are declared in `inventory.yaml`, and the two `tacacs_l2s` scripts push them. Each address goes in only one of the three lists:
+
+```json
+"tacacs": {
+  "group_name": "TACACS_SERVERS",
+  "add": ["192.0.2.5", "192.0.2.6"],
+  "remove": ["192.0.2.9"],
+  "remove_from_group": ["192.0.2.10"],
+  "server_name_prefix": "TACACS",
+  "timeout": null
+}
+```
+
+On a switch, `192.0.2.5` becomes `tacacs server TACACS_192_0_2_5` and joins `aaa group server tacacs+ TACACS_SERVERS`. `192.0.2.9` is taken out of every TACACS+ group and then deleted. `192.0.2.10` leaves `TACACS_SERVERS`, but its definition stays. The key comes from `secrets.yaml`: `tacacs_key: <key>`.
 
 ### Hardening — IOS / IOS XE switch
 Run in the order listed. Each is separate because of what it can cost you if it is wrong.
@@ -280,6 +297,7 @@ python3 tests/test_arp_inventory.py
 python3 tests/test_pdf_ips.py
 python3 tests/test_snmp_host_acl.py
 python3 tests/test_securecrt_snmp_acl.py
+python3 tests/test_securecrt_tacacs.py
 python3 tests/test_compare_inventory_ips.py
 ```
 
